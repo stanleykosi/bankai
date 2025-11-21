@@ -1,0 +1,257 @@
+/**
+ * @description
+ * Service layer for Market data.
+ * Orchestrates fetching data from Gamma API, caching in Redis, and persisting to Postgres.
+ *
+ * @dependencies
+ * - backend/internal/polymarket/gamma
+ * - backend/internal/db
+ * - backend/internal/models
+ * - gorm.io/gorm
+ * - github.com/redis/go-redis/v9
+ */
+
+package services
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/bankai-project/backend/internal/models"
+	"github.com/bankai-project/backend/internal/polymarket/gamma"
+	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+const (
+	CacheKeyActiveMarkets = "markets:active"
+	CacheKeyFreshDrops    = "markets:fresh"
+	CacheTTL              = 5 * time.Minute
+)
+
+type MarketService struct {
+	DB          *gorm.DB
+	Redis       *redis.Client
+	GammaClient *gamma.Client
+}
+
+func NewMarketService(db *gorm.DB, redis *redis.Client, gammaClient *gamma.Client) *MarketService {
+	return &MarketService{
+		DB:          db,
+		Redis:       redis,
+		GammaClient: gammaClient,
+	}
+}
+
+// SyncActiveMarkets fetches top active markets from Gamma and updates DB + Cache
+func (s *MarketService) SyncActiveMarkets(ctx context.Context) error {
+	// 1. Fetch from Gamma
+	active := true
+	closed := false
+	events, err := s.GammaClient.GetEvents(ctx, gamma.GetEventsParams{
+		Limit:  50,
+		Active:  &active,
+		Closed:  &closed,
+		Order:   "volume", // Sort by volume for "Top" markets
+	})
+	if err != nil {
+		return fmt.Errorf("failed to fetch events from gamma: %w", err)
+	}
+
+	var dbMarkets []models.Market
+
+	// 2. Process and convert
+	for _, event := range events {
+		for _, gm := range event.Markets {
+			market := gm.ToDBModel()
+
+			// Extract tags from event if needed
+			var tags []string
+			for _, t := range event.Tags {
+				tags = append(tags, t.Slug)
+			}
+			market.Tags = tags
+			market.Category = "general" // Default, or derive from tags
+
+			// Set archived status from event
+			market.Archived = event.Archived
+
+			// Parse Token IDs
+			yes, no := gamma.ParseTokenIDs(gm.ClobTokenIds)
+			market.TokenIDYes = yes
+			market.TokenIDNo = no
+
+			dbMarkets = append(dbMarkets, *market)
+		}
+	}
+
+	if len(dbMarkets) == 0 {
+		return nil
+	}
+
+	// 3. Bulk Upsert to Postgres
+	// On Conflict: Update volume, liquidity, active status, closed status, archived status
+	err = s.DB.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "condition_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"volume_24h",
+			"liquidity",
+			"active",
+			"closed",
+			"archived",
+			"title",
+			"description",
+			"resolution_rules",
+			"category",
+			"tags",
+			"token_id_yes",
+			"token_id_no",
+			"end_date",
+		}),
+	}).CreateInBatches(dbMarkets, 100).Error
+
+	if err != nil {
+		return fmt.Errorf("failed to upsert markets to db: %w", err)
+	}
+
+	// 4. Update Redis Cache (store minimal data for dashboard)
+	// Serialize the list for caching
+	data, err := json.Marshal(dbMarkets)
+	if err != nil {
+		log.Printf("Failed to marshal markets for cache: %v", err)
+		// Don't return error, caching is not critical
+	} else {
+		if err := s.Redis.Set(ctx, CacheKeyActiveMarkets, data, CacheTTL).Err(); err != nil {
+			log.Printf("Failed to set active markets cache: %v", err)
+			// Don't return error, caching is not critical
+		}
+	}
+
+	return nil
+}
+
+// GetActiveMarkets returns active markets, preferring Cache -> DB
+func (s *MarketService) GetActiveMarkets(ctx context.Context) ([]models.Market, error) {
+	// 1. Try Redis
+	val, err := s.Redis.Get(ctx, CacheKeyActiveMarkets).Result()
+	if err == nil {
+		var markets []models.Market
+		if err := json.Unmarshal([]byte(val), &markets); err == nil {
+			return markets, nil
+		}
+		// If unmarshal fails, fall through to DB
+	}
+
+	// 2. Fallback to DB
+	var markets []models.Market
+	if err := s.DB.Where("active = ?", true).Order("volume_24h DESC").Limit(50).Find(&markets).Error; err != nil {
+		return nil, err
+	}
+
+	return markets, nil
+}
+
+// SyncFreshDrops fetches newest markets
+func (s *MarketService) SyncFreshDrops(ctx context.Context) error {
+	// Fetch sorted by creation date (newest first)
+	active := true
+	ascending := false // Descending order (newest first)
+	events, err := s.GammaClient.GetEvents(ctx, gamma.GetEventsParams{
+		Limit:     20,
+		Active:    &active,
+		Order:     "createdAt",
+		Ascending: &ascending,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to fetch fresh drops from gamma: %w", err)
+	}
+
+	var dbMarkets []models.Market
+	for _, event := range events {
+		for _, gm := range event.Markets {
+			m := gm.ToDBModel()
+
+			// Extract tags from event
+			var tags []string
+			for _, t := range event.Tags {
+				tags = append(tags, t.Slug)
+			}
+			m.Tags = tags
+			m.Category = "general"
+
+			// Set archived status from event
+			m.Archived = event.Archived
+
+			// Parse Token IDs
+			yes, no := gamma.ParseTokenIDs(gm.ClobTokenIds)
+			m.TokenIDYes = yes
+			m.TokenIDNo = no
+
+			dbMarkets = append(dbMarkets, *m)
+		}
+	}
+
+	if len(dbMarkets) > 0 {
+		// Upsert to DB
+		err = s.DB.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "condition_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"volume_24h",
+				"liquidity",
+				"active",
+				"closed",
+				"archived",
+				"title",
+				"description",
+				"resolution_rules",
+				"category",
+				"tags",
+				"token_id_yes",
+				"token_id_no",
+				"end_date",
+			}),
+		}).CreateInBatches(dbMarkets, 100).Error
+
+		if err != nil {
+			return fmt.Errorf("failed to upsert fresh drops to db: %w", err)
+		}
+
+		// Update Redis Cache
+		data, err := json.Marshal(dbMarkets)
+		if err != nil {
+			log.Printf("Failed to marshal fresh drops for cache: %v", err)
+		} else {
+			if err := s.Redis.Set(ctx, CacheKeyFreshDrops, data, CacheTTL).Err(); err != nil {
+				log.Printf("Failed to set fresh drops cache: %v", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// GetFreshDrops retrieves cached fresh markets
+func (s *MarketService) GetFreshDrops(ctx context.Context) ([]models.Market, error) {
+	// 1. Try Redis
+	val, err := s.Redis.Get(ctx, CacheKeyFreshDrops).Result()
+	if err == nil {
+		var markets []models.Market
+		if err := json.Unmarshal([]byte(val), &markets); err == nil {
+			return markets, nil
+		}
+		// If unmarshal fails, fall through to DB
+	}
+
+	// 2. Fallback to DB (get most recently created markets)
+	var markets []models.Market
+	if err := s.DB.Where("active = ?", true).Order("created_at DESC").Limit(20).Find(&markets).Error; err != nil {
+		return nil, err
+	}
+
+	return markets, nil
+}
+
