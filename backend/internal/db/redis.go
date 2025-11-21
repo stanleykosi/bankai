@@ -11,9 +11,9 @@ package db
 
 import (
 	"context"
-	"log"
 
 	"github.com/bankai-project/backend/internal/config"
+	"github.com/bankai-project/backend/internal/logger"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -32,7 +32,7 @@ func ConnectRedis(cfg *config.Config) (*redis.Client, error) {
 		return nil, err
 	}
 
-	log.Println("✅ Connected to Redis")
+	logger.Info("✅ Connected to Redis")
 	return client, nil
 }
 

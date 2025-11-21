@@ -14,11 +14,10 @@
 package api
 
 import (
-	"log"
-
 	"github.com/bankai-project/backend/internal/api/handlers"
 	"github.com/bankai-project/backend/internal/api/middleware"
 	"github.com/bankai-project/backend/internal/config"
+	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/polymarket/gamma"
 	"github.com/bankai-project/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
@@ -31,7 +30,7 @@ import (
 func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Config) {
 	// 1. Initialize Middleware
 	if err := middleware.InitAuthMiddleware(cfg); err != nil {
-		log.Printf("Failed to init auth middleware: %v", err)
+		logger.Error("Failed to init auth middleware: %v", err)
 		// We don't panic here to allow app to start in dev modes without valid keys,
 		// but protected routes will fail.
 	}
@@ -45,6 +44,16 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	marketHandler := handlers.NewMarketHandler(marketService)
 
 	// 4. Define Routes
+	// Root route for easy health checks
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"status": "ok",
+			"service": "Bankai Trading Terminal API",
+			"version": "1.0.0",
+			"health": "/api/v1/health",
+		})
+	})
+
 	api := app.Group("/api")
 	v1 := api.Group("/v1")
 

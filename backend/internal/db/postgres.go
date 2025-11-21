@@ -11,25 +11,25 @@
 package db
 
 import (
-	"log"
 	"time"
 
 	"github.com/bankai-project/backend/internal/config"
+	"github.com/bankai-project/backend/internal/logger"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
+	gormLogger "gorm.io/gorm/logger"
 )
 
 // ConnectPostgres initializes the PostgreSQL connection
 func ConnectPostgres(cfg *config.Config) (*gorm.DB, error) {
 	// Configure GORM logger based on environment
-	gormLogLevel := logger.Error
+	gormLogLevel := gormLogger.Error
 	if cfg.Server.Env == "development" {
-		gormLogLevel = logger.Info
+		gormLogLevel = gormLogger.Info
 	}
 
 	db, err := gorm.Open(postgres.Open(cfg.DB.URL), &gorm.Config{
-		Logger: logger.Default.LogMode(gormLogLevel),
+		Logger: gormLogger.Default.LogMode(gormLogLevel),
 	})
 	if err != nil {
 		return nil, err
@@ -47,7 +47,7 @@ func ConnectPostgres(cfg *config.Config) (*gorm.DB, error) {
 	sqlDB.SetMaxOpenConns(100)
 	sqlDB.SetConnMaxLifetime(time.Hour)
 
-	log.Println("✅ Connected to PostgreSQL")
+	logger.Info("✅ Connected to PostgreSQL")
 	return db, nil
 }
 

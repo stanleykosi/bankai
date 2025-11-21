@@ -17,15 +17,15 @@
 package main
 
 import (
-	"log"
 	"os"
 
 	"github.com/bankai-project/backend/internal/api"
 	"github.com/bankai-project/backend/internal/config"
 	"github.com/bankai-project/backend/internal/db"
+	"github.com/bankai-project/backend/internal/logger"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
-	"github.com/gofiber/fiber/v2/middleware/logger"
+	fiberLogger "github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 )
 
@@ -33,20 +33,20 @@ func main() {
 	// 1. Load Configuration
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		logger.Fatal("Failed to load config: %v", err)
 	}
 
 	// 2. Initialize Database Connections
 	// Postgres (Supabase)
 	pgDB, err := db.ConnectPostgres(cfg)
 	if err != nil {
-		log.Fatalf("Failed to connect to Postgres: %v", err)
+		logger.Fatal("Failed to connect to Postgres: %v", err)
 	}
 
 	// Redis (Cache & Queue)
 	redisClient, err := db.ConnectRedis(cfg)
 	if err != nil {
-		log.Fatalf("Failed to connect to Redis: %v", err)
+		logger.Fatal("Failed to connect to Redis: %v", err)
 	}
 	// We'll use redisClient for handlers later
 	_ = redisClient
@@ -59,8 +59,8 @@ func main() {
 	})
 
 	// 4. Global Middleware
-	app.Use(recover.New()) // Panic recovery
-	app.Use(logger.New())  // Request logging
+	app.Use(recover.New())        // Panic recovery
+	app.Use(fiberLogger.New())    // Request logging
 	
 	// CORS Configuration
 	// By default, allow all origins (useful for local testing and development)
@@ -83,9 +83,9 @@ func main() {
 	api.SetupRoutes(app, pgDB, redisClient, cfg)
 
 	// 6. Start Server
-	log.Printf("🚀 Starting Bankai Backend on port %s", cfg.Server.Port)
+	logger.Info("🚀 Starting Bankai Backend on port %s", cfg.Server.Port)
 	if err := app.Listen(":" + cfg.Server.Port); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+		logger.Fatal("Failed to start server: %v", err)
 	}
 }
 

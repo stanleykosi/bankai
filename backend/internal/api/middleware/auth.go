@@ -17,12 +17,12 @@ package middleware
 
 import (
 	"errors"
-	"log"
 	"strings"
 	"time"
 
-	"github.com/bankai-project/backend/internal/config"
 	"github.com/MicahParks/keyfunc/v2"
+	"github.com/bankai-project/backend/internal/config"
+	"github.com/bankai-project/backend/internal/logger"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -38,7 +38,7 @@ var mwConfig *AuthMiddlewareConfig
 func InitAuthMiddleware(cfg *config.Config) error {
 	if cfg.Services.ClerkJWKSURL == "" {
 		// In dev/test, we might not have this, but it's required for real auth
-		log.Println("⚠️ Warning: CLERK_JWKS_URL is empty. Auth validation will fail if not mocked.")
+		logger.Info("⚠️ Warning: CLERK_JWKS_URL is empty. Auth validation will fail if not mocked.")
 		return nil
 	}
 
@@ -47,7 +47,7 @@ func InitAuthMiddleware(cfg *config.Config) error {
 	jwks, err := keyfunc.Get(cfg.Services.ClerkJWKSURL, keyfunc.Options{
 		RefreshInterval: time.Hour,
 		RefreshErrorHandler: func(err error) {
-			log.Printf("There was an error with the JWKS refresh: %v", err)
+			logger.Error("There was an error with the JWKS refresh: %v", err)
 		},
 	})
 	if err != nil {
@@ -57,7 +57,7 @@ func InitAuthMiddleware(cfg *config.Config) error {
 	mwConfig = &AuthMiddlewareConfig{
 		JWKS: jwks,
 	}
-	log.Println("✅ Auth Middleware Initialized with JWKS")
+	logger.Info("✅ Auth Middleware Initialized with JWKS")
 	return nil
 }
 
