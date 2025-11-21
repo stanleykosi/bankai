@@ -18,7 +18,6 @@ package main
 
 import (
 	"context"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -26,29 +25,30 @@ import (
 
 	"github.com/bankai-project/backend/internal/config"
 	"github.com/bankai-project/backend/internal/db"
+	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/polymarket/gamma"
 	"github.com/bankai-project/backend/internal/polymarket/rtds"
 	"github.com/bankai-project/backend/internal/services"
 )
 
 func main() {
-	log.Println("🔥 Starting Bankai Worker...")
+	logger.Info("🔥 Starting Bankai Worker...")
 
 	// 1. Load Config
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		logger.Fatal("Failed to load config: %v", err)
 	}
 
 	// 2. Connect DBs
 	pgDB, err := db.ConnectPostgres(cfg)
 	if err != nil {
-		log.Fatalf("Postgres connection failed: %v", err)
+		logger.Fatal("Postgres connection failed: %v", err)
 	}
 
 	redisClient, err := db.ConnectRedis(cfg)
 	if err != nil {
-		log.Fatalf("Redis connection failed: %v", err)
+		logger.Fatal("Redis connection failed: %v", err)
 	}
 
 	// 3. Initialize Services
@@ -64,7 +64,7 @@ func main() {
 	// 5. Connect WebSocket
 	go func() {
 		if err := wsClient.Connect(ctx); err != nil {
-			log.Printf("❌ WebSocket Client failed: %v", err)
+			logger.Error("❌ WebSocket Client failed: %v", err)
 			// In prod, might want to restart the pod, but here we just log
 		}
 	}()
@@ -93,32 +93,39 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("Shutting down worker...")
+	logger.Info("Shutting down worker...")
 	cancel()
 	
 	// Close WebSocket connection gracefully
 	if err := wsClient.Close(); err != nil {
-		log.Printf("Error closing WebSocket: %v", err)
+		logger.Error("Error closing WebSocket: %v", err)
 	}
 	
 	time.Sleep(1 * time.Second) // Give connections time to close
-	log.Println("Worker exited.")
+	logger.Info("Worker exited.")
 }
 
 // syncSubscriptions fetches active markets and subscribes to their tokens
 func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds.Client) {
-	log.Println("🔄 Syncing market subscriptions...")
+	logger.Info("🔄 Syncing market subscriptions...")
 
 	// 1. Ensure our local DB has fresh data from Gamma
+	// Sync both active markets and fresh drops
 	if err := ms.SyncActiveMarkets(ctx); err != nil {
-		log.Printf("Failed to sync active markets from Gamma: %v", err)
+		logger.Error("Failed to sync active markets from Gamma: %v", err)
 		return
+	}
+
+	// Also sync fresh drops to populate that endpoint
+	if err := ms.SyncFreshDrops(ctx); err != nil {
+		logger.Error("Failed to sync fresh drops from Gamma: %v", err)
+		// Don't return - continue with active markets even if fresh drops fail
 	}
 
 	// 2. Get active markets
 	markets, err := ms.GetActiveMarkets(ctx)
 	if err != nil {
-		log.Printf("Failed to get active markets: %v", err)
+		logger.Error("Failed to get active markets: %v", err)
 		return
 	}
 
@@ -134,18 +141,18 @@ func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds
 	}
 
 	if len(assetIDs) == 0 {
-		log.Println("No assets to subscribe to.")
+		logger.Info("No assets to subscribe to.")
 		return
 	}
 
-	log.Printf("Subscribing to %d assets...", len(assetIDs))
+	logger.Info("Subscribing to %d assets...", len(assetIDs))
 
 	// 4. Subscribe via WebSocket
 	// Note: The CLOB WS might have limits on message size for subscriptions.
 	// We might need to batch this in chunks if len > 500.
 	// For MVP, assuming < 500 active tokens.
 	if err := ws.Subscribe(assetIDs); err != nil {
-		log.Printf("Failed to subscribe: %v", err)
+		logger.Error("Failed to subscribe: %v", err)
 	}
 }
 
