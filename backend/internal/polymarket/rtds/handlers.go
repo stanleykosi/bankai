@@ -19,6 +19,7 @@
 package rtds
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -107,6 +108,27 @@ func NewMessageHandler(db *gorm.DB, r *redis.Client) *MessageHandler {
 
 // HandleMessage routes the raw JSON message to the specific handler
 func (h *MessageHandler) HandleMessage(ctx context.Context, msg []byte) error {
+	msg = bytes.TrimSpace(msg)
+	if len(msg) == 0 {
+		return nil
+	}
+
+	// The RTDS stream often batches multiple events inside a JSON array.
+	// Detect that case and fan each payload back into HandleMessage.
+	if msg[0] == '[' {
+		var batch []json.RawMessage
+		if err := json.Unmarshal(msg, &batch); err != nil {
+			return fmt.Errorf("failed to parse batched events: %w", err)
+		}
+
+		for _, raw := range batch {
+			if err := h.HandleMessage(ctx, raw); err != nil {
+				log.Printf("RTDS batch item failed: %v", err)
+			}
+		}
+		return nil
+	}
+
 	var base BaseMessage
 	if err := json.Unmarshal(msg, &base); err != nil {
 		return fmt.Errorf("failed to parse event type: %w", err)
@@ -238,4 +260,3 @@ func (h *MessageHandler) handleLastTrade(ctx context.Context, m *LastTradeMessag
 	// Key: market:{id}:volume
 	return h.Redis.IncrByFloat(ctx, fmt.Sprintf("market:%s:volume", m.Market), volume).Err()
 }
-
