@@ -10,6 +10,12 @@ node_modules/
 frontend/node_modules/
 backend/vendor/
 
+# Bun
+bun.lockb
+frontend/bun.lockb
+.bun/
+frontend/.bun/
+
 # Build outputs
 .next/
 frontend/.next/
