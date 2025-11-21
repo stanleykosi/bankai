@@ -62,6 +62,7 @@ type PolymarketConfig struct {
 // ServicesConfig holds external service keys (AI, Auth, etc.)
 type ServicesConfig struct {
 	ClerkSecretKey string
+	ClerkJWKSURL   string // URL to fetch JSON Web Key Set for JWT validation
 	TavilyAPIKey   string
 	OpenAIAPIKey   string
 }
@@ -93,6 +94,7 @@ func Load() (*Config, error) {
 		},
 		Services: ServicesConfig{
 			ClerkSecretKey: getEnv("CLERK_SECRET_KEY", ""),
+			ClerkJWKSURL:   getEnv("CLERK_JWKS_URL", ""),
 			TavilyAPIKey:   getEnv("TAVILY_API_KEY", ""),
 			OpenAIAPIKey:   getEnv("OPENAI_API_KEY", ""),
 		},

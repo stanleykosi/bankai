@@ -7,6 +7,7 @@
  * - github.com/gofiber/fiber/v2: Web framework
  * - github.com/bankai-project/backend/internal/config: Config loader
  * - github.com/bankai-project/backend/internal/db: Database connections
+ * - github.com/bankai-project/backend/internal/api: Route definitions
  *
  * @notes
  * - Connects to Postgres and Redis on startup.
@@ -18,6 +19,7 @@ package main
 import (
 	"log"
 
+	"github.com/bankai-project/backend/internal/api"
 	"github.com/bankai-project/backend/internal/config"
 	"github.com/bankai-project/backend/internal/db"
 	"github.com/gofiber/fiber/v2"
@@ -39,8 +41,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect to Postgres: %v", err)
 	}
-	// We'll use pgDB for handlers later
-	_ = pgDB
 
 	// Redis (Cache & Queue)
 	redisClient, err := db.ConnectRedis(cfg)
@@ -67,18 +67,8 @@ func main() {
 		AllowCredentials: true,
 	}))
 
-	// 5. Routes
-	api := app.Group("/api")
-
-	// Health Check
-	api.Get("/health", func(c *fiber.Ctx) error {
-		return c.Status(fiber.StatusOK).JSON(fiber.Map{
-			"status":  "ok",
-			"service": "bankai-backend",
-			"db":      "connected",
-			"redis":   "connected",
-		})
-	})
+	// 5. Setup Routes
+	api.SetupRoutes(app, pgDB, cfg)
 
 	// 6. Start Server
 	log.Printf("🚀 Starting Bankai Backend on port %s", cfg.Server.Port)
