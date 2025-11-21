@@ -51,7 +51,6 @@ type RedisConfig struct {
 // PolymarketConfig holds Polymarket API endpoints and keys
 type PolymarketConfig struct {
 	ClobURL       string
-	RtdsURL       string
 	GammaURL      string
 	BuilderAPIKey string
 	BuilderSecret string
@@ -85,7 +84,6 @@ func Load() (*Config, error) {
 		},
 		Polymarket: PolymarketConfig{
 			ClobURL:       getEnv("POLYMARKET_CLOB_URL", "https://clob.polymarket.com"),
-			RtdsURL:       getEnv("POLYMARKET_RTDS_URL", "wss://ws-live-data.polymarket.com"),
 			GammaURL:      getEnv("POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com"),
 			BuilderAPIKey: getEnv("POLY_BUILDER_API_KEY", ""),
 			BuilderSecret: getEnv("POLY_BUILDER_SECRET", ""), // Often empty/not used for local signing depending on setup, but good to have
