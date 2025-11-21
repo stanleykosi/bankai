@@ -23,7 +23,7 @@ import (
 // ConnectPostgres initializes the PostgreSQL connection
 func ConnectPostgres(cfg *config.Config) (*gorm.DB, error) {
 	// Configure GORM logger based on environment
-	gormLogLevel := gormLogger.Error
+	gormLogLevel := gormLogger.Warn
 	if cfg.Server.Env == "development" {
 		gormLogLevel = gormLogger.Info
 	}
