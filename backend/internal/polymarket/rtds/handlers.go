@@ -124,7 +124,6 @@ func (h *MessageHandler) HandleMessage(ctx context.Context, msg []byte) error {
 		case "PING", "PONG":
 			return nil
 		default:
-			log.Printf("RTDS ignoring non-JSON frame: %s", text)
 			return nil
 		}
 	}
