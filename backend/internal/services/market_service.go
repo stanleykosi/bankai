@@ -275,7 +275,7 @@ func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []mode
 	}
 
 	pipe := s.Redis.Pipeline()
-	cmdMeta := make(map[*redis.StringStringMapCmd]keyMeta)
+	cmdMeta := make(map[*redis.MapStringStringCmd]keyMeta)
 
 	for idx, market := range markets {
 		if market.TokenIDYes != "" {
