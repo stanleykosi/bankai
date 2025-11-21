@@ -1,53 +1,112 @@
-import type { Config } from "tailwindcss";
+/**
+ * @description
+ * Tailwind CSS Configuration for Bankai Terminal.
+ * Defines the custom color palette, font families, and animation utilities
+ * matching the "Cyber-Terminal" aesthetic.
+ *
+ * Key Design Specs:
+ * - Background: #050505 (OLED Black)
+ * - Panels: #121212 (Glass/Blur)
+ * - Primary: #2979FF (Electric Blue)
+ * - Constructive (Win): #00E676
+ * - Destructive (Loss): #FF1744
+ */
 
-const config: Config = {
+import type { Config } from "tailwindcss"
+
+const config = {
   darkMode: ["class"],
   content: [
-    "./pages/**/*.{ts,tsx}",
-    "./components/**/*.{ts,tsx}",
-    "./app/**/*.{ts,tsx}",
-    "./src/**/*.{ts,tsx}",
+    './pages/**/*.{ts,tsx}',
+    './components/**/*.{ts,tsx}',
+    './app/**/*.{ts,tsx}',
+    './src/**/*.{ts,tsx}',
   ],
+  prefix: "",
   theme: {
+    container: {
+      center: true,
+      padding: "2rem",
+      screens: {
+        "2xl": "1400px",
+      },
+    },
     extend: {
       fontFamily: {
-        sans: ["var(--font-inter)"],
-        mono: ["var(--font-mono)"],
+        sans: ["var(--font-inter)", "sans-serif"],
+        mono: ["var(--font-mono)", "monospace"],
       },
       colors: {
-        // Bankai Theme Colors (from spec)
-        background: "#050505", // OLED Black
-        foreground: "#C9D1D9", // Light grey text
-        card: "#121212", // Glass/Blur panels
-        
+        border: "hsl(var(--border))",
+        input: "hsl(var(--input))",
+        ring: "hsl(var(--ring))",
+        background: "hsl(var(--background))",
+        foreground: "hsl(var(--foreground))",
         primary: {
-          DEFAULT: "#2979FF", // Electric Blue
+          DEFAULT: "hsl(var(--primary))",
+          foreground: "hsl(var(--primary-foreground))",
+        },
+        secondary: {
+          DEFAULT: "hsl(var(--secondary))",
+          foreground: "hsl(var(--secondary-foreground))",
+        },
+        destructive: {
+          DEFAULT: "hsl(var(--destructive))",
+          foreground: "hsl(var(--destructive-foreground))",
+        },
+        muted: {
+          DEFAULT: "hsl(var(--muted))",
+          foreground: "hsl(var(--muted-foreground))",
+        },
+        accent: {
+          DEFAULT: "hsl(var(--accent))",
+          foreground: "hsl(var(--accent-foreground))",
+        },
+        popover: {
+          DEFAULT: "hsl(var(--popover))",
+          foreground: "hsl(var(--popover-foreground))",
+        },
+        card: {
+          DEFAULT: "hsl(var(--card))",
+          foreground: "hsl(var(--card-foreground))",
+        },
+        // Bankai Specific Colors
+        constructive: {
+          DEFAULT: "#00E676", // Neon Green
+          foreground: "#000000",
+        },
+        loss: {
+          DEFAULT: "#FF1744", // Neon Red
           foreground: "#FFFFFF",
         },
-        
-        // Trading-specific colors
-        constructive: "#00E676", // Neon Green (YES/Profit)
-        destructive: "#FF1744", // Neon Red (NO/Loss)
-        
-        // Additional UI colors
-        secondary: "#8B949E", // Grey for secondary text
-        muted: {
-          DEFAULT: "#161B22",
-          foreground: "#8B949E",
-        },
-        border: "#30363D",
-        input: "#21262D",
-        ring: "#2979FF",
       },
       borderRadius: {
-        lg: "0.5rem",
-        md: "0.375rem",
-        sm: "0.25rem",
+        lg: "var(--radius)",
+        md: "calc(var(--radius) - 2px)",
+        sm: "calc(var(--radius) - 4px)",
+      },
+      keyframes: {
+        "accordion-down": {
+          from: { height: "0" },
+          to: { height: "var(--radix-accordion-content-height)" },
+        },
+        "accordion-up": {
+          from: { height: "var(--radix-accordion-content-height)" },
+          to: { height: "0" },
+        },
+        "pulse-neon": {
+          "0%, 100%": { opacity: "1" },
+          "50%": { opacity: "0.5" },
+        }
+      },
+      animation: {
+        "accordion-down": "accordion-down 0.2s ease-out",
+        "accordion-up": "accordion-up 0.2s ease-out",
+        "pulse-neon": "pulse-neon 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
       },
     },
   },
   plugins: [require("tailwindcss-animate")],
-};
+} satisfies Config
 
-export default config;
-
+export default config

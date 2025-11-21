@@ -4,19 +4,75 @@
 
 @layer base {
   :root {
-    --background: #050505;
-    --foreground: #C9D1D9;
-    --card: #121212;
-    --primary: #2979FF;
-    --primary-foreground: #FFFFFF;
-    --constructive: #00E676;
-    --destructive: #FF1744;
-    --secondary: #8B949E;
-    --muted: #161B22;
-    --muted-foreground: #8B949E;
-    --border: #30363D;
-    --input: #21262D;
-    --ring: #2979FF;
+    /* 
+      Bankai Theme (Dark Mode Default)
+      Background: #050505 (OLED Black) -> 0 0% 2%
+      Card/Panel: #121212 (Glass) -> 0 0% 7%
+      Primary: #2979FF (Electric Blue) -> 217 100% 58%
+      Foreground: #C9D1D9 (Light Grey) -> 210 17% 82%
+      Constructive: #00E676 -> 151 100% 45%
+      Destructive: #FF1744 -> 348 100% 54%
+    */
+    --background: 0 0% 2%;
+    --foreground: 210 17% 82%;
+
+    --card: 0 0% 7%;
+    --card-foreground: 210 17% 82%;
+
+    --popover: 0 0% 7%;
+    --popover-foreground: 210 17% 82%;
+
+    --primary: 217 100% 58%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 215 28% 17%; /* Muted Blue-Grey */
+    --secondary-foreground: 210 17% 82%;
+
+    --muted: 215 28% 17%;
+    --muted-foreground: 215 20% 65%;
+
+    --accent: 217 100% 58%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 348 100% 54%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 215 28% 17%;
+    --input: 215 28% 17%;
+    --ring: 217 100% 58%;
+
+    --radius: 0.25rem; /* Sharp corners for terminal feel */
+  }
+
+  /* Force Dark Mode aesthetics even if system is light, or map lightly */
+  .dark {
+    --background: 0 0% 2%;
+    --foreground: 210 17% 82%;
+
+    --card: 0 0% 7%;
+    --card-foreground: 210 17% 82%;
+
+    --popover: 0 0% 7%;
+    --popover-foreground: 210 17% 82%;
+
+    --primary: 217 100% 58%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 215 28% 17%;
+    --secondary-foreground: 210 17% 82%;
+
+    --muted: 215 28% 17%;
+    --muted-foreground: 215 20% 65%;
+
+    --accent: 217 100% 58%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 348 100% 54%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 215 28% 17%;
+    --input: 215 28% 17%;
+    --ring: 217 100% 58%;
   }
 }
 
@@ -25,7 +81,25 @@
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground font-sans;
   }
 }
 
+/* Custom Scrollbar for Terminal Look */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: hsl(var(--background)); 
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted)); 
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--primary)); 
+}
