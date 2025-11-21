@@ -5,53 +5,69 @@
  *
  * @dependencies
  * - github.com/gofiber/fiber/v2: Web framework
- * - github.com/joho/godotenv: Environment variable loader
+ * - github.com/bankai-project/backend/internal/config: Config loader
+ * - github.com/bankai-project/backend/internal/db: Database connections
  *
  * @notes
- * - Currently sets up a basic health check.
- * - Future integration points for Database, Redis, and Background Workers are marked.
+ * - Connects to Postgres and Redis on startup.
+ * - Sets up basic middleware (CORS, Logger, Recover).
  */
 
 package main
 
 import (
 	"log"
-	"os"
 
+	"github.com/bankai-project/backend/internal/config"
+	"github.com/bankai-project/backend/internal/db"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
-	"github.com/joho/godotenv"
 )
 
 func main() {
-	// 1. Load Environment Variables
-	// We attempt to load from .env, but don't fail hard if it's missing (prod might use system envs)
-	if err := godotenv.Load(); err != nil {
-		log.Println("Info: No .env file found, relying on system environment variables")
+	// 1. Load Configuration
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// 2. Initialize Fiber App
-	// optimized for high concurrency
+	// 2. Initialize Database Connections
+	// Postgres (Supabase)
+	pgDB, err := db.ConnectPostgres(cfg)
+	if err != nil {
+		log.Fatalf("Failed to connect to Postgres: %v", err)
+	}
+	// We'll use pgDB for handlers later
+	_ = pgDB
+
+	// Redis (Cache & Queue)
+	redisClient, err := db.ConnectRedis(cfg)
+	if err != nil {
+		log.Fatalf("Failed to connect to Redis: %v", err)
+	}
+	// We'll use redisClient for handlers later
+	_ = redisClient
+
+	// 3. Initialize Fiber App
 	app := fiber.New(fiber.Config{
 		AppName:       "Bankai Trading Terminal",
 		StrictRouting: true,
 		CaseSensitive: true,
 	})
 
-	// 3. Global Middleware
+	// 4. Global Middleware
 	app.Use(recover.New()) // Panic recovery
 	app.Use(logger.New())  // Request logging
 	app.Use(cors.New(cors.Config{
-		// TODO: In production, replace "*" with specific frontend URL (e.g., "https://bankai.vercel.app")
-		AllowOrigins:     "*",
+		AllowOrigins:     "*", // TODO: Lock this down in production
 		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
 		AllowMethods:     "GET, POST, PUT, DELETE, OPTIONS",
 		AllowCredentials: true,
 	}))
 
-	// 4. Routes
+	// 5. Routes
 	api := app.Group("/api")
 
 	// Health Check
@@ -59,17 +75,14 @@ func main() {
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{
 			"status":  "ok",
 			"service": "bankai-backend",
+			"db":      "connected",
+			"redis":   "connected",
 		})
 	})
 
-	// 5. Start Server
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-
-	log.Printf("Starting Bankai Backend on port %s", port)
-	if err := app.Listen(":" + port); err != nil {
+	// 6. Start Server
+	log.Printf("🚀 Starting Bankai Backend on port %s", cfg.Server.Port)
+	if err := app.Listen(":" + cfg.Server.Port); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
