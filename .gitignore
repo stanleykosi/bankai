@@ -1,0 +1,55 @@
+# Environment variables
+.env
+.env.local
+.env*.local
+backend/.env
+frontend/.env.local
+
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/vendor/
+
+# Build outputs
+.next/
+frontend/.next/
+frontend/out/
+backend/dist/
+backend/bin/
+
+# Go specific
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+
+# Temporary files
+tmp/
+temp/
+
+# Markdown files
+*.md
+
