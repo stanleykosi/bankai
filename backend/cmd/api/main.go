@@ -18,6 +18,7 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"github.com/bankai-project/backend/internal/api"
 	"github.com/bankai-project/backend/internal/config"
@@ -60,15 +61,26 @@ func main() {
 	// 4. Global Middleware
 	app.Use(recover.New()) // Panic recovery
 	app.Use(logger.New())  // Request logging
+	
+	// CORS Configuration
+	// By default, allow all origins (useful for local testing and development)
+	// Set FRONTEND_URL in production if you want to restrict to a specific domain
+	allowedOrigins := "*"
+	if frontendURL := os.Getenv("FRONTEND_URL"); frontendURL != "" {
+		// If FRONTEND_URL is set, use it (but still allow localhost for testing)
+		allowedOrigins = frontendURL
+	}
+	
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:     "*", // TODO: Lock this down in production
+		AllowOrigins:     allowedOrigins,
 		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
 		AllowMethods:     "GET, POST, PUT, DELETE, OPTIONS",
 		AllowCredentials: true,
 	}))
 
 	// 5. Setup Routes
-	api.SetupRoutes(app, pgDB, cfg)
+	// Updated to pass redisClient
+	api.SetupRoutes(app, pgDB, redisClient, cfg)
 
 	// 6. Start Server
 	log.Printf("🚀 Starting Bankai Backend on port %s", cfg.Server.Port)
