@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bankai-project/backend/internal/models"
@@ -111,6 +112,20 @@ func (h *MessageHandler) HandleMessage(ctx context.Context, msg []byte) error {
 	msg = bytes.TrimSpace(msg)
 	if len(msg) == 0 {
 		return nil
+	}
+
+	switch msg[0] {
+	case '{', '[':
+		// valid JSON starts - continue
+	default:
+		text := strings.ToUpper(string(msg))
+		switch text {
+		case "PING", "PONG":
+			return nil
+		default:
+			log.Printf("RTDS ignoring non-JSON frame: %s", text)
+			return nil
+		}
 	}
 
 	// The RTDS stream often batches multiple events inside a JSON array.
