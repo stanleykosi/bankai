@@ -28,7 +28,10 @@ func ConnectPostgres(cfg *config.Config) (*gorm.DB, error) {
 		gormLogLevel = gormLogger.Info
 	}
 
-	db, err := gorm.Open(postgres.Open(cfg.DB.URL), &gorm.Config{
+	db, err := gorm.Open(postgres.New(postgres.Config{
+		DSN:                  cfg.DB.URL,
+		PreferSimpleProtocol: true, // disable prepared statements to avoid stmtcache collisions in serverless envs
+	}), &gorm.Config{
 		Logger: gormLogger.Default.LogMode(gormLogLevel),
 	})
 	if err != nil {
