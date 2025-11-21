@@ -35,21 +35,85 @@ type GammaEvent struct {
 
 // GammaMarket represents a market object from the Gamma API
 type GammaMarket struct {
-	ID               string      `json:"id"`
-	ConditionID      string      `json:"conditionId"`
-	QuestionID       string      `json:"questionID"`
-	Slug             string      `json:"slug"`
-	Question         string      `json:"question"`
-	ResolutionSource string      `json:"resolutionSource"`
-	EndDate          string      `json:"endDate"` // ISO string
-	Outcomes         interface{} `json:"outcomes"` // usually []string or stringified JSON
-	OutcomePrices    interface{} `json:"outcomePrices"`
-	Volume           interface{} `json:"volume"`
-	Liquidity        interface{} `json:"liquidity"`
-	Active           bool        `json:"active"`
-	Closed           bool        `json:"closed"`
-	GroupItemTitle   string      `json:"groupItemTitle"`
-	ClobTokenIds     string      `json:"clobTokenIds"` // JSON string "[\"token1\", \"token2\"]"
+	ID                       string      `json:"id"`
+	ConditionID              string      `json:"conditionId"`
+	QuestionID               string      `json:"questionID"`
+	Slug                     string      `json:"slug"`
+	Question                 string      `json:"question"`
+	Description              string      `json:"description"`
+	ResolutionSource         string      `json:"resolutionSource"`
+	StartDate                string      `json:"startDate"`
+	EndDate                  string      `json:"endDate"` // ISO string
+	EventStartTime           string      `json:"eventStartTime"`
+	Image                    string      `json:"image"`
+	Icon                     string      `json:"icon"`
+	Outcomes                 string      `json:"outcomes"` // JSON encoded array
+	OutcomePrices            string      `json:"outcomePrices"`
+	Active                   bool        `json:"active"`
+	Closed                   bool        `json:"closed"`
+	Archived                 bool        `json:"archived"`
+	Featured                 bool        `json:"featured"`
+	New                      bool        `json:"new"`
+	Restricted               bool        `json:"restricted"`
+	EnableOrderBook          bool        `json:"enableOrderBook"`
+	AutomaticallyActive      bool        `json:"automaticallyActive"`
+	ManualActivation         bool        `json:"manualActivation"`
+	AcceptingOrders          bool        `json:"acceptingOrders"`
+	AcceptingOrdersTimestamp string      `json:"acceptingOrdersTimestamp"`
+	Ready                    bool        `json:"ready"`
+	Funded                   bool        `json:"funded"`
+	PendingDeployment        bool        `json:"pendingDeployment"`
+	Deploying                bool        `json:"deploying"`
+	RFQEnabled               bool        `json:"rfqEnabled"`
+	HoldingRewardsEnabled    bool        `json:"holdingRewardsEnabled"`
+	FeesEnabled              bool        `json:"feesEnabled"`
+	NegRisk                  bool        `json:"negRisk"`
+	NegRiskOther             bool        `json:"negRiskOther"`
+	MarketMakerAddress       string      `json:"marketMakerAddress"`
+	GroupItemThreshold       interface{} `json:"groupItemThreshold"`
+	ClobTokenIds             string      `json:"clobTokenIds"` // JSON string "[\"token1\", \"token2\"]"
+
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
+
+	OrderPriceMinTickSize interface{} `json:"orderPriceMinTickSize"`
+	OrderMinSize          interface{} `json:"orderMinSize"`
+
+	Volume         interface{} `json:"volume"`
+	VolumeAmm      interface{} `json:"volumeAmm"`
+	VolumeClob     interface{} `json:"volumeClob"`
+	VolumeNum      interface{} `json:"volumeNum"`
+	Volume24hr     interface{} `json:"volume24hr"`
+	Volume24hrAmm  interface{} `json:"volume24hrAmm"`
+	Volume24hrClob interface{} `json:"volume24hrClob"`
+	Volume1wk      interface{} `json:"volume1wk"`
+	Volume1wkAmm   interface{} `json:"volume1wkAmm"`
+	Volume1wkClob  interface{} `json:"volume1wkClob"`
+	Volume1mo      interface{} `json:"volume1mo"`
+	Volume1moAmm   interface{} `json:"volume1moAmm"`
+	Volume1moClob  interface{} `json:"volume1moClob"`
+	Volume1yr      interface{} `json:"volume1yr"`
+	Volume1yrAmm   interface{} `json:"volume1yrAmm"`
+	Volume1yrClob  interface{} `json:"volume1yrClob"`
+
+	Liquidity     interface{} `json:"liquidity"`
+	LiquidityAmm  interface{} `json:"liquidityAmm"`
+	LiquidityClob interface{} `json:"liquidityClob"`
+	LiquidityNum  interface{} `json:"liquidityNum"`
+
+	BestBid             interface{} `json:"bestBid"`
+	BestAsk             interface{} `json:"bestAsk"`
+	Spread              interface{} `json:"spread"`
+	LastTradePrice      interface{} `json:"lastTradePrice"`
+	OneHourPriceChange  interface{} `json:"oneHourPriceChange"`
+	OneDayPriceChange   interface{} `json:"oneDayPriceChange"`
+	OneWeekPriceChange  interface{} `json:"oneWeekPriceChange"`
+	OneMonthPriceChange interface{} `json:"oneMonthPriceChange"`
+	OneYearPriceChange  interface{} `json:"oneYearPriceChange"`
+
+	RewardsMinSize   interface{} `json:"rewardsMinSize"`
+	RewardsMaxSpread interface{} `json:"rewardsMaxSpread"`
+	Competitive      interface{} `json:"competitive"`
 }
 
 // GammaTag represents a tag object
@@ -61,29 +125,89 @@ type GammaTag struct {
 
 // ToDBModel converts a GammaMarket to our internal DB model
 func (gm *GammaMarket) ToDBModel() *models.Market {
-	// Parse timestamps
-	var endDate *time.Time
-	if t, err := time.Parse(time.RFC3339, gm.EndDate); err == nil {
-		endDate = &t
-	}
+	startDate := parseTimePtr(gm.StartDate)
+	endDate := parseTimePtr(gm.EndDate)
+	eventStart := parseTimePtr(gm.EventStartTime)
+	createdAt := parseTimePtr(gm.CreatedAt)
+	updatedAt := parseTimePtr(gm.UpdatedAt)
+	acceptingOrdersAt := parseTimePtr(gm.AcceptingOrdersTimestamp)
 
 	// Parse volume/liquidity safely
 	vol := parseFloatSafe(gm.Volume)
 	liq := parseFloatSafe(gm.Liquidity)
 
 	return &models.Market{
-		ConditionID:     gm.ConditionID,
-		QuestionID:      gm.QuestionID,
-		Slug:            gm.Slug,
-		Title:           gm.Question, // Market question is usually the title
-		Description:     gm.ResolutionSource,
-		ResolutionRules: gm.ResolutionSource, // Using source as rules proxy for now
-		Active:          gm.Active,
-		Closed:          gm.Closed,
-		Archived:        false, // Will be set from event if needed
-		Volume24h:       vol,
-		Liquidity:       liq,
-		EndDate:         endDate,
+		ConditionID:           gm.ConditionID,
+		GammaMarketID:         gm.ID,
+		QuestionID:            gm.QuestionID,
+		Slug:                  gm.Slug,
+		Title:                 gm.Question, // Market question is usually the title
+		Description:           gm.Description,
+		ResolutionRules:       gm.ResolutionSource, // Using source as rules proxy for now
+		ImageURL:              gm.Image,
+		IconURL:               gm.Icon,
+		StartDate:             startDate,
+		Active:                gm.Active,
+		Closed:                gm.Closed,
+		Archived:              gm.Archived,
+		Featured:              gm.Featured,
+		IsNew:                 gm.New,
+		Restricted:            gm.Restricted,
+		EnableOrderBook:       gm.EnableOrderBook,
+		MarketMakerAddr:       gm.MarketMakerAddress,
+		EventStartTime:        eventStart,
+		AcceptingOrders:       gm.AcceptingOrders,
+		AcceptingOrdersAt:     acceptingOrdersAt,
+		Ready:                 gm.Ready,
+		Funded:                gm.Funded,
+		PendingDeployment:     gm.PendingDeployment,
+		Deploying:             gm.Deploying,
+		RFQEnabled:            gm.RFQEnabled,
+		HoldingRewardsEnabled: gm.HoldingRewardsEnabled,
+		FeesEnabled:           gm.FeesEnabled,
+		NegRisk:               gm.NegRisk,
+		NegRiskOther:          gm.NegRiskOther,
+		AutomaticallyActive:   gm.AutomaticallyActive,
+		ManualActivation:      gm.ManualActivation,
+		VolumeAllTime:         vol,
+		Volume24h:             parseFloatSafe(gm.Volume24hr),
+		Volume24hAmm:          parseFloatSafe(gm.Volume24hrAmm),
+		Volume24hClob:         parseFloatSafe(gm.Volume24hrClob),
+		Volume1Week:           parseFloatSafe(gm.Volume1wk),
+		Volume1WeekAmm:        parseFloatSafe(gm.Volume1wkAmm),
+		Volume1WeekClob:       parseFloatSafe(gm.Volume1wkClob),
+		Volume1Month:          parseFloatSafe(gm.Volume1mo),
+		Volume1MonthAmm:       parseFloatSafe(gm.Volume1moAmm),
+		Volume1MonthClob:      parseFloatSafe(gm.Volume1moClob),
+		Volume1Year:           parseFloatSafe(gm.Volume1yr),
+		Volume1YearAmm:        parseFloatSafe(gm.Volume1yrAmm),
+		Volume1YearClob:       parseFloatSafe(gm.Volume1yrClob),
+		VolumeAmm:             parseFloatSafe(gm.VolumeAmm),
+		VolumeClob:            parseFloatSafe(gm.VolumeClob),
+		VolumeNum:             parseFloatSafe(gm.VolumeNum),
+		Liquidity:             liq,
+		LiquidityNum:          parseFloatSafe(gm.LiquidityNum),
+		LiquidityClob:         parseFloatSafe(gm.LiquidityClob),
+		LiquidityAmm:          parseFloatSafe(gm.LiquidityAmm),
+		OrderMinSize:          parseFloatSafe(gm.OrderMinSize),
+		OrderPriceMinTickSize: parseFloatSafe(gm.OrderPriceMinTickSize),
+		BestBid:               parseFloatSafe(gm.BestBid),
+		BestAsk:               parseFloatSafe(gm.BestAsk),
+		Spread:                parseFloatSafe(gm.Spread),
+		LastTradePrice:        parseFloatSafe(gm.LastTradePrice),
+		OneHourPriceChange:    parseFloatSafe(gm.OneHourPriceChange),
+		OneDayPriceChange:     parseFloatSafe(gm.OneDayPriceChange),
+		OneWeekPriceChange:    parseFloatSafe(gm.OneWeekPriceChange),
+		OneMonthPriceChange:   parseFloatSafe(gm.OneMonthPriceChange),
+		OneYearPriceChange:    parseFloatSafe(gm.OneYearPriceChange),
+		Competitive:           parseFloatSafe(gm.Competitive),
+		RewardsMinSize:        parseFloatSafe(gm.RewardsMinSize),
+		RewardsMaxSpread:      parseFloatSafe(gm.RewardsMaxSpread),
+		Outcomes:              gm.Outcomes,
+		OutcomePrices:         gm.OutcomePrices,
+		MarketCreatedAt:       createdAt,
+		MarketUpdatedAt:       updatedAt,
+		EndDate:               endDate,
 	}
 }
 
@@ -91,12 +215,35 @@ func parseFloatSafe(v interface{}) float64 {
 	switch val := v.(type) {
 	case float64:
 		return val
+	case json.Number:
+		f, _ := val.Float64()
+		return f
 	case string:
 		f, _ := strconv.ParseFloat(val, 64)
 		return f
 	default:
 		return 0
 	}
+}
+
+func parseTimePtr(value string) *time.Time {
+	if value == "" {
+		return nil
+	}
+
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05Z07:00",
+		"2006-01-02",
+	}
+
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, value); err == nil {
+			return &t
+		}
+	}
+	return nil
 }
 
 // ParseTokenIDs parses the clobTokenIds JSON string
@@ -123,4 +270,3 @@ func ParseTokenIDs(jsonStr string) (string, string) {
 
 	return "", ""
 }
-

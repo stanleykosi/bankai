@@ -11,6 +11,10 @@
 package handlers
 
 import (
+	"bufio"
+	"context"
+	"fmt"
+
 	"github.com/bankai-project/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
 )
@@ -47,5 +51,40 @@ func (h *MarketHandler) GetFreshDrops(c *fiber.Ctx) error {
 		})
 	}
 	return c.JSON(markets)
+}
+
+// StreamPriceUpdates streams live price updates over SSE
+func (h *MarketHandler) StreamPriceUpdates(c *fiber.Ctx) error {
+	c.Set("Content-Type", "text/event-stream")
+	c.Set("Cache-Control", "no-cache")
+	c.Set("Connection", "keep-alive")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pubsub := h.Service.Redis.Subscribe(ctx, services.PriceUpdateChannel)
+	defer pubsub.Close()
+
+	ch := pubsub.Channel()
+
+	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
+		defer cancel()
+		for {
+			select {
+			case <-c.Context().Done():
+				return
+			case msg, ok := <-ch:
+				if !ok {
+					return
+				}
+				fmt.Fprintf(w, "data: %s\n\n", msg.Payload)
+				if err := w.Flush(); err != nil {
+					return
+				}
+			}
+		}
+	})
+
+	return nil
 }
 

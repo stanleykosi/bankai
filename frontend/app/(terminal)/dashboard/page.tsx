@@ -14,7 +14,7 @@
 
 import React from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, API_BASE_URL } from "@/lib/api";
 import { MarketTicker } from "@/components/terminal/MarketTicker";
 import { Market } from "@/types";
 import { Loader2 } from "lucide-react";
@@ -23,7 +23,6 @@ import { Loader2 } from "lucide-react";
 export const dynamic = 'force-dynamic';
 
 export default function DashboardPage() {
-  // Fetch functions defined inside component to ensure they're only called client-side
   const fetchFreshDrops = React.useCallback(async (): Promise<Market[]> => {
     try {
       const { data } = await api.get<Market[]>("/markets/fresh");
@@ -43,17 +42,95 @@ export default function DashboardPage() {
       return [];
     }
   }, []);
-  const { data: freshDrops, isLoading: isLoadingFresh } = useQuery({
+
+  type AssetPrice = {
+    condition_id: string;
+    price: number;
+    best_bid: number;
+    best_ask: number;
+    timestamp: string;
+  };
+
+  const [assetPrices, setAssetPrices] = React.useState<Record<string, AssetPrice>>({});
+
+  React.useEffect(() => {
+    const streamUrl = `${API_BASE_URL}/api/v1/markets/stream`;
+    const source = new EventSource(streamUrl);
+
+    source.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data) as {
+          condition_id: string;
+          asset_id: string;
+          price: number;
+          best_bid: number;
+          best_ask: number;
+          timestamp: string;
+        };
+
+        setAssetPrices((prev) => ({
+          ...prev,
+          [payload.asset_id]: {
+            condition_id: payload.condition_id,
+            price: payload.price,
+            best_bid: payload.best_bid,
+            best_ask: payload.best_ask,
+            timestamp: payload.timestamp,
+          },
+        }));
+      } catch (err) {
+        console.error("Failed to parse price update:", err);
+      }
+    };
+
+    source.onerror = () => {
+      console.warn("SSE connection lost, retrying...");
+    };
+
+    return () => {
+      source.close();
+    };
+  }, []);
+
+  const augmentMarket = React.useCallback(
+    (market: Market): Market => {
+      const yes = assetPrices[market.token_id_yes];
+      const no = assetPrices[market.token_id_no];
+
+      return {
+        ...market,
+        yes_price: yes?.price ?? market.yes_price,
+        yes_best_bid: yes?.best_bid ?? market.yes_best_bid,
+        yes_best_ask: yes?.best_ask ?? market.yes_best_ask,
+        no_price: no?.price ?? market.no_price,
+        no_best_bid: no?.best_bid ?? market.no_best_bid,
+        no_best_ask: no?.best_ask ?? market.no_best_ask,
+      };
+    },
+    [assetPrices]
+  );
+
+  const { data: freshDropsData, isLoading: isLoadingFresh } = useQuery({
     queryKey: ["markets", "fresh"],
     queryFn: fetchFreshDrops,
-    refetchInterval: 30000, // Poll every 30s for new drops
+    refetchInterval: 30000,
   });
 
-  const { data: activeMarkets, isLoading: isLoadingActive } = useQuery({
+  const { data: activeMarketsData, isLoading: isLoadingActive } = useQuery({
     queryKey: ["markets", "active"],
     queryFn: fetchActiveMarkets,
-    refetchInterval: 60000, // Poll every 60s for volume updates
+    refetchInterval: 60000,
   });
+
+  const hydratedFreshDrops = React.useMemo(
+    () => (freshDropsData || []).map(augmentMarket),
+    [freshDropsData, augmentMarket]
+  );
+
+  const hydratedActiveMarkets = React.useMemo(
+    () => (activeMarketsData || []).map(augmentMarket),
+    [activeMarketsData, augmentMarket]
+  );
 
   const isLoading = isLoadingFresh || isLoadingActive;
 
@@ -81,8 +158,8 @@ export default function DashboardPage() {
 
       {/* Market Ticker Component */}
       <MarketTicker 
-        freshDrops={freshDrops || []} 
-        activeMarkets={activeMarkets || []} 
+        freshDrops={hydratedFreshDrops} 
+        activeMarkets={hydratedActiveMarkets} 
       />
       
       {/* Additional Dashboard Widgets could go here (Whale Monitor, etc.) */}

@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/bankai-project/backend/internal/models"
+	"github.com/bankai-project/backend/internal/services"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
@@ -216,8 +217,12 @@ func (h *MessageHandler) handlePriceChange(ctx context.Context, m *PriceChangeMe
 		// For now, we skip DB insert here to prioritize ingestion speed.
 	}
 
-	_, err = pipe.Exec(ctx)
-	return err
+	if _, err = pipe.Exec(ctx); err != nil {
+		return err
+	}
+
+	h.publishPriceUpdates(ctx, m)
+	return nil
 }
 
 // handleBook processes the initial snapshot
@@ -274,4 +279,45 @@ func (h *MessageHandler) handleLastTrade(ctx context.Context, m *LastTradeMessag
 	// Increment 24h volume for the market
 	// Key: market:{id}:volume
 	return h.Redis.IncrByFloat(ctx, fmt.Sprintf("market:%s:volume", m.Market), volume).Err()
+}
+
+type priceUpdatePayload struct {
+	ConditionID string  `json:"condition_id"`
+	AssetID     string  `json:"asset_id"`
+	Price       float64 `json:"price"`
+	BestBid     float64 `json:"best_bid"`
+	BestAsk     float64 `json:"best_ask"`
+	Timestamp   string  `json:"timestamp"`
+}
+
+func (h *MessageHandler) publishPriceUpdates(ctx context.Context, m *PriceChangeMessage) {
+	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
+
+	for _, change := range m.PriceChanges {
+		payload := priceUpdatePayload{
+			ConditionID: m.Market,
+			AssetID:     change.AssetID,
+			Price:       parseFloat(change.Price),
+			BestBid:     parseFloat(change.BestBid),
+			BestAsk:     parseFloat(change.BestAsk),
+			Timestamp:   timestamp,
+		}
+
+		data, err := json.Marshal(payload)
+		if err != nil {
+			continue
+		}
+
+		if err := h.Redis.Publish(ctx, services.PriceUpdateChannel, data).Err(); err != nil {
+			log.Printf("Redis publish error: %v", err)
+		}
+	}
+}
+
+func parseFloat(value string) float64 {
+	f, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0
+	}
+	return f
 }

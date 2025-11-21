@@ -35,6 +35,39 @@ interface MarketLaneProps {
   colorClass: string; // e.g., "text-constructive"
 }
 
+const compactCurrencyFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+
+const preciseCurrencyFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 2,
+});
+
+const formatCurrency = (value?: number) => {
+  if (!Number.isFinite(value ?? NaN) || !value) {
+    return "$0.00";
+  }
+  if (Math.abs(value) >= 1000) {
+    return compactCurrencyFormatter.format(value);
+  }
+  if (Math.abs(value) >= 1) {
+    return preciseCurrencyFormatter.format(value);
+  }
+  return `$${value.toFixed(4)}`;
+};
+
+const formatProbability = (value?: number) => {
+  if (!Number.isFinite(value ?? NaN) || value === undefined) {
+    return "--";
+  }
+  return `${(value * 100).toFixed(1)}%`;
+};
+
 const MarketCard = ({ market }: { market: Market }) => {
   const router = useRouter();
 
@@ -53,20 +86,50 @@ const MarketCard = ({ market }: { market: Market }) => {
         <ArrowUpRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
       </div>
       
-      <div className="flex items-center justify-between text-xs font-mono text-muted-foreground mt-2">
-        <div className="flex items-center gap-2">
-          {market.volume_24h > 1000 ? (
-             <span className="flex items-center text-accent">
-               <TrendingUp className="h-3 w-3 mr-1" />
-               ${(market.volume_24h / 1000).toFixed(1)}k
-             </span>
-          ) : (
-             <span>Vol: ${market.volume_24h.toFixed(0)}</span>
-          )}
+      <div className="mt-3 grid grid-cols-2 gap-3 text-[11px] font-mono text-muted-foreground">
+        <div className="rounded-md border border-border/60 bg-background/50 p-2">
+          <div className="flex items-center justify-between text-[10px] uppercase tracking-wide opacity-70">
+            <span>YES</span>
+            <span className="text-[9px] text-muted-foreground/80">Last</span>
+          </div>
+          <div className="text-sm font-semibold text-constructive">
+            {formatProbability(market.yes_price)}
+          </div>
+          <div className="mt-1 text-[10px] flex justify-between opacity-70">
+            <span>Bid {formatProbability(market.yes_best_bid)}</span>
+            <span>Ask {formatProbability(market.yes_best_ask)}</span>
+          </div>
         </div>
-        <div className="text-[10px] opacity-70">
-          {new Date(market.created_at).toLocaleDateString()}
+        <div className="rounded-md border border-border/60 bg-background/50 p-2">
+          <div className="flex items-center justify-between text-[10px] uppercase tracking-wide opacity-70">
+            <span>NO</span>
+            <span className="text-[9px] text-muted-foreground/80">Last</span>
+          </div>
+          <div className="text-sm font-semibold text-destructive">
+            {formatProbability(market.no_price)}
+          </div>
+          <div className="mt-1 text-[10px] flex justify-between opacity-70">
+            <span>Bid {formatProbability(market.no_best_bid)}</span>
+            <span>Ask {formatProbability(market.no_best_ask)}</span>
+          </div>
         </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-mono text-muted-foreground">
+        <div className="flex flex-col gap-1">
+          <span className="text-[10px] uppercase tracking-wide opacity-70">Total Volume</span>
+          <span className="text-xs text-primary flex items-center gap-1">
+            <TrendingUp className="h-3 w-3" />
+            {formatCurrency(market.volume_all_time ?? market.volume_24h)}
+          </span>
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <span className="text-[10px] uppercase tracking-wide opacity-70">Total Liquidity</span>
+          <span className="text-xs text-constructive">{formatCurrency(market.liquidity)}</span>
+        </div>
+      </div>
+      <div className="mt-2 text-right text-[10px] font-mono text-muted-foreground/70">
+        {new Date(market.created_at).toLocaleDateString()}
       </div>
     </motion.div>
   );

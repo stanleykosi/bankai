@@ -39,12 +39,15 @@ CREATE INDEX idx_users_eoa_address ON users(eoa_address);
 -- Stores metadata about Polymarket events
 CREATE TABLE IF NOT EXISTS markets (
     condition_id VARCHAR(66) PRIMARY KEY, -- The unique Condition ID from CTF
+    gamma_market_id VARCHAR(255),
     question_id VARCHAR(66),              -- UMA Question ID
     slug VARCHAR(255) NOT NULL,
     
     title TEXT NOT NULL,
     description TEXT,
     resolution_rules TEXT,
+    image_url TEXT,
+    icon_url TEXT,
     
     -- Categorization for AI/Discovery
     category VARCHAR(100),
@@ -54,16 +57,80 @@ CREATE TABLE IF NOT EXISTS markets (
     active BOOLEAN DEFAULT TRUE,
     closed BOOLEAN DEFAULT FALSE,
     archived BOOLEAN DEFAULT FALSE,
+    featured BOOLEAN DEFAULT FALSE,
+    is_new BOOLEAN DEFAULT FALSE,
+    restricted BOOLEAN DEFAULT FALSE,
+    enable_order_book BOOLEAN DEFAULT FALSE,
     
     -- CLOB specific
     token_id_yes VARCHAR(255),
     token_id_no VARCHAR(255),
+    market_maker_address TEXT,
     
-    -- Metrics for sorting (Updated via Worker)
-    volume_24h DECIMAL,
-    liquidity DECIMAL,
-    
+    -- Date metadata
+    start_date TIMESTAMPTZ,
     end_date TIMESTAMPTZ,
+    event_start_time TIMESTAMPTZ,
+    accepting_orders BOOLEAN DEFAULT FALSE,
+    accepting_orders_at TIMESTAMPTZ,
+    ready BOOLEAN DEFAULT FALSE,
+    funded BOOLEAN DEFAULT FALSE,
+    pending_deployment BOOLEAN DEFAULT FALSE,
+    deploying BOOLEAN DEFAULT FALSE,
+    rfq_enabled BOOLEAN DEFAULT FALSE,
+    holding_rewards_enabled BOOLEAN DEFAULT FALSE,
+    fees_enabled BOOLEAN DEFAULT FALSE,
+    neg_risk BOOLEAN DEFAULT FALSE,
+    neg_risk_other BOOLEAN DEFAULT FALSE,
+    automatically_active BOOLEAN DEFAULT FALSE,
+    manual_activation BOOLEAN DEFAULT FALSE,
+    
+    -- Volume metrics
+    volume_all_time DECIMAL,
+    volume_24h DECIMAL,
+    volume_24h_amm DECIMAL,
+    volume_24h_clob DECIMAL,
+    volume_1w DECIMAL,
+    volume_1w_amm DECIMAL,
+    volume_1w_clob DECIMAL,
+    volume_1m DECIMAL,
+    volume_1m_amm DECIMAL,
+    volume_1m_clob DECIMAL,
+    volume_1y DECIMAL,
+    volume_1y_amm DECIMAL,
+    volume_1y_clob DECIMAL,
+    volume_amm DECIMAL,
+    volume_clob DECIMAL,
+    volume_num DECIMAL,
+    
+    -- Liquidity metrics
+    liquidity DECIMAL,
+    liquidity_num DECIMAL,
+    liquidity_clob DECIMAL,
+    liquidity_amm DECIMAL,
+    
+    -- Orderbook / pricing
+    order_min_size DECIMAL,
+    order_price_min_tick DECIMAL,
+    best_bid DECIMAL,
+    best_ask DECIMAL,
+    spread DECIMAL,
+    last_trade_price DECIMAL,
+    one_hour_price_change DECIMAL,
+    one_day_price_change DECIMAL,
+    one_week_price_change DECIMAL,
+    one_month_price_change DECIMAL,
+    one_year_price_change DECIMAL,
+    
+    competitive DECIMAL,
+    rewards_min_size DECIMAL,
+    rewards_max_spread DECIMAL,
+    
+    outcomes TEXT,
+    outcome_prices TEXT,
+    market_created_at TIMESTAMPTZ,
+    market_updated_at TIMESTAMPTZ,
+    
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 

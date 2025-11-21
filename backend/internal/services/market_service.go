@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
 	"github.com/bankai-project/backend/internal/models"
@@ -31,6 +32,8 @@ const (
 	CacheKeyActiveMarkets = "markets:active"
 	CacheKeyFreshDrops    = "markets:fresh"
 	CacheTTL              = 5 * time.Minute
+
+	PriceUpdateChannel = "market:price_updates"
 )
 
 type MarketService struct {
@@ -141,6 +144,7 @@ func (s *MarketService) GetActiveMarkets(ctx context.Context) ([]models.Market, 
 	if err == nil {
 		var markets []models.Market
 		if err := json.Unmarshal([]byte(val), &markets); err == nil {
+			s.attachRealtimePrices(ctx, markets)
 			return markets, nil
 		}
 		// If unmarshal fails, fall through to DB
@@ -151,6 +155,8 @@ func (s *MarketService) GetActiveMarkets(ctx context.Context) ([]models.Market, 
 	if err := s.DB.Where("active = ?", true).Order("volume_24h DESC").Limit(50).Find(&markets).Error; err != nil {
 		return nil, err
 	}
+
+	s.attachRealtimePrices(ctx, markets)
 
 	return markets, nil
 }
@@ -241,6 +247,7 @@ func (s *MarketService) GetFreshDrops(ctx context.Context) ([]models.Market, err
 	if err == nil {
 		var markets []models.Market
 		if err := json.Unmarshal([]byte(val), &markets); err == nil {
+			s.attachRealtimePrices(ctx, markets)
 			return markets, nil
 		}
 		// If unmarshal fails, fall through to DB
@@ -252,6 +259,97 @@ func (s *MarketService) GetFreshDrops(ctx context.Context) ([]models.Market, err
 		return nil, err
 	}
 
+	s.attachRealtimePrices(ctx, markets)
+
 	return markets, nil
+}
+
+func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []models.Market) {
+	if len(markets) == 0 {
+		return
+	}
+
+	type keyMeta struct {
+		index int
+		side  string
+	}
+
+	pipe := s.Redis.Pipeline()
+	cmdMeta := make(map[*redis.StringStringMapCmd]keyMeta)
+
+	for idx, market := range markets {
+		if market.TokenIDYes != "" {
+			cmd := pipe.HGetAll(ctx, priceRedisKey(market.ConditionID, market.TokenIDYes))
+			cmdMeta[cmd] = keyMeta{index: idx, side: "yes"}
+		}
+		if market.TokenIDNo != "" {
+			cmd := pipe.HGetAll(ctx, priceRedisKey(market.ConditionID, market.TokenIDNo))
+			cmdMeta[cmd] = keyMeta{index: idx, side: "no"}
+		}
+	}
+
+	if len(cmdMeta) == 0 {
+		return
+	}
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		log.Printf("attachRealtimePrices pipeline error: %v", err)
+	}
+
+	for cmd, meta := range cmdMeta {
+		result, err := cmd.Result()
+		if err != nil || len(result) == 0 {
+			continue
+		}
+
+		price := parseStringFloat(result["price"])
+		bestBid := parseStringFloat(result["best_bid"])
+		bestAsk := parseStringFloat(result["best_ask"])
+		ts := parseUnixTimestamp(result["updated"])
+
+		if meta.side == "yes" {
+			markets[meta.index].YesPrice = price
+			markets[meta.index].YesBestBid = bestBid
+			markets[meta.index].YesBestAsk = bestAsk
+			markets[meta.index].YesPriceUpdated = ts
+		} else {
+			markets[meta.index].NoPrice = price
+			markets[meta.index].NoBestBid = bestBid
+			markets[meta.index].NoBestAsk = bestAsk
+			markets[meta.index].NoPriceUpdated = ts
+		}
+	}
+}
+
+func priceRedisKey(conditionID, tokenID string) string {
+	return fmt.Sprintf("price:%s:%s", conditionID, tokenID)
+}
+
+func parseStringFloat(value string) float64 {
+	if value == "" {
+		return 0
+	}
+	f, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0
+	}
+	return f
+}
+
+func parseUnixTimestamp(value string) *time.Time {
+	if value == "" {
+		return nil
+	}
+
+	if ts, err := strconv.ParseInt(value, 10, 64); err == nil {
+		t := time.Unix(0, ts*int64(time.Millisecond))
+		return &t
+	}
+
+	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return &t
+	}
+
+	return nil
 }
 
