@@ -4,16 +4,25 @@
  * Provides the main structure for the trading interface, including Navigation.
  */
 
+"use client";
+
 import React from "react";
 import Link from "next/link";
-import { UserButton } from "@clerk/nextjs";
+import { UserButton, useAuth } from "@clerk/nextjs";
 import { Activity, BarChart2, LayoutDashboard, Wallet } from "lucide-react";
+
+// Force dynamic rendering
+export const dynamic = 'force-dynamic';
 
 export default function TerminalLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  // Only use Clerk hooks if Clerk is available (client-side only)
+  // useAuth is safe to call even if ClerkProvider is not present, it will return default values
+  const { isLoaded } = useAuth();
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* Top Navigation Bar */}
@@ -51,14 +60,16 @@ export default function TerminalLayout({
             </nav>
           </div>
           <div className="flex flex-1 items-center justify-end space-x-2">
-            <UserButton 
-              afterSignOutUrl="/"
-              appearance={{
-                elements: {
-                  avatarBox: "h-8 w-8"
-                }
-              }}
-            />
+            {isLoaded && (
+              <UserButton 
+                afterSignOutUrl="/"
+                appearance={{
+                  elements: {
+                    avatarBox: "h-8 w-8"
+                  }
+                }}
+              />
+            )}
           </div>
         </div>
       </header>

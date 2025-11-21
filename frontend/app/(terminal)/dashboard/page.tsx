@@ -19,18 +19,30 @@ import { MarketTicker } from "@/components/terminal/MarketTicker";
 import { Market } from "@/types";
 import { Loader2 } from "lucide-react";
 
-// Fetch functions
-const fetchFreshDrops = async (): Promise<Market[]> => {
-  const { data } = await api.get<Market[]>("/markets/fresh");
-  return data;
-};
-
-const fetchActiveMarkets = async (): Promise<Market[]> => {
-  const { data } = await api.get<Market[]>("/markets/active");
-  return data;
-};
+// Force dynamic rendering to prevent static generation
+export const dynamic = 'force-dynamic';
 
 export default function DashboardPage() {
+  // Fetch functions defined inside component to ensure they're only called client-side
+  const fetchFreshDrops = React.useCallback(async (): Promise<Market[]> => {
+    try {
+      const { data } = await api.get<Market[]>("/markets/fresh");
+      return data || [];
+    } catch (error) {
+      console.error("Failed to fetch fresh drops:", error);
+      return [];
+    }
+  }, []);
+
+  const fetchActiveMarkets = React.useCallback(async (): Promise<Market[]> => {
+    try {
+      const { data } = await api.get<Market[]>("/markets/active");
+      return data || [];
+    } catch (error) {
+      console.error("Failed to fetch active markets:", error);
+      return [];
+    }
+  }, []);
   const { data: freshDrops, isLoading: isLoadingFresh } = useQuery({
     queryKey: ["markets", "fresh"],
     queryFn: fetchFreshDrops,
