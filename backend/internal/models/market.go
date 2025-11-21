@@ -12,8 +12,9 @@ package models
 
 import (
 	"database/sql/driver"
-	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -28,20 +29,70 @@ func (a *StringArray) Scan(src interface{}) error {
 	}
 	switch v := src.(type) {
 	case []byte:
-		return json.Unmarshal(v, a)
+		// PostgreSQL returns arrays as strings like "{value1,value2,value3}"
+		return a.parsePostgresArray(string(v))
 	case string:
-		return json.Unmarshal([]byte(v), a)
+		return a.parsePostgresArray(v)
 	default:
 		return errors.New("type assertion failed for StringArray")
 	}
 }
 
-// Value implements the driver.Valuer interface
-func (a StringArray) Value() (driver.Value, error) {
-	if a == nil {
-		return nil, nil
+// parsePostgresArray parses PostgreSQL array format: {value1,value2,value3}
+func (a *StringArray) parsePostgresArray(s string) error {
+	if s == "{}" || s == "" {
+		*a = []string{}
+		return nil
 	}
-	return json.Marshal(a)
+	
+	// Remove curly braces
+	s = strings.TrimPrefix(s, "{")
+	s = strings.TrimSuffix(s, "}")
+	
+	if s == "" {
+		*a = []string{}
+		return nil
+	}
+	
+	// Split by comma, handling quoted values
+	// Simple approach: split by comma (works for most cases)
+	// For production, might need more sophisticated parsing for quoted values with commas
+	parts := strings.Split(s, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		// Remove quotes if present
+		if len(part) >= 2 && part[0] == '"' && part[len(part)-1] == '"' {
+			part = part[1 : len(part)-1]
+		}
+		result = append(result, part)
+	}
+	*a = result
+	return nil
+}
+
+// Value implements the driver.Valuer interface
+// Returns PostgreSQL array format: {value1,value2,value3}
+func (a StringArray) Value() (driver.Value, error) {
+	if a == nil || len(a) == 0 {
+		return "{}", nil
+	}
+	
+	// Format as PostgreSQL array: {value1,value2,value3}
+	// Escape and quote values that contain special characters
+	quoted := make([]string, len(a))
+	for i, v := range a {
+		// Quote values that contain commas, quotes, backslashes, or spaces
+		if strings.ContainsAny(v, `,"\{} `) {
+			// Escape backslashes and quotes
+			escaped := strings.ReplaceAll(v, `\`, `\\`)
+			escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+			quoted[i] = fmt.Sprintf(`"%s"`, escaped)
+		} else {
+			quoted[i] = v
+		}
+	}
+	return fmt.Sprintf("{%s}", strings.Join(quoted, ",")), nil
 }
 
 // Market represents a Polymarket market (contract)
