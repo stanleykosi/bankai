@@ -43,11 +43,17 @@ const fetchFreshDrops = async (): Promise<Market[]> => {
 
 const fetchActiveMarkets = async (params: ActiveMarketParams = {}): Promise<Market[]> => {
   try {
+    const requestParams: ActiveMarketParams = {
+      ...params,
+      limit: params.limit ?? 200,
+    };
+
+    if (requestParams.sort === "all") {
+      delete requestParams.sort;
+    }
+
     const { data } = await api.get<Market[]>("/markets/active", {
-      params: {
-        limit: params.limit ?? 200,
-        ...params,
-      },
+      params: requestParams,
     });
     return data || [];
   } catch (error) {
@@ -58,7 +64,7 @@ const fetchActiveMarkets = async (params: ActiveMarketParams = {}): Promise<Mark
 
 export default function DashboardPage() {
   const [filters, setFilters] = React.useState<ActiveMarketParams>({
-    sort: "volume",
+    sort: "all",
     limit: 200,
   });
 
@@ -71,7 +77,7 @@ export default function DashboardPage() {
   }, []);
 
   const resetFilters = React.useCallback(() => {
-    setFilters({ sort: "volume", limit: 200 });
+    setFilters({ sort: "all", limit: 200 });
   }, []);
 
   type AssetPrice = {
@@ -160,7 +166,7 @@ export default function DashboardPage() {
 
   const { data: masterActiveData } = useQuery({
     queryKey: ["markets", "active", "master"],
-    queryFn: () => fetchActiveMarkets({ limit: 500, sort: "volume" }),
+    queryFn: () => fetchActiveMarkets({ limit: 500, sort: "all" }),
     staleTime: 5 * 60 * 1000,
   });
 
@@ -255,7 +261,7 @@ export default function DashboardPage() {
         tags={tags}
         selectedCategory={filters.category}
         selectedTag={filters.tag}
-        sort={(filters.sort as SortOption) || "volume"}
+        sort={(filters.sort as SortOption) || "all"}
         onChange={handleFilterChange}
         onReset={resetFilters}
       />

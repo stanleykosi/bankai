@@ -379,8 +379,10 @@ func (s *MarketService) QueryActiveMarkets(ctx context.Context, params QueryActi
 		query = query.Order("liquidity DESC")
 	case "created":
 		query = query.Order("created_at DESC")
-	default:
+	case "volume":
 		query = query.Order("volume_24h DESC")
+	default:
+		query = query.Order("created_at DESC")
 	}
 
 	limit := params.Limit
