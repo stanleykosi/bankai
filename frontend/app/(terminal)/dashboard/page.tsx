@@ -10,37 +10,68 @@
  * - frontend/components/terminal/MarketTicker
  */
 
-"use client";
+'use client';
 
 import React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, API_BASE_URL } from "@/lib/api";
 import { MarketTicker } from "@/components/terminal/MarketTicker";
+import { MarketFilters } from "@/components/terminal/MarketFilters";
+import type { SortOption } from "@/components/terminal/MarketFilters";
 import { Market } from "@/types";
 import { Loader2 } from "lucide-react";
 
-// Force dynamic rendering to prevent static generation
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
+
+type ActiveMarketParams = Partial<{
+  category: string;
+  tag: string;
+  sort: SortOption;
+  limit: number;
+  offset: number;
+}>;
+
+const fetchFreshDrops = async (): Promise<Market[]> => {
+  try {
+    const { data } = await api.get<Market[]>("/markets/fresh");
+    return data || [];
+  } catch (error) {
+    console.error("Failed to fetch fresh drops:", error);
+    return [];
+  }
+};
+
+const fetchActiveMarkets = async (params: ActiveMarketParams = {}): Promise<Market[]> => {
+  try {
+    const { data } = await api.get<Market[]>("/markets/active", {
+      params: {
+        limit: params.limit ?? 200,
+        ...params,
+      },
+    });
+    return data || [];
+  } catch (error) {
+    console.error("Failed to fetch active markets:", error);
+    return [];
+  }
+};
 
 export default function DashboardPage() {
-  const fetchFreshDrops = React.useCallback(async (): Promise<Market[]> => {
-    try {
-      const { data } = await api.get<Market[]>("/markets/fresh");
-      return data || [];
-    } catch (error) {
-      console.error("Failed to fetch fresh drops:", error);
-      return [];
-    }
+  const [filters, setFilters] = React.useState<ActiveMarketParams>({
+    sort: "volume",
+    limit: 200,
+  });
+
+  const handleFilterChange = React.useCallback((update: ActiveMarketParams) => {
+    setFilters((prev) => ({
+      ...prev,
+      ...update,
+      offset: 0,
+    }));
   }, []);
 
-  const fetchActiveMarkets = React.useCallback(async (): Promise<Market[]> => {
-    try {
-      const { data } = await api.get<Market[]>("/markets/active");
-      return data || [];
-    } catch (error) {
-      console.error("Failed to fetch active markets:", error);
-      return [];
-    }
+  const resetFilters = React.useCallback(() => {
+    setFilters({ sort: "volume", limit: 200 });
   }, []);
 
   type AssetPrice = {
@@ -110,6 +141,11 @@ export default function DashboardPage() {
     [assetPrices]
   );
 
+  const hydrateMarkets = React.useCallback(
+    (markets?: Market[]) => (markets || []).map(augmentMarket),
+    [augmentMarket]
+  );
+
   const { data: freshDropsData, isLoading: isLoadingFresh } = useQuery({
     queryKey: ["markets", "fresh"],
     queryFn: fetchFreshDrops,
@@ -117,19 +153,47 @@ export default function DashboardPage() {
   });
 
   const { data: activeMarketsData, isLoading: isLoadingActive } = useQuery({
-    queryKey: ["markets", "active"],
-    queryFn: fetchActiveMarkets,
+    queryKey: ["markets", "active", filters],
+    queryFn: () => fetchActiveMarkets(filters),
     refetchInterval: 60000,
   });
 
-  const hydratedFreshDrops = React.useMemo(
-    () => (freshDropsData || []).map(augmentMarket),
-    [freshDropsData, augmentMarket]
-  );
+  const { data: masterActiveData } = useQuery({
+    queryKey: ["markets", "active", "master"],
+    queryFn: () => fetchActiveMarkets({ limit: 500, sort: "volume" }),
+    staleTime: 5 * 60 * 1000,
+  });
 
+  const categories = React.useMemo(() => {
+    if (!masterActiveData) return [];
+    const counts = new Map<string, number>();
+    masterActiveData.forEach((market) => {
+      if (!market.category) return;
+      counts.set(market.category, (counts.get(market.category) || 0) + 1);
+    });
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([value, count]) => ({ value, label: value, count }));
+  }, [masterActiveData]);
+
+  const tags = React.useMemo(() => {
+    if (!masterActiveData) return [];
+    const counts = new Map<string, number>();
+    masterActiveData.forEach((market) => {
+      market.tags?.forEach((tag) => {
+        counts.set(tag, (counts.get(tag) || 0) + 1);
+      });
+    });
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 75)
+      .map(([value, count]) => ({ value, label: value, count }));
+  }, [masterActiveData]);
+
+  const hydratedFreshDrops = React.useMemo(() => hydrateMarkets(freshDropsData), [freshDropsData, hydrateMarkets]);
   const hydratedActiveMarkets = React.useMemo(
-    () => (activeMarketsData || []).map(augmentMarket),
-    [activeMarketsData, augmentMarket]
+    () => hydrateMarkets(activeMarketsData),
+    [activeMarketsData, hydrateMarkets]
   );
 
   const isLoading = isLoadingFresh || isLoadingActive;
@@ -156,13 +220,19 @@ export default function DashboardPage() {
         </p>
       </div>
 
-      {/* Market Ticker Component */}
-      <MarketTicker 
-        freshDrops={hydratedFreshDrops} 
-        activeMarkets={hydratedActiveMarkets} 
+      <MarketFilters
+        categories={categories}
+        tags={tags}
+        selectedCategory={filters.category}
+        selectedTag={filters.tag}
+        sort={(filters.sort as SortOption) || "volume"}
+        onChange={handleFilterChange}
+        onReset={resetFilters}
       />
-      
-      {/* Additional Dashboard Widgets could go here (Whale Monitor, etc.) */}
+
+      <MarketTicker freshDrops={hydratedFreshDrops} activeMarkets={hydratedActiveMarkets} />
+
+      {/* Additional widgets in future */}
     </div>
   );
 }
