@@ -136,6 +136,14 @@ func (gm *GammaMarket) ToDBModel() *models.Market {
 	vol := parseFloatSafe(gm.Volume)
 	liq := parseFloatSafe(gm.Liquidity)
 
+	resolutionRules := gm.Description
+	switch {
+	case resolutionRules == "" && gm.ResolutionSource != "":
+		resolutionRules = gm.ResolutionSource
+	case resolutionRules != "" && gm.ResolutionSource != "":
+		resolutionRules = resolutionRules + "\n\nSource: " + gm.ResolutionSource
+	}
+
 	return &models.Market{
 		ConditionID:           gm.ConditionID,
 		GammaMarketID:         gm.ID,
@@ -143,7 +151,7 @@ func (gm *GammaMarket) ToDBModel() *models.Market {
 		Slug:                  gm.Slug,
 		Title:                 gm.Question, // Market question is usually the title
 		Description:           gm.Description,
-		ResolutionRules:       gm.ResolutionSource, // Using source as rules proxy for now
+		ResolutionRules:       resolutionRules,
 		ImageURL:              gm.Image,
 		IconURL:               gm.Icon,
 		StartDate:             startDate,

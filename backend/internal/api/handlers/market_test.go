@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -35,9 +34,6 @@ func TestStreamPriceUpdates(t *testing.T) {
 	app := fiber.New()
 	app.Get("/api/v1/markets/stream", handler.StreamPriceUpdates)
 
-	srv := httptest.NewServer(app.Handler())
-	defer srv.Close()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -47,12 +43,12 @@ func TestStreamPriceUpdates(t *testing.T) {
 		_ = redisClient.Publish(context.Background(), services.PriceUpdateChannel, payload).Err()
 	}()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/v1/markets/stream", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/markets/stream", nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := app.Test(req, -1)
 	if err != nil {
 		t.Fatalf("failed to call SSE endpoint: %v", err)
 	}

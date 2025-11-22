@@ -18,11 +18,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"strconv"
 	"time"
 
 	"github.com/bankai-project/backend/internal/models"
 	"github.com/bankai-project/backend/internal/polymarket/gamma"
+	"github.com/jackc/pgconn"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -34,6 +36,8 @@ const (
 	CacheTTL              = 5 * time.Minute
 
 	PriceUpdateChannel = "market:price_updates"
+
+	marketSyncLockKey = 42
 )
 
 type MarketService struct {
@@ -54,18 +58,21 @@ func NewMarketService(db *gorm.DB, redis *redis.Client, gammaClient *gamma.Clien
 func (s *MarketService) SyncActiveMarkets(ctx context.Context) error {
 	active := true
 	closed := false
+	desc := false
 	limit := 100
 	offset := 0
 
 	var allMarkets []models.Market
+	dedup := make(map[string]models.Market)
 
 	for {
 		events, err := s.GammaClient.GetEvents(ctx, gamma.GetEventsParams{
-			Limit:  limit,
-			Offset: offset,
-			Active: &active,
-			Closed: &closed,
-			Order:  "volume",
+			Limit:     limit,
+			Offset:    offset,
+			Active:    &active,
+			Closed:    &closed,
+			Order:     "id",
+			Ascending: &desc,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to fetch events from gamma: %w", err)
@@ -91,7 +98,12 @@ func (s *MarketService) SyncActiveMarkets(ctx context.Context) error {
 				market.TokenIDYes = yes
 				market.TokenIDNo = no
 
-				allMarkets = append(allMarkets, *market)
+				if market.ConditionID == "" {
+					continue
+				}
+
+				// Keep latest version if Gamma re-sends the same condition_id within a page
+				dedup[market.ConditionID] = *market
 			}
 		}
 
@@ -101,28 +113,53 @@ func (s *MarketService) SyncActiveMarkets(ctx context.Context) error {
 		offset += limit
 	}
 
-	if len(allMarkets) == 0 {
+	if len(dedup) == 0 {
 		return nil
 	}
 
-	err := s.DB.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "condition_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{
-			"volume_24h",
-			"liquidity",
-			"active",
-			"closed",
-			"archived",
-			"title",
-			"description",
-			"resolution_rules",
-			"category",
-			"tags",
-			"token_id_yes",
-			"token_id_no",
-			"end_date",
-		}),
-	}).CreateInBatches(allMarkets, 100).Error
+	allMarkets = allMarkets[:0]
+	for _, market := range dedup {
+		allMarkets = append(allMarkets, market)
+	}
+
+	unlock, lockErr := s.acquireMarketSyncLock(ctx)
+	if lockErr != nil {
+		return fmt.Errorf("failed to acquire market sync lock: %w", lockErr)
+	}
+	defer unlock()
+
+	const maxRetries = 5
+	var err error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		err = s.DB.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "condition_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"volume_24h",
+				"liquidity",
+				"active",
+				"closed",
+				"archived",
+				"title",
+				"description",
+				"resolution_rules",
+				"category",
+				"tags",
+				"token_id_yes",
+				"token_id_no",
+				"end_date",
+			}),
+		}).CreateInBatches(allMarkets, 100).Error
+		if err == nil {
+			break
+		}
+
+		if pgErr, ok := err.(*pgconn.PgError); ok && (pgErr.Code == "40P01" || pgErr.Code == "40001") {
+			backoff := time.Duration(attempt*100+rand.Intn(100)) * time.Millisecond
+			time.Sleep(backoff)
+			continue
+		}
+		break
+	}
 	if err != nil {
 		return fmt.Errorf("failed to upsert markets to db: %w", err)
 	}
@@ -320,6 +357,42 @@ func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []mode
 			markets[meta.index].NoBestAsk = bestAsk
 			markets[meta.index].NoPriceUpdated = ts
 		}
+	}
+}
+
+func (s *MarketService) acquireMarketSyncLock(ctx context.Context) (func(), error) {
+	const maxAttempts = 30
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		var locked bool
+		err := s.DB.WithContext(ctx).Raw("SELECT pg_try_advisory_lock(?)", marketSyncLockKey).Scan(&locked).Error
+		if err != nil {
+			return nil, err
+		}
+		if locked {
+			return func() {
+				if err := s.DB.WithContext(ctx).Exec("SELECT pg_advisory_unlock(?)", marketSyncLockKey).Error; err != nil {
+					log.Printf("failed to release market sync lock: %v", err)
+				}
+			}, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		backoff := time.Duration(100+rand.Intn(150)) * time.Millisecond
+		time.Sleep(backoff)
+	}
+
+	return nil, fmt.Errorf("timeout acquiring market sync lock")
+}
+
+func (s *MarketService) releaseMarketSyncLock(ctx context.Context) {
+	if err := s.DB.WithContext(ctx).Exec("SELECT pg_advisory_unlock(?)", marketSyncLockKey).Error; err != nil {
+		log.Printf("failed to release market sync lock: %v", err)
 	}
 }
 
