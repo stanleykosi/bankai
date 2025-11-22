@@ -26,9 +26,7 @@ func TestStreamPriceUpdates(t *testing.T) {
 	})
 	defer redisClient.Close()
 
-	service := &services.MarketService{
-		Redis: redisClient,
-	}
+	service := services.NewMarketService(nil, redisClient, nil)
 
 	handler := NewMarketHandler(service)
 	app := fiber.New()

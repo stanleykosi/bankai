@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"sort"
 	"strconv"
 	"time"
 
@@ -38,12 +39,37 @@ const (
 	PriceUpdateChannel = "market:price_updates"
 
 	marketSyncLockKey = 42
+	lanePoolCap       = 2000
 )
 
 type MarketService struct {
 	DB          *gorm.DB
 	Redis       *redis.Client
 	GammaClient *gamma.Client
+	streamHub   *PriceStreamHub
+}
+
+type MarketMeta struct {
+	Total      int         `json:"total"`
+	Categories []MetaEntry `json:"categories"`
+	Tags       []MetaEntry `json:"tags"`
+}
+
+type MetaEntry struct {
+	Value string `json:"value"`
+	Count int    `json:"count"`
+}
+
+type MarketLanes struct {
+	FreshDrops    []models.Market `json:"fresh"`
+	HighVelocity  []models.Market `json:"high_velocity"`
+	DeepLiquidity []models.Market `json:"deep_liquidity"`
+}
+
+type MarketLaneParams struct {
+	Category string
+	Tag      string
+	PoolSort string
 }
 
 func NewMarketService(db *gorm.DB, redis *redis.Client, gammaClient *gamma.Client) *MarketService {
@@ -51,7 +77,12 @@ func NewMarketService(db *gorm.DB, redis *redis.Client, gammaClient *gamma.Clien
 		DB:          db,
 		Redis:       redis,
 		GammaClient: gammaClient,
+		streamHub:   NewPriceStreamHub(redis, PriceUpdateChannel),
 	}
+}
+
+func (s *MarketService) StreamHub() *PriceStreamHub {
+	return s.streamHub
 }
 
 // SyncActiveMarkets fetches top active markets from Gamma and updates DB + Cache
@@ -176,28 +207,64 @@ func (s *MarketService) SyncActiveMarkets(ctx context.Context) error {
 	return nil
 }
 
-// GetActiveMarkets returns active markets, preferring Cache -> DB
-func (s *MarketService) GetActiveMarkets(ctx context.Context) ([]models.Market, error) {
-	// 1. Try Redis
+func (s *MarketService) loadAllActiveMarkets(ctx context.Context) ([]models.Market, error) {
 	val, err := s.Redis.Get(ctx, CacheKeyActiveMarkets).Result()
 	if err == nil {
 		var markets []models.Market
 		if err := json.Unmarshal([]byte(val), &markets); err == nil {
-			s.attachRealtimePrices(ctx, markets)
 			return markets, nil
 		}
-		// If unmarshal fails, fall through to DB
 	}
 
-	// 2. Fallback to DB
 	var markets []models.Market
-	if err := s.DB.Where("active = ?", true).Order("volume_24h DESC").Limit(50).Find(&markets).Error; err != nil {
+	if err := s.DB.WithContext(ctx).Where("active = ?", true).Order("created_at DESC").Find(&markets).Error; err != nil {
 		return nil, err
 	}
 
-	s.attachRealtimePrices(ctx, markets)
+	if data, err := json.Marshal(markets); err == nil {
+		_ = s.Redis.Set(ctx, CacheKeyActiveMarkets, data, CacheTTL).Err()
+	}
 
 	return markets, nil
+}
+
+// GetActiveMarkets returns the full active market snapshot (without pagination).
+func (s *MarketService) GetActiveMarkets(ctx context.Context) ([]models.Market, error) {
+	return s.loadAllActiveMarkets(ctx)
+}
+
+// GetActiveMarketsPaged returns a slice of the cached snapshot plus the total count.
+func (s *MarketService) GetActiveMarketsPaged(ctx context.Context, limit, offset int) ([]models.Market, int, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	markets, err := s.loadAllActiveMarkets(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	total := len(markets)
+	if offset >= total {
+		return []models.Market{}, total, nil
+	}
+
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+
+	page := make([]models.Market, end-offset)
+	copy(page, markets[offset:end])
+
+	s.attachRealtimePrices(ctx, page)
+	return page, total, nil
 }
 
 // SyncFreshDrops fetches newest markets
@@ -426,6 +493,161 @@ func parseUnixTimestamp(value string) *time.Time {
 	}
 
 	return nil
+}
+
+func (s *MarketService) GetActiveMarketsMeta(ctx context.Context) (*MarketMeta, error) {
+	markets, err := s.loadAllActiveMarkets(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	categoryCounts := make(map[string]int)
+	tagCounts := make(map[string]int)
+
+	for _, market := range markets {
+		if market.Category != "" {
+			categoryCounts[market.Category]++
+		}
+		for _, tag := range market.Tags {
+			if tag != "" {
+				tagCounts[tag]++
+			}
+		}
+	}
+
+	meta := &MarketMeta{
+		Total:      len(markets),
+		Categories: buildMetaEntries(categoryCounts, 25),
+		Tags:       buildMetaEntries(tagCounts, 75),
+	}
+	return meta, nil
+}
+
+func (s *MarketService) GetMarketLanes(ctx context.Context, params MarketLaneParams) (*MarketLanes, error) {
+	markets, err := s.loadAllActiveMarkets(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := filterMarkets(markets, params.Category, params.Tag)
+	pool := applyPoolSort(filtered, params.PoolSort)
+
+	fresh := selectTop(pool, func(i, j models.Market) bool {
+		return i.CreatedAt.After(j.CreatedAt)
+	}, 20)
+
+	velocity := selectTop(pool, func(i, j models.Market) bool {
+		return i.VolumeAllTime > j.VolumeAllTime
+	}, 20)
+
+	liquidity := selectTop(pool, func(i, j models.Market) bool {
+		return i.Liquidity > j.Liquidity
+	}, 20)
+
+	s.attachRealtimePrices(ctx, fresh)
+	s.attachRealtimePrices(ctx, velocity)
+	s.attachRealtimePrices(ctx, liquidity)
+
+	return &MarketLanes{
+		FreshDrops:    fresh,
+		HighVelocity:  velocity,
+		DeepLiquidity: liquidity,
+	}, nil
+}
+
+func buildMetaEntries(source map[string]int, limit int) []MetaEntry {
+	entries := make([]MetaEntry, 0, len(source))
+	for value, count := range source {
+		entries = append(entries, MetaEntry{Value: value, Count: count})
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Count == entries[j].Count {
+			return entries[i].Value < entries[j].Value
+		}
+		return entries[i].Count > entries[j].Count
+	})
+
+	if limit > 0 && len(entries) > limit {
+		entries = entries[:limit]
+	}
+
+	return entries
+}
+
+func filterMarkets(markets []models.Market, category, tag string) []models.Market {
+	if category == "" && tag == "" {
+		return cloneMarkets(markets)
+	}
+
+	var filtered []models.Market
+	for _, market := range markets {
+		if category != "" && market.Category != category {
+			continue
+		}
+		if tag != "" {
+			found := false
+			for _, t := range market.Tags {
+				if t == tag {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+		filtered = append(filtered, market)
+	}
+	return filtered
+}
+
+func applyPoolSort(markets []models.Market, sortKey string) []models.Market {
+	pool := cloneMarkets(markets)
+
+	switch sortKey {
+	case "volume":
+		sort.SliceStable(pool, func(i, j int) bool {
+			return pool[i].Volume24h > pool[j].Volume24h
+		})
+	case "liquidity":
+		sort.SliceStable(pool, func(i, j int) bool {
+			return pool[i].Liquidity > pool[j].Liquidity
+		})
+	case "created":
+		sort.SliceStable(pool, func(i, j int) bool {
+			return pool[i].CreatedAt.After(pool[j].CreatedAt)
+		})
+	default:
+		// Leave as-is for the "all" pool
+	}
+
+	if len(pool) > lanePoolCap && sortKey != "all" {
+		return pool[:lanePoolCap]
+	}
+	return pool
+}
+
+func selectTop(source []models.Market, comparator func(models.Market, models.Market) bool, limit int) []models.Market {
+	if len(source) == 0 || limit <= 0 {
+		return []models.Market{}
+	}
+
+	cp := cloneMarkets(source)
+	sort.Slice(cp, func(i, j int) bool {
+		return comparator(cp[i], cp[j])
+	})
+
+	if len(cp) > limit {
+		cp = cp[:limit]
+	}
+	return cp
+}
+
+func cloneMarkets(source []models.Market) []models.Market {
+	cp := make([]models.Market, len(source))
+	copy(cp, source)
+	return cp
 }
 
 type QueryActiveMarketsParams struct {

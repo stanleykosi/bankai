@@ -14,10 +14,10 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/bankai-project/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
-	"github.com/redis/go-redis/v9"
 )
 
 type MarketHandler struct {
@@ -39,24 +39,31 @@ func (h *MarketHandler) GetActiveMarkets(c *fiber.Ctx) error {
 	limit := c.QueryInt("limit", 0)
 	offset := c.QueryInt("offset", 0)
 
-	useCache := category == "" && tag == "" && (sortParam == "" || sortParam == "all") && limit <= 0 && offset == 0
+	if limit <= 0 {
+		limit = 500
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	useCache := category == "" && tag == "" && (sortParam == "" || sortParam == "all")
 	if useCache {
-		markets, err := h.Service.GetActiveMarkets(ctx)
+		markets, total, err := h.Service.GetActiveMarketsPaged(ctx, limit, offset)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": "Failed to fetch active markets",
 			})
 		}
+		c.Set("X-Total-Count", strconv.Itoa(total))
 		return c.JSON(markets)
 	}
 
 	sort := sortParam
 	if sort == "all" {
 		sort = ""
-	}
-
-	if limit <= 0 {
-		limit = 500
 	}
 
 	markets, err := h.Service.QueryActiveMarkets(ctx, services.QueryActiveMarketsParams{
@@ -97,14 +104,13 @@ func (h *MarketHandler) StreamPriceUpdates(c *fiber.Ctx) error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	pubsub := h.Service.Redis.Subscribe(ctx, services.PriceUpdateChannel)
-	// Increase channel buffer so fast RTDS bursts don't drop messages per connection
-	ch := pubsub.Channel(redis.WithChannelSize(2048))
+	streamHub := h.Service.StreamHub()
+	msgCh, unsubscribe := streamHub.Subscribe()
 
 	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
 		defer func() {
 			cancel()
-			_ = pubsub.Close()
+			unsubscribe()
 		}()
 
 		requestDone := requestCtx.Done()
@@ -115,11 +121,11 @@ func (h *MarketHandler) StreamPriceUpdates(c *fiber.Ctx) error {
 				return
 			case <-ctx.Done():
 				return
-			case msg, ok := <-ch:
+			case msg, ok := <-msgCh:
 				if !ok {
 					return
 				}
-				fmt.Fprintf(w, "data: %s\n\n", msg.Payload)
+				fmt.Fprintf(w, "data: %s\n\n", msg)
 				if err := w.Flush(); err != nil {
 					return
 				}
@@ -128,4 +134,34 @@ func (h *MarketHandler) StreamPriceUpdates(c *fiber.Ctx) error {
 	})
 
 	return nil
+}
+
+func (h *MarketHandler) GetActiveMarketsMeta(c *fiber.Ctx) error {
+	ctx := c.Context()
+	meta, err := h.Service.GetActiveMarketsMeta(ctx)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to compute market metadata",
+		})
+	}
+	return c.JSON(meta)
+}
+
+func (h *MarketHandler) GetMarketLanes(c *fiber.Ctx) error {
+	ctx := c.Context()
+
+	params := services.MarketLaneParams{
+		Category: c.Query("category"),
+		Tag:      c.Query("tag"),
+		PoolSort: c.Query("sort"),
+	}
+
+	lanes, err := h.Service.GetMarketLanes(ctx, params)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to compute market lanes",
+		})
+	}
+
+	return c.JSON(lanes)
 }

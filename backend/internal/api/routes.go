@@ -66,6 +66,8 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	markets := v1.Group("/markets")
 	markets.Get("/active", marketHandler.GetActiveMarkets)
 	markets.Get("/fresh", marketHandler.GetFreshDrops)
+	markets.Get("/meta", marketHandler.GetActiveMarketsMeta)
+	markets.Get("/lanes", marketHandler.GetMarketLanes)
 	markets.Get("/stream", marketHandler.StreamPriceUpdates)
 
 	// User Routes (Protected)

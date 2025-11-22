@@ -31,17 +31,29 @@ type ActiveMarketParams = Partial<{
   offset: number;
 }>;
 
-const fetchFreshDrops = async (): Promise<Market[]> => {
+type MarketMetaResponse = {
+  total: number;
+  categories: { value: string; count: number }[];
+  tags: { value: string; count: number }[];
+};
+
+type MarketLaneResponse = {
+  fresh: Market[];
+  high_velocity: Market[];
+  deep_liquidity: Market[];
+};
+
+const fetchMarketMeta = async (): Promise<MarketMetaResponse | null> => {
   try {
-    const { data } = await api.get<Market[]>("/markets/fresh");
-    return data || [];
+    const { data } = await api.get<MarketMetaResponse>("/markets/meta");
+    return data;
   } catch (error) {
-    console.error("Failed to fetch fresh drops:", error);
-    return [];
+    console.error("Failed to fetch market metadata:", error);
+    return null;
   }
 };
 
-const fetchActiveMarkets = async (params: ActiveMarketParams = {}): Promise<Market[]> => {
+const fetchMarketLanes = async (params: ActiveMarketParams = {}): Promise<MarketLaneResponse> => {
   try {
     const requestParams: Record<string, string | number> = {};
 
@@ -51,20 +63,25 @@ const fetchActiveMarkets = async (params: ActiveMarketParams = {}): Promise<Mark
     if (params.tag) {
       requestParams.tag = params.tag;
     }
-
-    const isAllPool = !params.sort || params.sort === "all";
-    if (!isAllPool) {
-      if (params.sort) {
-        requestParams.sort = params.sort;
-      }
-      requestParams.limit = params.limit ?? 500;
+    if (params.sort) {
+      requestParams.sort = params.sort;
     }
 
-    const { data } = await api.get<Market[]>("/markets/active", { params: requestParams });
-    return data || [];
+    const { data } = await api.get<MarketLaneResponse>("/markets/lanes", { params: requestParams });
+    return (
+      data || {
+        fresh: [],
+        high_velocity: [],
+        deep_liquidity: [],
+      }
+    );
   } catch (error) {
-    console.error("Failed to fetch active markets:", error);
-    return [];
+    console.error("Failed to fetch market lanes:", error);
+    return {
+      fresh: [],
+      high_velocity: [],
+      deep_liquidity: [],
+    };
   }
 };
 
@@ -157,91 +174,52 @@ export default function DashboardPage() {
     [augmentMarket]
   );
 
-  const { data: freshDropsData, isLoading: isLoadingFresh } = useQuery({
-    queryKey: ["markets", "fresh"],
-    queryFn: fetchFreshDrops,
-    refetchInterval: 30000,
-  });
-
-  const { data: activeMarketsData, isLoading: isLoadingActive } = useQuery({
-    queryKey: ["markets", "active", filters],
-    queryFn: () => fetchActiveMarkets(filters),
-    refetchInterval: 60000,
-  });
-
-  const { data: masterActiveData } = useQuery({
-    queryKey: ["markets", "active", "master"],
-    queryFn: () => fetchActiveMarkets({ sort: "all" }),
+  const { data: metaData } = useQuery({
+    queryKey: ["markets", "meta"],
+    queryFn: fetchMarketMeta,
     staleTime: 5 * 60 * 1000,
   });
 
-  const categories = React.useMemo(() => {
-    if (!masterActiveData) return [];
-    const counts = new Map<string, number>();
-    masterActiveData.forEach((market) => {
-      if (!market.category) return;
-      counts.set(market.category, (counts.get(market.category) || 0) + 1);
-    });
-    return Array.from(counts.entries())
-      .sort((a, b) => b[1] - a[1])
-      .map(([value, count]) => ({ value, label: value, count }));
-  }, [masterActiveData]);
+  const { data: laneData, isLoading: isLoadingLanes } = useQuery({
+    queryKey: ["markets", "lanes", filters],
+    queryFn: () => fetchMarketLanes(filters),
+    refetchInterval: 30_000,
+  });
 
-  const tags = React.useMemo(() => {
-    if (!masterActiveData) return [];
-    const counts = new Map<string, number>();
-    masterActiveData.forEach((market) => {
-      market.tags?.forEach((tag) => {
-        counts.set(tag, (counts.get(tag) || 0) + 1);
-      });
-    });
-    return Array.from(counts.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 75)
-      .map(([value, count]) => ({ value, label: value, count }));
-  }, [masterActiveData]);
-
-  const hydratedFreshDrops = React.useMemo(() => hydrateMarkets(freshDropsData), [freshDropsData, hydrateMarkets]);
-  const hydratedActiveMarkets = React.useMemo(
-    () => hydrateMarkets(activeMarketsData),
-    [activeMarketsData, hydrateMarkets]
-  );
-  const hydratedMasterActive = React.useMemo(
-    () => hydrateMarkets(masterActiveData),
-    [masterActiveData, hydrateMarkets]
+  const categories = React.useMemo(
+    () =>
+      metaData?.categories?.map(({ value, count }) => ({
+        value,
+        label: value,
+        count,
+      })) ?? [],
+    [metaData]
   );
 
-  const usingAllSort = !filters.sort || filters.sort === "all";
-  const hasTagOrCategory = Boolean(filters.category || filters.tag);
+  const tags = React.useMemo(
+    () =>
+      metaData?.tags?.map(({ value, count }) => ({
+        value,
+        label: value,
+        count,
+      })) ?? [],
+    [metaData]
+  );
 
-  const baseActivePool = React.useMemo(() => {
-    if (usingAllSort && !hasTagOrCategory) {
-      return hydratedMasterActive.length > 0 ? hydratedMasterActive : hydratedActiveMarkets;
-    }
-    return hydratedActiveMarkets;
-  }, [hydratedActiveMarkets, hydratedMasterActive, hasTagOrCategory, usingAllSort]);
+  const hydratedFreshDrops = React.useMemo(
+    () => hydrateMarkets(laneData?.fresh ?? []),
+    [hydrateMarkets, laneData?.fresh]
+  );
+  const highVelocityMarkets = React.useMemo(
+    () => hydrateMarkets(laneData?.high_velocity ?? []),
+    [hydrateMarkets, laneData?.high_velocity]
+  );
+  const deepLiquidityMarkets = React.useMemo(
+    () => hydrateMarkets(laneData?.deep_liquidity ?? []),
+    [hydrateMarkets, laneData?.deep_liquidity]
+  );
 
-  const freshLaneMarkets = React.useMemo(() => {
-    if (usingAllSort && !hasTagOrCategory) {
-      return hydratedFreshDrops.slice(0, 20);
-    }
-
-    return [...baseActivePool]
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-      .slice(0, 20);
-  }, [baseActivePool, hasTagOrCategory, hydratedFreshDrops, usingAllSort]);
-
-  const highVelocityMarkets = React.useMemo(() => {
-    return [...baseActivePool]
-      .sort((a, b) => (b.volume_all_time ?? 0) - (a.volume_all_time ?? 0))
-      .slice(0, 20);
-  }, [baseActivePool]);
-
-  const deepLiquidityMarkets = React.useMemo(() => {
-    return [...baseActivePool].sort((a, b) => (b.liquidity ?? 0) - (a.liquidity ?? 0)).slice(0, 20);
-  }, [baseActivePool]);
-
-  const isLoading = isLoadingFresh || isLoadingActive;
+  const isLoading = isLoadingLanes;
 
   if (isLoading) {
     return (
@@ -276,7 +254,7 @@ export default function DashboardPage() {
       />
 
       <MarketTicker
-        freshDrops={freshLaneMarkets}
+        freshDrops={hydratedFreshDrops}
         highVelocity={highVelocityMarkets}
         deepLiquidity={deepLiquidityMarkets}
       />
