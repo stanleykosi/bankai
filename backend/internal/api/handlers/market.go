@@ -92,19 +92,26 @@ func (h *MarketHandler) StreamPriceUpdates(c *fiber.Ctx) error {
 	c.Set("Cache-Control", "no-cache")
 	c.Set("Connection", "keep-alive")
 
+	requestCtx := c.Context()
+
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	pubsub := h.Service.Redis.Subscribe(ctx, services.PriceUpdateChannel)
-	defer pubsub.Close()
-
 	ch := pubsub.Channel()
 
 	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
-		defer cancel()
+		defer func() {
+			cancel()
+			_ = pubsub.Close()
+		}()
+
+		requestDone := requestCtx.Done()
+
 		for {
 			select {
-			case <-c.Context().Done():
+			case <-requestDone:
+				return
+			case <-ctx.Done():
 				return
 			case msg, ok := <-ch:
 				if !ok {

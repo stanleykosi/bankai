@@ -3,6 +3,7 @@ module github.com/bankai-project/backend
 go 1.23.0
 
 require (
+	github.com/alicebob/miniredis/v2 v2.31.0
 	github.com/MicahParks/keyfunc/v2 v2.1.0
 	github.com/gofiber/fiber/v2 v2.52.0
 	github.com/golang-jwt/jwt/v5 v5.2.0
