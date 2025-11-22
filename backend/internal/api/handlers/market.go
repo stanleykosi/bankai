@@ -17,6 +17,7 @@ import (
 
 	"github.com/bankai-project/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
+	"github.com/redis/go-redis/v9"
 )
 
 type MarketHandler struct {
@@ -97,7 +98,8 @@ func (h *MarketHandler) StreamPriceUpdates(c *fiber.Ctx) error {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	pubsub := h.Service.Redis.Subscribe(ctx, services.PriceUpdateChannel)
-	ch := pubsub.Channel()
+	// Increase channel buffer so fast RTDS bursts don't drop messages per connection
+	ch := pubsub.Channel(redis.WithChannelSize(2048))
 
 	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
 		defer func() {
