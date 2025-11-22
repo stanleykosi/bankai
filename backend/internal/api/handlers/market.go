@@ -32,13 +32,31 @@ func NewMarketHandler(service *services.MarketService) *MarketHandler {
 func (h *MarketHandler) GetActiveMarkets(c *fiber.Ctx) error {
 	ctx := c.Context()
 
-	var (
-		category = c.Query("category")
-		tag      = c.Query("tag")
-		sort     = c.Query("sort", "volume") // volume | liquidity | created
-		limit    = c.QueryInt("limit", 50)
-		offset   = c.QueryInt("offset", 0)
-	)
+	category := c.Query("category")
+	tag := c.Query("tag")
+	sortParam := c.Query("sort")
+	limit := c.QueryInt("limit", 0)
+	offset := c.QueryInt("offset", 0)
+
+	useCache := category == "" && tag == "" && (sortParam == "" || sortParam == "all") && limit <= 0 && offset == 0
+	if useCache {
+		markets, err := h.Service.GetActiveMarkets(ctx)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Failed to fetch active markets",
+			})
+		}
+		return c.JSON(markets)
+	}
+
+	sort := sortParam
+	if sort == "all" {
+		sort = ""
+	}
+
+	if limit <= 0 {
+		limit = 500
+	}
 
 	markets, err := h.Service.QueryActiveMarkets(ctx, services.QueryActiveMarketsParams{
 		Category: category,
@@ -102,4 +120,3 @@ func (h *MarketHandler) StreamPriceUpdates(c *fiber.Ctx) error {
 
 	return nil
 }
-

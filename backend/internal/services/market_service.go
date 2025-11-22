@@ -385,16 +385,17 @@ func (s *MarketService) QueryActiveMarkets(ctx context.Context, params QueryActi
 		query = query.Order("created_at DESC")
 	}
 
-	limit := params.Limit
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-
 	if params.Offset < 0 {
 		params.Offset = 0
 	}
 
-	query = query.Limit(limit).Offset(params.Offset)
+	if params.Limit > 0 {
+		query = query.Limit(params.Limit)
+	}
+
+	if params.Offset > 0 {
+		query = query.Offset(params.Offset)
+	}
 
 	var markets []models.Market
 	if err := query.Find(&markets).Error; err != nil {

@@ -43,18 +43,24 @@ const fetchFreshDrops = async (): Promise<Market[]> => {
 
 const fetchActiveMarkets = async (params: ActiveMarketParams = {}): Promise<Market[]> => {
   try {
-    const requestParams: ActiveMarketParams = {
-      ...params,
-      limit: params.limit ?? 200,
-    };
+    const requestParams: Record<string, string | number> = {};
 
-    if (requestParams.sort === "all") {
-      delete requestParams.sort;
+    if (params.category) {
+      requestParams.category = params.category;
+    }
+    if (params.tag) {
+      requestParams.tag = params.tag;
     }
 
-    const { data } = await api.get<Market[]>("/markets/active", {
-      params: requestParams,
-    });
+    const isAllPool = !params.sort || params.sort === "all";
+    if (!isAllPool) {
+      if (params.sort) {
+        requestParams.sort = params.sort;
+      }
+      requestParams.limit = params.limit ?? 500;
+    }
+
+    const { data } = await api.get<Market[]>("/markets/active", { params: requestParams });
     return data || [];
   } catch (error) {
     console.error("Failed to fetch active markets:", error);
@@ -65,7 +71,6 @@ const fetchActiveMarkets = async (params: ActiveMarketParams = {}): Promise<Mark
 export default function DashboardPage() {
   const [filters, setFilters] = React.useState<ActiveMarketParams>({
     sort: "all",
-    limit: 200,
   });
 
   const handleFilterChange = React.useCallback((update: ActiveMarketParams) => {
@@ -77,7 +82,7 @@ export default function DashboardPage() {
   }, []);
 
   const resetFilters = React.useCallback(() => {
-    setFilters({ sort: "all", limit: 200 });
+    setFilters({ sort: "all" });
   }, []);
 
   type AssetPrice = {
@@ -166,7 +171,7 @@ export default function DashboardPage() {
 
   const { data: masterActiveData } = useQuery({
     queryKey: ["markets", "active", "master"],
-    queryFn: () => fetchActiveMarkets({ limit: 500, sort: "all" }),
+    queryFn: () => fetchActiveMarkets({ sort: "all" }),
     staleTime: 5 * 60 * 1000,
   });
 
@@ -206,21 +211,25 @@ export default function DashboardPage() {
     [masterActiveData, hydrateMarkets]
   );
 
+  const usingAllSort = !filters.sort || filters.sort === "all";
+  const hasTagOrCategory = Boolean(filters.category || filters.tag);
+
   const baseActivePool = React.useMemo(() => {
-    if (filters.category || filters.tag) {
-      return hydratedActiveMarkets;
+    if (usingAllSort && !hasTagOrCategory) {
+      return hydratedMasterActive.length > 0 ? hydratedMasterActive : hydratedActiveMarkets;
     }
-    return hydratedMasterActive.length > 0 ? hydratedMasterActive : hydratedActiveMarkets;
-  }, [filters.category, filters.tag, hydratedActiveMarkets, hydratedMasterActive]);
+    return hydratedActiveMarkets;
+  }, [hydratedActiveMarkets, hydratedMasterActive, hasTagOrCategory, usingAllSort]);
 
   const freshLaneMarkets = React.useMemo(() => {
-    if (filters.category || filters.tag) {
-      return [...baseActivePool]
-        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-        .slice(0, 20);
+    if (usingAllSort && !hasTagOrCategory) {
+      return hydratedFreshDrops.slice(0, 20);
     }
-    return hydratedFreshDrops.slice(0, 20);
-  }, [baseActivePool, filters.category, filters.tag, hydratedFreshDrops]);
+
+    return [...baseActivePool]
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, 20);
+  }, [baseActivePool, hasTagOrCategory, hydratedFreshDrops, usingAllSort]);
 
   const highVelocityMarkets = React.useMemo(() => {
     return [...baseActivePool]
