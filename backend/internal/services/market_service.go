@@ -52,53 +52,60 @@ func NewMarketService(db *gorm.DB, redis *redis.Client, gammaClient *gamma.Clien
 
 // SyncActiveMarkets fetches top active markets from Gamma and updates DB + Cache
 func (s *MarketService) SyncActiveMarkets(ctx context.Context) error {
-	// 1. Fetch from Gamma
 	active := true
 	closed := false
-	events, err := s.GammaClient.GetEvents(ctx, gamma.GetEventsParams{
-		Limit:  50,
-		Active:  &active,
-		Closed:  &closed,
-		Order:   "volume", // Sort by volume for "Top" markets
-	})
-	if err != nil {
-		return fmt.Errorf("failed to fetch events from gamma: %w", err)
-	}
+	limit := 100
+	offset := 0
 
-	var dbMarkets []models.Market
+	var allMarkets []models.Market
 
-	// 2. Process and convert
-	for _, event := range events {
-		for _, gm := range event.Markets {
-			market := gm.ToDBModel()
-
-			// Extract tags from event if needed
-			var tags []string
-			for _, t := range event.Tags {
-				tags = append(tags, t.Slug)
-			}
-			market.Tags = tags
-			market.Category = "general" // Default, or derive from tags
-
-			// Set archived status from event
-			market.Archived = event.Archived
-
-			// Parse Token IDs
-			yes, no := gamma.ParseTokenIDs(gm.ClobTokenIds)
-			market.TokenIDYes = yes
-			market.TokenIDNo = no
-
-			dbMarkets = append(dbMarkets, *market)
+	for {
+		events, err := s.GammaClient.GetEvents(ctx, gamma.GetEventsParams{
+			Limit:  limit,
+			Offset: offset,
+			Active: &active,
+			Closed: &closed,
+			Order:  "volume",
+		})
+		if err != nil {
+			return fmt.Errorf("failed to fetch events from gamma: %w", err)
 		}
+
+		if len(events) == 0 {
+			break
+		}
+
+		for _, event := range events {
+			for _, gm := range event.Markets {
+				market := gm.ToDBModel()
+
+				var tags []string
+				for _, t := range event.Tags {
+					tags = append(tags, t.Slug)
+				}
+				market.Tags = tags
+				market.Category = "general"
+				market.Archived = event.Archived
+
+				yes, no := gamma.ParseTokenIDs(gm.ClobTokenIds)
+				market.TokenIDYes = yes
+				market.TokenIDNo = no
+
+				allMarkets = append(allMarkets, *market)
+			}
+		}
+
+		if len(events) < limit {
+			break
+		}
+		offset += limit
 	}
 
-	if len(dbMarkets) == 0 {
+	if len(allMarkets) == 0 {
 		return nil
 	}
 
-	// 3. Bulk Upsert to Postgres
-	// On Conflict: Update volume, liquidity, active status, closed status, archived status
-	err = s.DB.Clauses(clause.OnConflict{
+	err := s.DB.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "condition_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
 			"volume_24h",
@@ -115,22 +122,17 @@ func (s *MarketService) SyncActiveMarkets(ctx context.Context) error {
 			"token_id_no",
 			"end_date",
 		}),
-	}).CreateInBatches(dbMarkets, 100).Error
-
+	}).CreateInBatches(allMarkets, 100).Error
 	if err != nil {
 		return fmt.Errorf("failed to upsert markets to db: %w", err)
 	}
 
-	// 4. Update Redis Cache (store minimal data for dashboard)
-	// Serialize the list for caching
-	data, err := json.Marshal(dbMarkets)
+	data, err := json.Marshal(allMarkets)
 	if err != nil {
 		log.Printf("Failed to marshal markets for cache: %v", err)
-		// Don't return error, caching is not critical
 	} else {
 		if err := s.Redis.Set(ctx, CacheKeyActiveMarkets, data, CacheTTL).Err(); err != nil {
 			log.Printf("Failed to set active markets cache: %v", err)
-			// Don't return error, caching is not critical
 		}
 	}
 
@@ -353,3 +355,50 @@ func parseUnixTimestamp(value string) *time.Time {
 	return nil
 }
 
+type QueryActiveMarketsParams struct {
+	Category string
+	Tag      string
+	Sort     string
+	Limit    int
+	Offset   int
+}
+
+func (s *MarketService) QueryActiveMarkets(ctx context.Context, params QueryActiveMarketsParams) ([]models.Market, error) {
+	query := s.DB.WithContext(ctx).Model(&models.Market{}).Where("active = ?", true)
+
+	if params.Category != "" {
+		query = query.Where("category = ?", params.Category)
+	}
+
+	if params.Tag != "" {
+		query = query.Where("? = ANY(tags)", params.Tag)
+	}
+
+	switch params.Sort {
+	case "liquidity":
+		query = query.Order("liquidity DESC")
+	case "created":
+		query = query.Order("created_at DESC")
+	default:
+		query = query.Order("volume_24h DESC")
+	}
+
+	limit := params.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+
+	if params.Offset < 0 {
+		params.Offset = 0
+	}
+
+	query = query.Limit(limit).Offset(params.Offset)
+
+	var markets []models.Market
+	if err := query.Find(&markets).Error; err != nil {
+		return nil, err
+	}
+
+	s.attachRealtimePrices(ctx, markets)
+	return markets, nil
+}

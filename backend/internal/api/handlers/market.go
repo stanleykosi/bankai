@@ -31,7 +31,22 @@ func NewMarketHandler(service *services.MarketService) *MarketHandler {
 // GET /api/v1/markets/active
 func (h *MarketHandler) GetActiveMarkets(c *fiber.Ctx) error {
 	ctx := c.Context()
-	markets, err := h.Service.GetActiveMarkets(ctx)
+
+	var (
+		category = c.Query("category")
+		tag      = c.Query("tag")
+		sort     = c.Query("sort", "volume") // volume | liquidity | created
+		limit    = c.QueryInt("limit", 50)
+		offset   = c.QueryInt("offset", 0)
+	)
+
+	markets, err := h.Service.QueryActiveMarkets(ctx, services.QueryActiveMarketsParams{
+		Category: category,
+		Tag:      tag,
+		Sort:     sort,
+		Limit:    limit,
+		Offset:   offset,
+	})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to fetch active markets",
