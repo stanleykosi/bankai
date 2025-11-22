@@ -161,38 +161,29 @@ const MarketLane = ({ title, icon, markets, colorClass }: MarketLaneProps) => {
 
 interface MarketTickerProps {
   freshDrops: Market[];
-  activeMarkets: Market[];
+  highVelocity: Market[];
+  deepLiquidity: Market[];
 }
 
-export const MarketTicker = ({ freshDrops, activeMarkets }: MarketTickerProps) => {
-  // We can split activeMarkets into "High Velocity" and "Contested" based on logic
-  // For now, we'll just use the raw lists passed down
-  
-  // Sort active by volume for High Velocity
-  const highVelocity = [...activeMarkets].sort((a, b) => b.volume_24h - a.volume_24h).slice(0, 20);
-  
-  // Arbitrary split for "Contested" or "Trending" - using remaining active for now
-  // In a real app, "Contested" implies close spread or high flip rate.
-  const contested = [...activeMarkets].sort((a, b) => b.liquidity - a.liquidity).slice(0, 20);
-
+export const MarketTicker = ({ freshDrops, highVelocity, deepLiquidity }: MarketTickerProps) => {
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 h-[600px] border border-border rounded-lg overflow-hidden shadow-2xl shadow-black/50">
-      <MarketLane 
-        title="Fresh Drops" 
-        icon={<Clock className="h-4 w-4" />} 
+      <MarketLane
+        title="Fresh Drops"
+        icon={<Clock className="h-4 w-4" />}
         markets={freshDrops}
         colorClass="text-blue-400"
       />
-      <MarketLane 
-        title="High Velocity" 
-        icon={<Zap className="h-4 w-4" />} 
+      <MarketLane
+        title="High Velocity"
+        icon={<Zap className="h-4 w-4" />}
         markets={highVelocity}
         colorClass="text-yellow-400"
       />
-      <MarketLane 
-        title="Deep Liquidity" 
-        icon={<TrendingUp className="h-4 w-4" />} 
-        markets={contested}
+      <MarketLane
+        title="Deep Liquidity"
+        icon={<TrendingUp className="h-4 w-4" />}
+        markets={deepLiquidity}
         colorClass="text-constructive"
       />
     </div>

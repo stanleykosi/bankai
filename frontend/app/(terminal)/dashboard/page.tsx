@@ -195,6 +195,36 @@ export default function DashboardPage() {
     () => hydrateMarkets(activeMarketsData),
     [activeMarketsData, hydrateMarkets]
   );
+  const hydratedMasterActive = React.useMemo(
+    () => hydrateMarkets(masterActiveData),
+    [masterActiveData, hydrateMarkets]
+  );
+
+  const baseActivePool = React.useMemo(() => {
+    if (filters.category || filters.tag) {
+      return hydratedActiveMarkets;
+    }
+    return hydratedMasterActive.length > 0 ? hydratedMasterActive : hydratedActiveMarkets;
+  }, [filters.category, filters.tag, hydratedActiveMarkets, hydratedMasterActive]);
+
+  const freshLaneMarkets = React.useMemo(() => {
+    if (filters.category || filters.tag) {
+      return [...baseActivePool]
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .slice(0, 20);
+    }
+    return hydratedFreshDrops.slice(0, 20);
+  }, [baseActivePool, filters.category, filters.tag, hydratedFreshDrops]);
+
+  const highVelocityMarkets = React.useMemo(() => {
+    return [...baseActivePool]
+      .sort((a, b) => (b.volume_all_time ?? 0) - (a.volume_all_time ?? 0))
+      .slice(0, 20);
+  }, [baseActivePool]);
+
+  const deepLiquidityMarkets = React.useMemo(() => {
+    return [...baseActivePool].sort((a, b) => (b.liquidity ?? 0) - (a.liquidity ?? 0)).slice(0, 20);
+  }, [baseActivePool]);
 
   const isLoading = isLoadingFresh || isLoadingActive;
 
@@ -230,7 +260,11 @@ export default function DashboardPage() {
         onReset={resetFilters}
       />
 
-      <MarketTicker freshDrops={hydratedFreshDrops} activeMarkets={hydratedActiveMarkets} />
+      <MarketTicker
+        freshDrops={freshLaneMarkets}
+        highVelocity={highVelocityMarkets}
+        deepLiquidity={deepLiquidityMarkets}
+      />
 
       {/* Additional widgets in future */}
     </div>
