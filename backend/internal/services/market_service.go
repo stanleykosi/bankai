@@ -210,6 +210,8 @@ func (s *MarketService) SyncActiveMarkets(ctx context.Context) error {
 	return nil
 }
 
+const activeWhereClause = "active = ? AND closed = ? AND accepting_orders = ?"
+
 func (s *MarketService) loadAllActiveMarkets(ctx context.Context) ([]models.Market, error) {
 	val, err := s.Redis.Get(ctx, CacheKeyActiveMarkets).Result()
 	if err == nil {
@@ -220,7 +222,9 @@ func (s *MarketService) loadAllActiveMarkets(ctx context.Context) ([]models.Mark
 	}
 
 	var markets []models.Market
-	if err := s.DB.WithContext(ctx).Where("active = ?", true).Order("created_at DESC").Find(&markets).Error; err != nil {
+	if err := s.DB.WithContext(ctx).
+		Where(activeWhereClause, true, false, true).
+		Order("created_at DESC").Find(&markets).Error; err != nil {
 		return nil, err
 	}
 
@@ -590,7 +594,7 @@ func computeMarketMeta(markets []models.Market) *MarketMeta {
 }
 
 func (s *MarketService) queryTopMarkets(ctx context.Context, orderBy string, params MarketLaneParams) ([]models.Market, error) {
-	query := s.DB.WithContext(ctx).Model(&models.Market{}).Where("active = ?", true)
+	query := s.DB.WithContext(ctx).Model(&models.Market{}).Where(activeWhereClause, true, false, true)
 
 	if params.Category != "" {
 		query = query.Where("category = ?", params.Category)
@@ -666,7 +670,7 @@ type QueryActiveMarketsParams struct {
 }
 
 func (s *MarketService) QueryActiveMarkets(ctx context.Context, params QueryActiveMarketsParams) ([]models.Market, error) {
-	query := s.DB.WithContext(ctx).Model(&models.Market{}).Where("active = ?", true)
+	query := s.DB.WithContext(ctx).Model(&models.Market{}).Where(activeWhereClause, true, false, true)
 
 	if params.Category != "" {
 		query = query.Where("category = ?", params.Category)
