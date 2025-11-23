@@ -61,11 +61,11 @@ const formatCurrency = (value?: number) => {
   return `$${value.toFixed(4)}`;
 };
 
-const formatProbability = (value?: number) => {
+const formatCents = (value?: number) => {
   if (!Number.isFinite(value ?? NaN) || value === undefined) {
     return "--";
   }
-  return `${(value * 100).toFixed(1)}%`;
+  return `${(value * 100).toFixed(1)}¢`;
 };
 
 const fallbackOutcomes = ["Yes", "No"];
@@ -87,8 +87,7 @@ const parseOutcomes = (outcomes?: string): string[] => {
 
 const formatSpread = (spread?: number) => {
   if (spread === undefined || spread === null) return "--";
-  if (spread === 0) return "0%";
-  return `${(spread * 100).toFixed(2)}%`;
+  return `${(spread * 100).toFixed(1)}¢`;
 };
 
 const formatDate = (date?: string | null) => {
@@ -137,7 +136,7 @@ const MarketCard = ({ market }: { market: Market }) => {
           <ArrowUpRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
         </div>
       </div>
-      
+
       <div className="mt-3 grid grid-cols-2 gap-3 text-[11px] font-mono text-muted-foreground">
         <div className="rounded-md border border-border/60 bg-background/50 p-2">
           <div className="flex items-center justify-between text-[10px] uppercase tracking-wide opacity-70">
@@ -145,7 +144,7 @@ const MarketCard = ({ market }: { market: Market }) => {
             <span className="text-[9px] text-muted-foreground/80">Price</span>
           </div>
           <div className="text-sm font-semibold text-constructive">
-            {formatProbability(market.yes_price)}
+            {formatCents(market.yes_price)}
           </div>
         </div>
         <div className="rounded-md border border-border/60 bg-background/50 p-2">
@@ -154,7 +153,7 @@ const MarketCard = ({ market }: { market: Market }) => {
             <span className="text-[9px] text-muted-foreground/80">Price</span>
           </div>
           <div className="text-sm font-semibold text-destructive">
-            {formatProbability(market.no_price)}
+            {formatCents(market.no_price)}
           </div>
         </div>
       </div>
