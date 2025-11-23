@@ -14,7 +14,7 @@
 
 import React from "react";
 import { motion } from "framer-motion";
-import { TrendingUp, Zap, Clock, ArrowUpRight } from "lucide-react";
+import { TrendingUp, Zap, Clock, ArrowUpRight, CalendarDays } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Market } from "@/types";
 import { useRouter } from "next/navigation";
@@ -68,8 +68,46 @@ const formatProbability = (value?: number) => {
   return `${(value * 100).toFixed(1)}%`;
 };
 
+const fallbackOutcomes = ["Yes", "No"];
+
+const parseOutcomes = (outcomes?: string): string[] => {
+  if (!outcomes) {
+    return fallbackOutcomes;
+  }
+  try {
+    const parsed = JSON.parse(outcomes);
+    if (Array.isArray(parsed) && parsed.length) {
+      return parsed.map((value) => String(value));
+    }
+  } catch {
+    // ignore
+  }
+  return fallbackOutcomes;
+};
+
+const formatSpread = (spread?: number) => {
+  if (spread === undefined || spread === null) return "--";
+  if (spread === 0) return "0%";
+  return `${(spread * 100).toFixed(2)}%`;
+};
+
+const formatDate = (date?: string | null) => {
+  if (!date) return "--";
+  const parsed = new Date(date);
+  if (Number.isNaN(parsed.getTime())) return "--";
+  return parsed.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+};
+
 const MarketCard = ({ market }: { market: Market }) => {
   const router = useRouter();
+  const outcomes = React.useMemo(() => parseOutcomes(market.outcomes), [market.outcomes]);
+  const primaryOutcome = outcomes[0] ?? fallbackOutcomes[0];
+  const secondaryOutcome = outcomes[1] ?? fallbackOutcomes[1];
+  const coverImage = market.image_url || market.icon_url;
 
   return (
     <motion.div
@@ -79,38 +117,44 @@ const MarketCard = ({ market }: { market: Market }) => {
       className="group cursor-pointer rounded-md border border-border bg-card/50 p-3 transition-all hover:border-primary"
       onClick={() => router.push(`/market/${market.slug}`)}
     >
-      <div className="flex justify-between items-start mb-2">
-        <h4 className="text-sm font-medium leading-tight line-clamp-2 text-foreground/90 group-hover:text-primary">
-          {market.title}
-        </h4>
-        <ArrowUpRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+      <div className="flex justify-between gap-3 items-start mb-2">
+        <div className="flex-1">
+          <h4 className="text-sm font-medium leading-tight line-clamp-2 text-foreground/90 group-hover:text-primary">
+            {market.title}
+          </h4>
+        </div>
+        <div className="flex items-center gap-2">
+          {coverImage ? (
+            <div className="h-10 w-10 rounded-md overflow-hidden border border-border/40 bg-background/40">
+              <img
+                src={coverImage}
+                alt={market.title}
+                className="h-full w-full object-cover"
+                loading="lazy"
+              />
+            </div>
+          ) : null}
+          <ArrowUpRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+        </div>
       </div>
       
       <div className="mt-3 grid grid-cols-2 gap-3 text-[11px] font-mono text-muted-foreground">
         <div className="rounded-md border border-border/60 bg-background/50 p-2">
           <div className="flex items-center justify-between text-[10px] uppercase tracking-wide opacity-70">
-            <span>YES</span>
-            <span className="text-[9px] text-muted-foreground/80">Last</span>
+            <span className="truncate pr-2">{primaryOutcome}</span>
+            <span className="text-[9px] text-muted-foreground/80">Price</span>
           </div>
           <div className="text-sm font-semibold text-constructive">
             {formatProbability(market.yes_price)}
           </div>
-          <div className="mt-1 text-[10px] flex justify-between opacity-70">
-            <span>Bid {formatProbability(market.yes_best_bid)}</span>
-            <span>Ask {formatProbability(market.yes_best_ask)}</span>
-          </div>
         </div>
         <div className="rounded-md border border-border/60 bg-background/50 p-2">
           <div className="flex items-center justify-between text-[10px] uppercase tracking-wide opacity-70">
-            <span>NO</span>
-            <span className="text-[9px] text-muted-foreground/80">Last</span>
+            <span className="truncate pr-2">{secondaryOutcome}</span>
+            <span className="text-[9px] text-muted-foreground/80">Price</span>
           </div>
           <div className="text-sm font-semibold text-destructive">
             {formatProbability(market.no_price)}
-          </div>
-          <div className="mt-1 text-[10px] flex justify-between opacity-70">
-            <span>Bid {formatProbability(market.no_best_bid)}</span>
-            <span>Ask {formatProbability(market.no_best_ask)}</span>
           </div>
         </div>
       </div>
@@ -128,8 +172,21 @@ const MarketCard = ({ market }: { market: Market }) => {
           <span className="text-xs text-constructive">{formatCurrency(market.liquidity)}</span>
         </div>
       </div>
-      <div className="mt-2 text-right text-[10px] font-mono text-muted-foreground/70">
-        {new Date(market.created_at).toLocaleDateString()}
+      <div className="mt-3 flex flex-col gap-1 text-[10px] font-mono text-muted-foreground/80">
+        <div className="flex items-center justify-between">
+          <span>Spread</span>
+          <span>{formatSpread(market.spread)}</span>
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <span className="inline-flex items-center gap-1">
+            <CalendarDays className="h-3 w-3" />
+            Starts {formatDate(market.start_date)}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <CalendarDays className="h-3 w-3" />
+            Ends {formatDate(market.end_date)}
+          </span>
+        </div>
       </div>
     </motion.div>
   );
