@@ -67,16 +67,24 @@ export default function MarketsPage() {
   const [filters, setFilters] = React.useState<ActiveMarketParams>({
     sort: "all",
   });
+  const [sortVersion, setSortVersion] = React.useState(0);
 
   const handleFilterChange = React.useCallback((update: { category?: string; tag?: string; sort?: SortOption }) => {
-    setFilters((prev) => ({
-      ...prev,
-      ...update,
-    }));
+    setFilters((prev) => {
+      const next = { ...prev, ...update };
+      if (update.sort && update.sort !== prev.sort) {
+        setSortVersion((v) => v + 1);
+      }
+      if (!update.sort && prev.sort === "all" && update.category === undefined && update.tag === undefined) {
+        setSortVersion((v) => v + 1);
+      }
+      return next;
+    });
   }, []);
 
   const resetFilters = React.useCallback(() => {
     setFilters({ sort: "all" });
+    setSortVersion((v) => v + 1);
   }, []);
 
   const { data: metaData } = useQuery({
@@ -86,7 +94,7 @@ export default function MarketsPage() {
   });
 
   const { data, fetchNextPage, hasNextPage, isFetchingNextPage, status } = useInfiniteQuery({
-    queryKey: ["markets", "list", filters],
+    queryKey: ["markets", "list", filters, sortVersion],
     queryFn: ({ pageParam = 0 }) => fetchMarketsPage(filters, PAGE_SIZE, pageParam),
     initialPageParam: 0,
     refetchInterval: 60_000,
