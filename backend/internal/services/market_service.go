@@ -33,6 +33,8 @@ import (
 
 const (
 	CacheKeyActiveMarkets = "markets:active"
+	CacheKeyMarketMeta    = "markets:meta"
+	CacheKeyMarketLanes   = "markets:lanes"
 	CacheKeyFreshDrops    = "markets:fresh"
 	CacheTTL              = 5 * time.Minute
 
@@ -202,6 +204,7 @@ func (s *MarketService) SyncActiveMarkets(ctx context.Context) error {
 		if err := s.Redis.Set(ctx, CacheKeyActiveMarkets, data, CacheTTL).Err(); err != nil {
 			log.Printf("Failed to set active markets cache: %v", err)
 		}
+		s.cacheDerivedSnapshots(ctx, allMarkets)
 	}
 
 	return nil
@@ -223,6 +226,7 @@ func (s *MarketService) loadAllActiveMarkets(ctx context.Context) ([]models.Mark
 
 	if data, err := json.Marshal(markets); err == nil {
 		_ = s.Redis.Set(ctx, CacheKeyActiveMarkets, data, CacheTTL).Err()
+		s.cacheDerivedSnapshots(ctx, markets)
 	}
 
 	return markets, nil
@@ -496,63 +500,53 @@ func parseUnixTimestamp(value string) *time.Time {
 }
 
 func (s *MarketService) GetActiveMarketsMeta(ctx context.Context) (*MarketMeta, error) {
+	if val, err := s.Redis.Get(ctx, CacheKeyMarketMeta).Result(); err == nil {
+		var meta MarketMeta
+		if err := json.Unmarshal([]byte(val), &meta); err == nil {
+			return &meta, nil
+		}
+	}
+
 	markets, err := s.loadAllActiveMarkets(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	categoryCounts := make(map[string]int)
-	tagCounts := make(map[string]int)
-
-	for _, market := range markets {
-		if market.Category != "" {
-			categoryCounts[market.Category]++
-		}
-		for _, tag := range market.Tags {
-			if tag != "" {
-				tagCounts[tag]++
-			}
-		}
-	}
-
-	meta := &MarketMeta{
-		Total:      len(markets),
-		Categories: buildMetaEntries(categoryCounts, 25),
-		Tags:       buildMetaEntries(tagCounts, 75),
-	}
+	meta := computeMarketMeta(markets)
+	s.cacheMarketMeta(ctx, meta)
 	return meta, nil
 }
 
 func (s *MarketService) GetMarketLanes(ctx context.Context, params MarketLaneParams) (*MarketLanes, error) {
+	useCache := params.Category == "" && params.Tag == "" && (params.PoolSort == "" || params.PoolSort == "all")
+	if useCache {
+		if val, err := s.Redis.Get(ctx, CacheKeyMarketLanes).Result(); err == nil {
+			var lanes MarketLanes
+			if err := json.Unmarshal([]byte(val), &lanes); err == nil {
+				s.attachRealtimePrices(ctx, lanes.FreshDrops)
+				s.attachRealtimePrices(ctx, lanes.HighVelocity)
+				s.attachRealtimePrices(ctx, lanes.DeepLiquidity)
+				return &lanes, nil
+			}
+		}
+	}
+
 	markets, err := s.loadAllActiveMarkets(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	filtered := filterMarkets(markets, params.Category, params.Tag)
-	pool := applyPoolSort(filtered, params.PoolSort)
+	lanes := computeMarketLanesFromSlice(markets, params)
 
-	fresh := selectTop(pool, func(i, j models.Market) bool {
-		return i.CreatedAt.After(j.CreatedAt)
-	}, 20)
+	if useCache {
+		s.cacheMarketLanes(ctx, lanes)
+	}
 
-	velocity := selectTop(pool, func(i, j models.Market) bool {
-		return i.VolumeAllTime > j.VolumeAllTime
-	}, 20)
+	s.attachRealtimePrices(ctx, lanes.FreshDrops)
+	s.attachRealtimePrices(ctx, lanes.HighVelocity)
+	s.attachRealtimePrices(ctx, lanes.DeepLiquidity)
 
-	liquidity := selectTop(pool, func(i, j models.Market) bool {
-		return i.Liquidity > j.Liquidity
-	}, 20)
-
-	s.attachRealtimePrices(ctx, fresh)
-	s.attachRealtimePrices(ctx, velocity)
-	s.attachRealtimePrices(ctx, liquidity)
-
-	return &MarketLanes{
-		FreshDrops:    fresh,
-		HighVelocity:  velocity,
-		DeepLiquidity: liquidity,
-	}, nil
+	return lanes, nil
 }
 
 func buildMetaEntries(source map[string]int, limit int) []MetaEntry {
@@ -648,6 +642,77 @@ func cloneMarkets(source []models.Market) []models.Market {
 	cp := make([]models.Market, len(source))
 	copy(cp, source)
 	return cp
+}
+
+func computeMarketMeta(markets []models.Market) *MarketMeta {
+	categoryCounts := make(map[string]int)
+	tagCounts := make(map[string]int)
+
+	for _, market := range markets {
+		if market.Category != "" {
+			categoryCounts[market.Category]++
+		}
+		for _, tag := range market.Tags {
+			if tag != "" {
+				tagCounts[tag]++
+			}
+		}
+	}
+
+	return &MarketMeta{
+		Total:      len(markets),
+		Categories: buildMetaEntries(categoryCounts, 25),
+		Tags:       buildMetaEntries(tagCounts, 75),
+	}
+}
+
+func computeMarketLanesFromSlice(markets []models.Market, params MarketLaneParams) *MarketLanes {
+	filtered := filterMarkets(markets, params.Category, params.Tag)
+	pool := applyPoolSort(filtered, params.PoolSort)
+
+	fresh := selectTop(pool, func(i, j models.Market) bool {
+		return i.CreatedAt.After(j.CreatedAt)
+	}, 20)
+
+	velocity := selectTop(pool, func(i, j models.Market) bool {
+		return i.VolumeAllTime > j.VolumeAllTime
+	}, 20)
+
+	liquidity := selectTop(pool, func(i, j models.Market) bool {
+		return i.Liquidity > j.Liquidity
+	}, 20)
+
+	return &MarketLanes{
+		FreshDrops:    fresh,
+		HighVelocity:  velocity,
+		DeepLiquidity: liquidity,
+	}
+}
+
+func (s *MarketService) cacheMarketMeta(ctx context.Context, meta *MarketMeta) {
+	if meta == nil {
+		return
+	}
+	if data, err := json.Marshal(meta); err == nil {
+		_ = s.Redis.Set(ctx, CacheKeyMarketMeta, data, CacheTTL).Err()
+	}
+}
+
+func (s *MarketService) cacheMarketLanes(ctx context.Context, lanes *MarketLanes) {
+	if lanes == nil {
+		return
+	}
+	if data, err := json.Marshal(lanes); err == nil {
+		_ = s.Redis.Set(ctx, CacheKeyMarketLanes, data, CacheTTL).Err()
+	}
+}
+
+func (s *MarketService) cacheDerivedSnapshots(ctx context.Context, markets []models.Market) {
+	meta := computeMarketMeta(markets)
+	s.cacheMarketMeta(ctx, meta)
+
+	lanes := computeMarketLanesFromSlice(markets, MarketLaneParams{})
+	s.cacheMarketLanes(ctx, lanes)
 }
 
 type QueryActiveMarketsParams struct {
