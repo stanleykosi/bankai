@@ -13,12 +13,14 @@
 'use client';
 
 import React from "react";
+import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 
 import { MarketTicker } from "@/components/terminal/MarketTicker";
 import { usePriceStream } from "@/hooks/usePriceStream";
 import { fetchMarketLanes } from "@/lib/market-data";
+import { Button } from "@/components/ui/button";
 
 export const dynamic = "force-dynamic";
 
@@ -66,6 +68,11 @@ export default function DashboardPage() {
         <p className="text-muted-foreground">
           Real-time scanning of Polymarket liquidity events and fresh listings.
         </p>
+        <div>
+          <Button asChild size="sm" variant="outline" className="font-mono text-xs tracking-wide">
+            <Link href="/markets">Browse All Markets ↗</Link>
+          </Button>
+        </div>
       </div>
 
       <MarketTicker

@@ -18,8 +18,12 @@ type AssetPrice = {
   timestamp: string;
 };
 
+const FLUSH_INTERVAL_MS = 200;
+
 export const usePriceStream = () => {
   const [assetPrices, setAssetPrices] = React.useState<Record<string, AssetPrice>>({});
+  const priceMapRef = React.useRef<Record<string, AssetPrice>>({});
+  const needsFlushRef = React.useRef(false);
 
   React.useEffect(() => {
     let source: EventSource | null = null;
@@ -38,16 +42,14 @@ export const usePriceStream = () => {
             timestamp: string;
           };
 
-          setAssetPrices((prev) => ({
-            ...prev,
-            [payload.asset_id]: {
-              condition_id: payload.condition_id,
-              price: payload.price,
-              best_bid: payload.best_bid,
-              best_ask: payload.best_ask,
-              timestamp: payload.timestamp,
-            },
-          }));
+          priceMapRef.current[payload.asset_id] = {
+            condition_id: payload.condition_id,
+            price: payload.price,
+            best_bid: payload.best_bid,
+            best_ask: payload.best_ask,
+            timestamp: payload.timestamp,
+          };
+          needsFlushRef.current = true;
         } catch (error) {
           console.error("Failed to parse price update:", error);
         }
@@ -62,10 +64,18 @@ export const usePriceStream = () => {
 
     connect();
 
+    const flushTimer = setInterval(() => {
+      if (needsFlushRef.current) {
+        needsFlushRef.current = false;
+        setAssetPrices({ ...priceMapRef.current });
+      }
+    }, FLUSH_INTERVAL_MS);
+
     return () => {
       if (retryHandle) {
         clearTimeout(retryHandle);
       }
+      clearInterval(flushTimer);
       source?.close();
     };
   }, []);
