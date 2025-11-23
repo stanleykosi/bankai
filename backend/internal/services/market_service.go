@@ -531,12 +531,10 @@ func (s *MarketService) GetMarketLanes(ctx context.Context, params MarketLanePar
 		}
 	}
 
-	markets, err := s.loadAllActiveMarkets(ctx)
+	lanes, err := s.buildMarketLanes(ctx, params)
 	if err != nil {
 		return nil, err
 	}
-
-	lanes := computeMarketLanesFromSlice(markets, params)
 
 	if useCache {
 		s.cacheMarketLanes(ctx, lanes)
@@ -569,81 +567,6 @@ func buildMetaEntries(source map[string]int, limit int) []MetaEntry {
 	return entries
 }
 
-func filterMarkets(markets []models.Market, category, tag string) []models.Market {
-	if category == "" && tag == "" {
-		return cloneMarkets(markets)
-	}
-
-	var filtered []models.Market
-	for _, market := range markets {
-		if category != "" && market.Category != category {
-			continue
-		}
-		if tag != "" {
-			found := false
-			for _, t := range market.Tags {
-				if t == tag {
-					found = true
-					break
-				}
-			}
-			if !found {
-				continue
-			}
-		}
-		filtered = append(filtered, market)
-	}
-	return filtered
-}
-
-func applyPoolSort(markets []models.Market, sortKey string) []models.Market {
-	pool := cloneMarkets(markets)
-
-	switch sortKey {
-	case "volume":
-		sort.SliceStable(pool, func(i, j int) bool {
-			return pool[i].Volume24h > pool[j].Volume24h
-		})
-	case "liquidity":
-		sort.SliceStable(pool, func(i, j int) bool {
-			return pool[i].Liquidity > pool[j].Liquidity
-		})
-	case "created":
-		sort.SliceStable(pool, func(i, j int) bool {
-			return pool[i].CreatedAt.After(pool[j].CreatedAt)
-		})
-	default:
-		// Leave as-is for the "all" pool
-	}
-
-	if len(pool) > lanePoolCap && sortKey != "all" {
-		return pool[:lanePoolCap]
-	}
-	return pool
-}
-
-func selectTop(source []models.Market, comparator func(models.Market, models.Market) bool, limit int) []models.Market {
-	if len(source) == 0 || limit <= 0 {
-		return []models.Market{}
-	}
-
-	cp := cloneMarkets(source)
-	sort.Slice(cp, func(i, j int) bool {
-		return comparator(cp[i], cp[j])
-	})
-
-	if len(cp) > limit {
-		cp = cp[:limit]
-	}
-	return cp
-}
-
-func cloneMarkets(source []models.Market) []models.Market {
-	cp := make([]models.Market, len(source))
-	copy(cp, source)
-	return cp
-}
-
 func computeMarketMeta(markets []models.Market) *MarketMeta {
 	categoryCounts := make(map[string]int)
 	tagCounts := make(map[string]int)
@@ -666,27 +589,45 @@ func computeMarketMeta(markets []models.Market) *MarketMeta {
 	}
 }
 
-func computeMarketLanesFromSlice(markets []models.Market, params MarketLaneParams) *MarketLanes {
-	filtered := filterMarkets(markets, params.Category, params.Tag)
-	pool := applyPoolSort(filtered, params.PoolSort)
+func (s *MarketService) queryTopMarkets(ctx context.Context, orderBy string, params MarketLaneParams) ([]models.Market, error) {
+	query := s.DB.WithContext(ctx).Model(&models.Market{}).Where("active = ?", true)
 
-	fresh := selectTop(pool, func(i, j models.Market) bool {
-		return i.CreatedAt.After(j.CreatedAt)
-	}, 20)
+	if params.Category != "" {
+		query = query.Where("category = ?", params.Category)
+	}
 
-	velocity := selectTop(pool, func(i, j models.Market) bool {
-		return i.VolumeAllTime > j.VolumeAllTime
-	}, 20)
+	if params.Tag != "" {
+		query = query.Where("? = ANY(tags)", params.Tag)
+	}
 
-	liquidity := selectTop(pool, func(i, j models.Market) bool {
-		return i.Liquidity > j.Liquidity
-	}, 20)
+	var markets []models.Market
+	if err := query.Order(orderBy).Limit(20).Find(&markets).Error; err != nil {
+		return nil, err
+	}
+	return markets, nil
+}
+
+func (s *MarketService) buildMarketLanes(ctx context.Context, params MarketLaneParams) (*MarketLanes, error) {
+	fresh, err := s.queryTopMarkets(ctx, "created_at DESC", params)
+	if err != nil {
+		return nil, err
+	}
+
+	velocity, err := s.queryTopMarkets(ctx, "volume_all_time DESC", params)
+	if err != nil {
+		return nil, err
+	}
+
+	liquidity, err := s.queryTopMarkets(ctx, "liquidity DESC", params)
+	if err != nil {
+		return nil, err
+	}
 
 	return &MarketLanes{
 		FreshDrops:    fresh,
 		HighVelocity:  velocity,
 		DeepLiquidity: liquidity,
-	}
+	}, nil
 }
 
 func (s *MarketService) cacheMarketMeta(ctx context.Context, meta *MarketMeta) {
@@ -711,8 +652,9 @@ func (s *MarketService) cacheDerivedSnapshots(ctx context.Context, markets []mod
 	meta := computeMarketMeta(markets)
 	s.cacheMarketMeta(ctx, meta)
 
-	lanes := computeMarketLanesFromSlice(markets, MarketLaneParams{})
-	s.cacheMarketLanes(ctx, lanes)
+	if lanes, err := s.buildMarketLanes(ctx, MarketLaneParams{}); err == nil {
+		s.cacheMarketLanes(ctx, lanes)
+	}
 }
 
 type QueryActiveMarketsParams struct {
