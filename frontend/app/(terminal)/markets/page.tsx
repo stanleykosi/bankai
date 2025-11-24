@@ -45,9 +45,9 @@ const formatCurrency = (value?: number) => {
   return `$${value.toFixed(2)}`;
 };
 
-const formatPrice = (value?: number) => {
-  if (typeof value !== "number") return "—";
-  return `${(value * 100).toFixed(1)}%`;
+const formatCents = (value?: number) => {
+  if (typeof value !== "number" || Number.isNaN(value)) return "—";
+  return `${(value * 100).toFixed(1)}¢`;
 };
 
 const formatDate = (iso?: string) => {
@@ -60,6 +60,19 @@ const formatDate = (iso?: string) => {
     hour: "2-digit",
     minute: "2-digit",
   });
+};
+
+const parseOutcomes = (outcomes?: string): string[] => {
+  if (!outcomes) return [];
+  try {
+    const parsed = JSON.parse(outcomes);
+    if (Array.isArray(parsed)) {
+      return parsed.map((value) => String(value));
+    }
+  } catch {
+    // ignore malformed JSON
+  }
+  return [];
 };
 
 export default function MarketsPage() {
@@ -172,44 +185,80 @@ export default function MarketsPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Market</TableHead>
-                <TableHead>Tags</TableHead>
+                <TableHead>Outcomes</TableHead>
                 <TableHead>All-Time Volume</TableHead>
                 <TableHead>24h Volume</TableHead>
                 <TableHead>Liquidity</TableHead>
-                <TableHead>Yes / No</TableHead>
-                <TableHead>Created</TableHead>
+                <TableHead>Spread</TableHead>
+                <TableHead>Start</TableHead>
+                <TableHead>End</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {markets.map((market) => (
                 <TableRow key={market.condition_id}>
                   <TableCell className="space-y-1">
-                    <Link
-                      href={`https://polymarket.com/event/${market.slug}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="font-semibold text-primary hover:underline"
-                    >
-                      {market.title}
-                    </Link>
-                    <div className="text-xs text-muted-foreground">#{market.category || "general"}</div>
+                    <div className="flex items-center gap-3">
+                      {market.image_url || market.icon_url ? (
+                        <div className="h-10 w-10 rounded-md overflow-hidden border border-border/40 bg-background/40">
+                          <img
+                            src={market.image_url || market.icon_url || ""}
+                            alt={market.title}
+                            className="h-full w-full object-cover"
+                            loading="lazy"
+                          />
+                        </div>
+                      ) : null}
+                      <div className="flex-1">
+                        <Link
+                          href={`https://polymarket.com/event/${market.slug}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-semibold text-primary hover:underline"
+                        >
+                          {market.title}
+                        </Link>
+                      </div>
+                    </div>
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
-                    {market.tags?.length ? market.tags.slice(0, 3).join(", ") : "—"}
+                    <div className="flex flex-col gap-1">
+                      {(() => {
+                        const labels = parseOutcomes(market.outcomes);
+                        const entries = [];
+                        if (labels.length > 0) {
+                          entries.push({ label: labels[0], price: market.yes_price, color: "text-constructive" });
+                        }
+                        if (labels.length > 1) {
+                          entries.push({ label: labels[1], price: market.no_price, color: "text-destructive" });
+                        }
+                        if (!entries.length) {
+                          entries.push({ label: "Outcome A", price: market.yes_price, color: "text-constructive" });
+                          entries.push({ label: "Outcome B", price: market.no_price, color: "text-destructive" });
+                        }
+                        labels.slice(2).forEach((label) => {
+                          entries.push({ label, price: undefined, color: "text-muted-foreground" });
+                        });
+                        return entries.slice(0, 4).map((entry) => (
+                          <div key={`${market.condition_id}-${entry.label}`} className="flex justify-between gap-2">
+                            <span className="truncate">{entry.label}</span>
+                            <span className={`font-mono ${entry.color}`}>{formatCents(entry.price)}</span>
+                          </div>
+                        ));
+                      })()}
+                    </div>
                   </TableCell>
                   <TableCell>{formatCurrency(market.volume_all_time ?? market.volume_24h)}</TableCell>
                   <TableCell>{formatCurrency(market.volume_24h)}</TableCell>
                   <TableCell>{formatCurrency(market.liquidity)}</TableCell>
-                  <TableCell className="space-x-2 text-sm">
-                    <span className="text-constructive">{formatPrice(market.yes_price)}</span>
-                    <span className="text-destructive opacity-70">{formatPrice(market.no_price)}</span>
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{formatDate(market.created_at)}</TableCell>
+                  <TableCell>{formatCents(market.spread)}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{formatDate(market.start_date)}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{formatDate(market.end_date)}</TableCell>
                 </TableRow>
               ))}
               {!markets.length && (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center text-muted-foreground">
+                  <TableCell colSpan={8} className="text-center text-muted-foreground">
                     No markets match the selected filters.
                   </TableCell>
                 </TableRow>
