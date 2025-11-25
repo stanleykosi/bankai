@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"sort"
 	"strconv"
@@ -670,6 +671,10 @@ type QueryActiveMarketsParams struct {
 }
 
 func (s *MarketService) QueryActiveMarkets(ctx context.Context, params QueryActiveMarketsParams) ([]models.Market, error) {
+	if params.Sort == "trending" {
+		return s.queryTrendingMarkets(ctx, params)
+	}
+
 	query := s.DB.WithContext(ctx).Model(&models.Market{}).Where(activeWhereClause, true, false, true)
 
 	if params.Category != "" {
@@ -685,6 +690,10 @@ func (s *MarketService) QueryActiveMarkets(ctx context.Context, params QueryActi
 		query = query.Order("liquidity DESC")
 	case "created":
 		query = query.Order("created_at DESC")
+	case "volume_all_time":
+		query = query.Order("volume_all_time DESC")
+	case "spread":
+		query = query.Order("spread DESC")
 	case "volume":
 		query = query.Order("volume_24h DESC")
 	default:
@@ -710,4 +719,154 @@ func (s *MarketService) QueryActiveMarkets(ctx context.Context, params QueryActi
 
 	s.attachRealtimePrices(ctx, markets)
 	return markets, nil
+}
+
+func (s *MarketService) queryTrendingMarkets(ctx context.Context, params QueryActiveMarketsParams) ([]models.Market, error) {
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 200
+	}
+
+	candidateLimit := limit * 3
+	if candidateLimit < 200 {
+		candidateLimit = 200
+	}
+
+	query := s.DB.WithContext(ctx).Where(activeWhereClause, true, false, true)
+
+	if params.Category != "" {
+		query = query.Where("category = ?", params.Category)
+	}
+
+	if params.Tag != "" {
+		query = query.Where("? = ANY(tags)", params.Tag)
+	}
+
+	var markets []models.Market
+	if err := query.Order("volume_24h DESC").Limit(candidateLimit).Find(&markets).Error; err != nil {
+		return nil, err
+	}
+
+	if len(markets) == 0 {
+		return markets, nil
+	}
+
+	velocities := s.fetchVelocityScores(ctx, markets)
+
+	type metrics struct {
+		momentum float64
+		liquidity float64
+		velocity float64
+	}
+
+	values := make([]metrics, len(markets))
+
+	volMin, volMax := math.MaxFloat64, 0.0
+	liqMin, liqMax := math.MaxFloat64, 0.0
+	velMin, velMax := math.MaxFloat64, 0.0
+
+	for i, market := range markets {
+		momentum := market.Volume24h
+		if market.Volume1Week > 0 {
+			momentum = market.Volume24h / market.Volume1Week
+		}
+		if momentum < volMin {
+			volMin = momentum
+		}
+		if momentum > volMax {
+			volMax = momentum
+		}
+
+		liquidity := market.Liquidity
+		if liquidity < liqMin {
+			liqMin = liquidity
+		}
+		if liquidity > liqMax {
+			liqMax = liquidity
+		}
+
+		velocity := velocities[market.ConditionID]
+		if velocity < velMin {
+			velMin = velocity
+		}
+		if velocity > velMax {
+			velMax = velocity
+		}
+
+		values[i] = metrics{momentum: momentum, liquidity: liquidity, velocity: velocity}
+	}
+
+	normalize := func(value, min, max float64) float64 {
+		if max <= min {
+			if max == 0 {
+				return 0
+			}
+			return 0
+		}
+		norm := (value - min) / (max - min)
+		if norm < 0 {
+			return 0
+		}
+		return norm
+	}
+
+	for i := range markets {
+		m := values[i]
+		normMomentum := normalize(m.momentum, volMin, volMax)
+		normLiquidity := normalize(m.liquidity, liqMin, liqMax)
+		normVelocity := normalize(m.velocity, velMin, velMax)
+
+		markets[i].TrendingScore = 0.5*normMomentum + 0.2*normLiquidity + 0.3*normVelocity
+	}
+
+	sort.SliceStable(markets, func(i, j int) bool {
+		if markets[i].TrendingScore == markets[j].TrendingScore {
+			return markets[i].Volume24h > markets[j].Volume24h
+		}
+		return markets[i].TrendingScore > markets[j].TrendingScore
+	})
+
+	offset := params.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(markets) {
+		return []models.Market{}, nil
+	}
+
+	end := offset + limit
+	if end > len(markets) {
+		end = len(markets)
+	}
+
+	markets = markets[offset:end]
+	s.attachRealtimePrices(ctx, markets)
+	return markets, nil
+}
+
+func (s *MarketService) fetchVelocityScores(ctx context.Context, markets []models.Market) map[string]float64 {
+	result := make(map[string]float64, len(markets))
+	if len(markets) == 0 {
+		return result
+	}
+
+	pipe := s.Redis.Pipeline()
+	cmds := make([]*redis.FloatCmd, len(markets))
+	for i, market := range markets {
+		cmds[i] = pipe.ZScore(ctx, "market:velocity", market.ConditionID)
+	}
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		return result
+	}
+
+	for i, market := range markets {
+		if score, err := cmds[i].Result(); err == nil {
+			result[market.ConditionID] = score
+		} else {
+			result[market.ConditionID] = 0
+		}
+	}
+
+	return result
 }

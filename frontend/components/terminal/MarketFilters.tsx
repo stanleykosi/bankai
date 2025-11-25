@@ -1,7 +1,14 @@
 import React from "react";
 import { XCircle } from "lucide-react";
 
-export type SortOption = "all" | "volume" | "liquidity" | "created";
+export type SortOption =
+  | "all"
+  | "trending"
+  | "volume"
+  | "volume_all_time"
+  | "liquidity"
+  | "spread"
+  | "created";
 
 export interface FilterOption {
   value: string;
@@ -21,9 +28,12 @@ interface MarketFiltersProps {
 
 const sortOptions: { value: SortOption; label: string; description: string }[] = [
   { value: "all", label: "All Active Markets", description: "Default: newest first" },
-  { value: "volume", label: "24h Volume", description: "Most traded in last 24h" },
-  { value: "liquidity", label: "Deep Liquidity", description: "Highest capital depth" },
+  { value: "trending", label: "Trending Markets", description: "Composite momentum + velocity" },
   { value: "created", label: "Newest Listings", description: "Latest markets first" },
+  { value: "volume", label: "24h Volume", description: "Most traded in last 24h" },
+  { value: "volume_all_time", label: "All-Time Volume", description: "Highest lifetime volume" },
+  { value: "liquidity", label: "Deep Liquidity", description: "Highest capital depth" },
+  { value: "spread", label: "Widest Spread", description: "Largest bid/ask distance" },
 ];
 
 export const MarketFilters: React.FC<MarketFiltersProps> = ({

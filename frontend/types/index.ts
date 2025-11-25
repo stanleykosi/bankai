@@ -89,6 +89,8 @@ export interface Market {
   created_at: string; // ISO String
   market_created_at?: string;
   market_updated_at?: string;
+
+  trending_score?: number;
 }
 
 export interface User {

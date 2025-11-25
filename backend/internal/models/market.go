@@ -190,6 +190,8 @@ type Market struct {
 	NoBestAsk      float64    `gorm:"-" json:"no_best_ask"`
 	NoPriceUpdated *time.Time `gorm:"-" json:"no_price_updated"`
 
+	TrendingScore float64 `gorm:"-" json:"trending_score,omitempty"`
+
 	CreatedAt time.Time `gorm:"column:created_at;autoCreateTime" json:"created_at"`
 }
 
