@@ -9,6 +9,7 @@
  * - backend/internal/api/middleware
  * - backend/internal/services
  * - backend/internal/polymarket/gamma
+ * - backend/internal/polymarket/relayer
  */
 
 package api
@@ -19,6 +20,7 @@ import (
 	"github.com/bankai-project/backend/internal/config"
 	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/polymarket/gamma"
+	"github.com/bankai-project/backend/internal/polymarket/relayer"
 	"github.com/bankai-project/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
@@ -35,15 +37,20 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 		// but protected routes will fail.
 	}
 
-	// 2. Initialize Services
+	// 2. Initialize Clients
 	gammaClient := gamma.NewClient(cfg)
-	marketService := services.NewMarketService(db, rdb, gammaClient)
+	relayerClient := relayer.NewClient(cfg)
 
-	// 3. Initialize Handlers
+	// 3. Initialize Services
+	marketService := services.NewMarketService(db, rdb, gammaClient)
+	walletManager := services.NewWalletManager(db, relayerClient)
+
+	// 4. Initialize Handlers
 	userHandler := handlers.NewUserHandler(db)
 	marketHandler := handlers.NewMarketHandler(marketService)
+	walletHandler := handlers.NewWalletHandler(walletManager)
 
-	// 4. Define Routes
+	// 5. Define Routes
 	// Root route for easy health checks
 	app.Get("/", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
@@ -74,5 +81,11 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	user := v1.Group("/user", middleware.Protected())
 	user.Post("/sync", userHandler.SyncUser)
 	user.Get("/me", userHandler.GetMe)
+
+	// Wallet Routes (Protected)
+	wallet := v1.Group("/wallet", middleware.Protected())
+	wallet.Get("/", walletHandler.GetWallet)
+	wallet.Post("/deploy", walletHandler.DeployWallet)
+	wallet.Post("/update", walletHandler.UpdateWallet)
 }
 
