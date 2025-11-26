@@ -29,10 +29,11 @@ const CONNECTOR_LABELS: Record<string, string> = {
 const truncate = (addr: string) => `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 
 export function WalletConnectButton() {
-  const { address, isConnecting, isReconnecting, status } = useAccount();
-  const { connect, connectors, error, status: connectStatus } = useConnect();
+  const { address, isConnecting, isReconnecting } = useAccount();
+  const { connect, connectors, error, isPending } = useConnect();
   const { disconnect } = useDisconnect();
   const [open, setOpen] = useState(false);
+  const [connectingId, setConnectingId] = useState<string | null>(null);
 
   const availableConnectors = useMemo(
     () =>
@@ -48,26 +49,30 @@ export function WalletConnectButton() {
   useEffect(() => {
     if (address) {
       setOpen(false);
+      setConnectingId(null);
     }
   }, [address]);
 
   const handleConnect = async (connectorId: string) => {
     const connector = connectors.find(({ id }) => id === connectorId);
-    if (!connector) return;
-    connect({ connector });
+    if (!connector || !connector.ready) return;
+    
+    setConnectingId(connectorId);
+    try {
+      await connect({ connector });
+    } catch (err) {
+      console.error("Connection error:", err);
+      setConnectingId(null);
+    }
   };
 
   const handleDisconnect = () => {
     disconnect();
     setOpen(false);
+    setConnectingId(null);
   };
 
-  const busy =
-    connectStatus === "pending" ||
-    status === "connecting" ||
-    status === "reconnecting" ||
-    isConnecting ||
-    isReconnecting;
+  const busy = isPending || isConnecting || isReconnecting;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -97,20 +102,25 @@ export function WalletConnectButton() {
         </DialogHeader>
 
         <div className="space-y-3">
-          {availableConnectors.map((connector) => (
-            <Button
-              key={connector.id}
-              variant="outline"
-              className="flex w-full items-center justify-between font-mono"
-              disabled={!connector.ready || busy}
-              onClick={() => handleConnect(connector.id)}
-            >
-              <span className="flex items-center gap-2">
-                {CONNECTOR_LABELS[connector.id] ?? connector.name}
-                {busy && <Loader2 className="h-3 w-3 animate-spin" />}
-              </span>
-            </Button>
-          ))}
+          {availableConnectors.map((connector) => {
+            const isConnectingThis = connectingId === connector.id;
+            const isDisabled = !connector.ready || (busy && !isConnectingThis);
+            
+            return (
+              <Button
+                key={connector.id}
+                variant="outline"
+                className="flex w-full items-center justify-between font-mono"
+                disabled={isDisabled}
+                onClick={() => handleConnect(connector.id)}
+              >
+                <span className="flex items-center gap-2">
+                  {CONNECTOR_LABELS[connector.id] ?? connector.name}
+                  {isConnectingThis && <Loader2 className="h-3 w-3 animate-spin" />}
+                </span>
+              </Button>
+            );
+          })}
 
           {availableConnectors.length === 0 && (
             <p className="text-sm text-muted-foreground">
