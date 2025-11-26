@@ -13,6 +13,7 @@ import { SignInButton, UserButton } from "@clerk/nextjs";
 import { Activity, BarChart2, LayoutDashboard, ShieldCheck, Wallet } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { WalletConnectButton } from "@/components/wallet/WalletConnectButton";
 import { useWallet } from "@/hooks/useWallet";
 import { cn } from "@/lib/utils";
 
@@ -61,20 +62,26 @@ export function Header() {
         </div>
 
         {/* User / Wallet Actions */}
-        <div className="flex items-center space-x-4">
+        <div className="flex items-center space-x-3">
+          <WalletConnectButton />
+
           {isLoading ? (
             <div className="h-8 w-24 animate-pulse rounded bg-muted" />
           ) : isAuthenticated ? (
             <>
               <div className="hidden items-center gap-3 rounded-md border border-border bg-card/50 px-3 py-1.5 md:flex">
-                <div className="flex flex-col items-end text-xs">
+                <div className="flex flex-col text-xs">
                   <span className="font-mono text-muted-foreground">
                     {eoaAddress ? truncateAddress(eoaAddress) : "No Wallet"}
                   </span>
-                  {vaultAddress && (
+                  {vaultAddress ? (
                     <span className="flex items-center gap-1 font-mono text-[10px] uppercase text-constructive">
                       <ShieldCheck className="h-3 w-3" />
                       {(user?.wallet_type ?? "VAULT")} ACTIVE
+                    </span>
+                  ) : (
+                    <span className="font-mono text-[10px] uppercase text-muted-foreground">
+                      Wallet not synced
                     </span>
                   )}
                 </div>
@@ -101,7 +108,7 @@ export function Header() {
           ) : (
             <SignInButton mode="modal">
               <Button size="sm" className="font-mono font-bold tracking-wide">
-                CONNECT WALLET
+                Sign In
               </Button>
             </SignInButton>
           )}

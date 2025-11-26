@@ -7,7 +7,10 @@
 
 import { createConfig, http } from "wagmi";
 import { polygon } from "wagmi/chains";
-import { injected } from "wagmi/connectors";
+import { injected, walletConnect } from "wagmi/connectors";
+
+const walletConnectProjectId =
+  process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || "";
 
 export const config = createConfig({
   chains: [polygon],
@@ -16,6 +19,14 @@ export const config = createConfig({
   },
   connectors: [
     injected({ shimDisconnect: true }),
+    ...(walletConnectProjectId
+      ? [
+          walletConnect({
+            projectId: walletConnectProjectId,
+            showQrModal: true,
+          }),
+        ]
+      : []),
   ],
   ssr: true,
 });

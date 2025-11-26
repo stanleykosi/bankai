@@ -25,13 +25,13 @@ export interface UseWalletReturn {
   user: User | null;
   eoaAddress: string | null;
   vaultAddress: string | null;
-  disconnect: () => Promise<void>;
+  disconnect: () => void;
   refreshUser: () => Promise<void>;
 }
 
 export function useWallet(): UseWalletReturn {
   const { user: clerkUser, isLoaded: isClerkLoaded } = useUser();
-  const { getToken, signOut } = useAuth();
+  const { getToken } = useAuth();
   const { address: wagmiAddress, isConnected: isWagmiConnected } = useAccount();
   const { disconnect: wagmiDisconnect } = useDisconnect();
 
@@ -94,15 +94,22 @@ export function useWallet(): UseWalletReturn {
     }
   }, [backendUser?.eoa_address, backendUser?.vault_address, clerkUser, eoaAddress, isClerkLoaded, syncUser]);
 
-  const handleDisconnect = useCallback(async () => {
+  const handleDisconnect = useCallback(() => {
     if (isWagmiConnected) {
       wagmiDisconnect();
     }
-    if (typeof signOut === "function") {
-      await signOut();
-    }
     setBackendUser(null);
-  }, [isWagmiConnected, signOut, wagmiDisconnect]);
+  }, [isWagmiConnected, wagmiDisconnect]);
+
+  useEffect(() => {
+    if (!backendUser) {
+      return;
+    }
+
+    if (!eoaAddress || backendUser.eoa_address !== eoaAddress) {
+      setBackendUser(null);
+    }
+  }, [backendUser, eoaAddress]);
 
   return {
     isAuthenticated: !!clerkUser,
