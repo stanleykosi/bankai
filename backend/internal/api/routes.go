@@ -44,11 +44,19 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	// 3. Initialize Services
 	marketService := services.NewMarketService(db, rdb, gammaClient)
 	walletManager := services.NewWalletManager(db, relayerClient)
+	
+	// Initialize Blockchain Service
+	blockchainService, err := services.NewBlockchainService(cfg)
+	if err != nil {
+		logger.Error("Failed to initialize blockchain service: %v", err)
+		// Continue without blockchain service - balance checks will fail but app can still run
+		blockchainService = nil
+	}
 
 	// 4. Initialize Handlers
 	userHandler := handlers.NewUserHandler(db)
 	marketHandler := handlers.NewMarketHandler(marketService)
-	walletHandler := handlers.NewWalletHandler(walletManager)
+	walletHandler := handlers.NewWalletHandler(walletManager, blockchainService)
 
 	// 5. Define Routes
 	// Root route for easy health checks
@@ -87,5 +95,8 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	wallet.Get("/", walletHandler.GetWallet)
 	wallet.Post("/deploy", walletHandler.DeployWallet)
 	wallet.Post("/update", walletHandler.UpdateWallet)
+	wallet.Get("/deposit", walletHandler.GetDepositAddress)
+	wallet.Get("/balance", walletHandler.GetBalance)
+	wallet.Post("/withdraw", walletHandler.Withdraw)
 }
 

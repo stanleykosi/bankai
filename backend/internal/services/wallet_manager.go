@@ -66,13 +66,20 @@ func (s *WalletManager) EnsureWallet(ctx context.Context, clerkID string) (*mode
 		return &user, nil
 	}
 
-	// 2. If not, we try to deploy (or discover).
+	// 2. If user has no EOA address, they can't deploy a vault yet
+	// Return the user as-is - they need to connect a wallet first
+	if user.EOAAddress == "" {
+		logger.Info("User %s has no EOA address yet. Vault deployment requires a connected wallet.", user.ClerkID)
+		return &user, nil
+	}
+
+	// 3. If not, we try to deploy (or discover).
 	// For Metamask users, the Vault is usually a Gnosis Safe.
 	// The Relayer handles the logic of "deploy if not exists" usually.
 
 	logger.Info("🧐 User %s (EOA: %s) has no vault. Triggering deployment check...", user.ClerkID, user.EOAAddress)
 
-	// 3. Call Relayer to Deploy
+	// 4. Call Relayer to Deploy
 	// This will hit POST /submit on the Relayer with properly ABI-encoded transaction data.
 	// The DeploySafe method handles full ABI encoding of the Safe deployment transaction.
 	resp, err := s.Relayer.DeploySafe(ctx, user.EOAAddress)
@@ -83,7 +90,7 @@ func (s *WalletManager) EnsureWallet(ctx context.Context, clerkID string) (*mode
 		return &user, nil
 	}
 
-	// 4. Check Response
+	// 5. Check Response
 	if resp.TransactionHash != "" {
 		logger.Info("✅ Deployment Transaction Sent: %s", resp.TransactionHash)
 		// In a full system, we'd poll this TX hash to get the event logs and find the Safe Address.

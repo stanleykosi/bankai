@@ -7,6 +7,7 @@
 
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { SignInButton, UserButton } from "@clerk/nextjs";
@@ -14,6 +15,8 @@ import { Activity, BarChart2, LayoutDashboard, ShieldCheck, Wallet } from "lucid
 
 import { Button } from "@/components/ui/button";
 import { WalletConnectButton } from "@/components/wallet/WalletConnectButton";
+import { DepositWithdrawModal } from "@/components/wallet/DepositWithdrawModal";
+import { BalanceDisplay } from "@/components/wallet/BalanceDisplay";
 import { useWallet } from "@/hooks/useWallet";
 import { cn } from "@/lib/utils";
 
@@ -29,6 +32,7 @@ const truncateAddress = (address: string) =>
 export function Header() {
   const pathname = usePathname();
   const { isAuthenticated, isLoading, eoaAddress, vaultAddress, user } = useWallet();
+  const [depositModalOpen, setDepositModalOpen] = useState(false);
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -67,34 +71,44 @@ export function Header() {
             <>
               <WalletConnectButton />
 
-              {!isLoading && (
-                <>
-                  <div className="hidden items-center gap-3 rounded-md border border-border bg-card/50 px-3 py-1.5 md:flex">
-                    <div className="flex flex-col text-xs">
-                      <span className="font-mono text-muted-foreground">
+              {/* Wallet Status - Compact */}
+              <div className="hidden items-center gap-2 rounded-md border border-border bg-card/50 px-2.5 py-1 md:flex">
+                <div className="flex flex-col text-xs">
+                  {isLoading ? (
+                    <span className="font-mono text-muted-foreground animate-pulse text-[10px]">
+                      Syncing...
+                    </span>
+                  ) : (
+                    <>
+                      <span className="font-mono text-[10px] text-muted-foreground">
                         {eoaAddress ? truncateAddress(eoaAddress) : "No Wallet"}
                       </span>
-                      {vaultAddress ? (
-                        <span className="flex items-center gap-1 font-mono text-[10px] uppercase text-constructive">
-                          <ShieldCheck className="h-3 w-3" />
+                      {vaultAddress && (
+                        <span className="flex items-center gap-1 font-mono text-[9px] uppercase text-constructive">
+                          <ShieldCheck className="h-2.5 w-2.5" />
                           {(user?.wallet_type ?? "VAULT")} ACTIVE
                         </span>
-                      ) : (
-                        <span className="font-mono text-[10px] uppercase text-muted-foreground">
-                          Wallet not synced
-                        </span>
                       )}
-                    </div>
-                  </div>
+                    </>
+                  )}
+                </div>
+              </div>
 
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="hidden border-primary/30 text-xs font-mono uppercase tracking-wider hover:bg-primary/10 hover:text-primary md:flex"
-                  >
-                    Deposit
-                  </Button>
-                </>
+              {/* Balance Display */}
+              {!isLoading && vaultAddress && (
+                <BalanceDisplay className="hidden md:flex" />
+              )}
+
+              {/* Deposit/Withdraw Button */}
+              {!isLoading && vaultAddress && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setDepositModalOpen(true)}
+                  className="hidden border-primary/30 text-xs font-mono uppercase tracking-wider hover:bg-primary/10 hover:text-primary md:flex"
+                >
+                  Funds
+                </Button>
               )}
 
               <UserButton
@@ -105,6 +119,11 @@ export function Header() {
                     userButtonPopoverCard: "border border-border bg-card shadow-xl",
                   },
                 }}
+              />
+
+              <DepositWithdrawModal
+                open={depositModalOpen}
+                onOpenChange={setDepositModalOpen}
               />
             </>
           ) : isLoading ? (
