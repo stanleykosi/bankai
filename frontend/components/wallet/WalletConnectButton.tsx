@@ -83,29 +83,49 @@ export function WalletConnectButton() {
     }
   }, [address]);
 
+  // Clear connecting state on error and allow modal to be closed
+  useEffect(() => {
+    if (error) {
+      // Clear connecting state after a short delay to show the error
+      const timer = setTimeout(() => {
+        setConnectingId(null);
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [error]);
+
+  // Close modal when user clicks outside or presses escape (even during connection)
+  const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen) {
+      // If closing, clear any pending connection state
+      setConnectingId(null);
+    }
+    setOpen(newOpen);
+  };
+
   const handleConnect = async (connectorId: string) => {
-    console.log("Attempting to connect:", connectorId);
     const connector = connectors.find(({ id }) => id === connectorId);
     
     if (!connector) {
-      console.error("Connector not found:", connectorId);
       return;
     }
 
-    console.log("Connector found:", {
-      id: connector.id,
-      name: connector.name,
-      ready: connector.ready,
-    });
-
-    // Don't block if not ready - let wagmi handle it
     setConnectingId(connectorId);
+    
+    // Set a timeout for WalletConnect connections (they can hang)
+    const timeoutId = connectorId === "walletConnect" 
+      ? setTimeout(() => {
+          setConnectingId(null);
+        }, 15000) // 15 second timeout for WalletConnect
+      : null;
     
     try {
       await connect({ connector });
+      if (timeoutId) clearTimeout(timeoutId);
     } catch (err) {
       console.error("Connection error:", err);
       setConnectingId(null);
+      if (timeoutId) clearTimeout(timeoutId);
     }
   };
 
@@ -119,7 +139,7 @@ export function WalletConnectButton() {
   const isBusy = isPending || isConnecting || isReconnecting;
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button
           variant={address ? "secondary" : "default"}
@@ -166,7 +186,6 @@ export function WalletConnectButton() {
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    console.log("Button clicked:", connector.id, "disabled:", shouldDisable);
                     if (!shouldDisable) {
                       handleConnect(connector.id);
                     }
@@ -208,8 +227,22 @@ export function WalletConnectButton() {
           {error && (
             <div className="mt-2 rounded-md border border-destructive/50 bg-destructive/10 p-3">
               <p className="text-sm text-destructive font-mono">
-                {error.message || "Failed to connect wallet. Please try again."}
+                {error.message?.includes("WebSocket") 
+                  ? "Connection failed. Please try MetaMask or another browser wallet."
+                  : error.message || "Failed to connect wallet. Please try again."}
               </p>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="mt-2 w-full text-xs"
+                onClick={() => {
+                  setConnectingId(null);
+                  setOpen(false);
+                }}
+              >
+                Close
+              </Button>
             </div>
           )}
         </div>

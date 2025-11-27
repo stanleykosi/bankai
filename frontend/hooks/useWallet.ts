@@ -37,6 +37,19 @@ export function useWallet(): UseWalletReturn {
 
   const [backendUser, setBackendUser] = useState<User | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [clerkLoadTimeout, setClerkLoadTimeout] = useState(false);
+
+  // Fallback: if Clerk takes too long to load, assume it's loaded to prevent infinite loading
+  useEffect(() => {
+    if (!isClerkLoaded) {
+      const timer = setTimeout(() => {
+        setClerkLoadTimeout(true);
+      }, 5000); // 5 second timeout
+      return () => clearTimeout(timer);
+    } else {
+      setClerkLoadTimeout(false);
+    }
+  }, [isClerkLoaded]);
 
   const eoaAddress = useMemo(() => {
     if (isWagmiConnected && wagmiAddress) {
@@ -77,10 +90,12 @@ export function useWallet(): UseWalletReturn {
       const token = await getToken();
 
       if (!token) {
+        setIsSyncing(false);
         return;
       }
 
-      const { data } = await api.post<User>(
+      // Add timeout to prevent hanging
+      const syncPromise = api.post<User>(
         "/user/sync",
         {
           email: clerkUser.primaryEmailAddress?.emailAddress,
@@ -93,14 +108,27 @@ export function useWallet(): UseWalletReturn {
         }
       );
 
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Sync timeout")), 10000)
+      );
+
+      const { data } = await Promise.race([syncPromise, timeoutPromise]) as any;
+
       // Only call ensureWallet if we have an EOA address and no vault yet
       if (eoaAddress && !data?.vault_address) {
-        await ensureWallet(token);
+        try {
+          await ensureWallet(token);
+        } catch (walletError) {
+          // Don't fail the whole sync if ensureWallet fails
+          console.error("useWallet: Failed to ensure wallet", walletError);
+        }
       } else {
         setBackendUser(data);
       }
     } catch (error: any) {
       console.error("useWallet: Failed to sync user with backend", error);
+      // Even on error, set backendUser to null so UI can render
+      // This prevents infinite loading state
     } finally {
       setIsSyncing(false);
     }
@@ -143,9 +171,12 @@ export function useWallet(): UseWalletReturn {
     }
   }, [backendUser, eoaAddress]);
 
+  // Consider loaded if Clerk is loaded OR if timeout occurred (to prevent infinite loading)
+  const isEffectivelyLoaded = isClerkLoaded || clerkLoadTimeout;
+
   return {
     isAuthenticated: !!clerkUser,
-    isLoading: !isClerkLoaded || isSyncing,
+    isLoading: !isEffectivelyLoaded || isSyncing,
     user: backendUser,
     eoaAddress,
     vaultAddress: backendUser?.vault_address ?? null,

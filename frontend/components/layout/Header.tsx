@@ -63,37 +63,39 @@ export function Header() {
 
         {/* User / Wallet Actions */}
         <div className="flex items-center space-x-3">
-          {isLoading ? (
-            <div className="h-8 w-24 animate-pulse rounded bg-muted" />
-          ) : isAuthenticated ? (
+          {isAuthenticated ? (
             <>
               <WalletConnectButton />
 
-              <div className="hidden items-center gap-3 rounded-md border border-border bg-card/50 px-3 py-1.5 md:flex">
-                <div className="flex flex-col text-xs">
-                  <span className="font-mono text-muted-foreground">
-                    {eoaAddress ? truncateAddress(eoaAddress) : "No Wallet"}
-                  </span>
-                  {vaultAddress ? (
-                    <span className="flex items-center gap-1 font-mono text-[10px] uppercase text-constructive">
-                      <ShieldCheck className="h-3 w-3" />
-                      {(user?.wallet_type ?? "VAULT")} ACTIVE
-                    </span>
-                  ) : (
-                    <span className="font-mono text-[10px] uppercase text-muted-foreground">
-                      Wallet not synced
-                    </span>
-                  )}
-                </div>
-              </div>
+              {!isLoading && (
+                <>
+                  <div className="hidden items-center gap-3 rounded-md border border-border bg-card/50 px-3 py-1.5 md:flex">
+                    <div className="flex flex-col text-xs">
+                      <span className="font-mono text-muted-foreground">
+                        {eoaAddress ? truncateAddress(eoaAddress) : "No Wallet"}
+                      </span>
+                      {vaultAddress ? (
+                        <span className="flex items-center gap-1 font-mono text-[10px] uppercase text-constructive">
+                          <ShieldCheck className="h-3 w-3" />
+                          {(user?.wallet_type ?? "VAULT")} ACTIVE
+                        </span>
+                      ) : (
+                        <span className="font-mono text-[10px] uppercase text-muted-foreground">
+                          Wallet not synced
+                        </span>
+                      )}
+                    </div>
+                  </div>
 
-              <Button
-                variant="outline"
-                size="sm"
-                className="hidden border-primary/30 text-xs font-mono uppercase tracking-wider hover:bg-primary/10 hover:text-primary md:flex"
-              >
-                Deposit
-              </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="hidden border-primary/30 text-xs font-mono uppercase tracking-wider hover:bg-primary/10 hover:text-primary md:flex"
+                  >
+                    Deposit
+                  </Button>
+                </>
+              )}
 
               <UserButton
                 afterSignOutUrl="/"
@@ -105,6 +107,8 @@ export function Header() {
                 }}
               />
             </>
+          ) : isLoading ? (
+            <div className="h-8 w-24 animate-pulse rounded bg-muted" />
           ) : (
             <SignInButton mode="modal">
               <Button size="sm" className="font-mono font-bold tracking-wide">
