@@ -88,9 +88,13 @@ func (h *WalletHandler) UpdateWallet(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "vault_address is required"})
 	}
 
-	wType := models.WalletTypeSafe
+	var wType *models.WalletType
 	if req.WalletType == "PROXY" {
-		wType = models.WalletTypeProxy
+		wt := models.WalletTypeProxy
+		wType = &wt
+	} else if req.WalletType == "SAFE" {
+		wt := models.WalletTypeSafe
+		wType = &wt
 	}
 
 	if err := h.Manager.UpdateVaultAddress(c.Context(), clerkID, req.VaultAddress, wType); err != nil {

@@ -26,12 +26,12 @@ const (
 
 // User represents a registered user in the system
 type User struct {
-	ID           uuid.UUID  `gorm:"type:uuid;primary_key;default:uuid_generate_v4()" json:"id"`
-	ClerkID      string     `gorm:"uniqueIndex;not null" json:"clerk_id"`
-	Email        string     `json:"email"`
-	EOAAddress   string     `gorm:"column:eoa_address" json:"eoa_address"` // Optional - can be set when wallet is connected
-	VaultAddress string     `gorm:"column:vault_address" json:"vault_address"` // Proxy or Gnosis Safe
-	WalletType   WalletType `gorm:"column:wallet_type" json:"wallet_type"`
+	ID           uuid.UUID   `gorm:"type:uuid;primary_key;default:uuid_generate_v4()" json:"id"`
+	ClerkID      string       `gorm:"uniqueIndex;not null" json:"clerk_id"`
+	Email        string       `json:"email"`
+	EOAAddress   string       `gorm:"column:eoa_address" json:"eoa_address"` // Optional - can be set when wallet is connected
+	VaultAddress string       `gorm:"column:vault_address" json:"vault_address"` // Proxy or Gnosis Safe
+	WalletType   *WalletType  `gorm:"column:wallet_type" json:"wallet_type"` // Pointer to allow NULL
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updated_at"`

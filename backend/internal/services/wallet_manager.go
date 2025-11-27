@@ -98,18 +98,22 @@ func (s *WalletManager) EnsureWallet(ctx context.Context, clerkID string) (*mode
 }
 
 // UpdateVaultAddress manually updates the vault address (e.g. after frontend detects it on-chain)
-func (s *WalletManager) UpdateVaultAddress(ctx context.Context, clerkID, vaultAddr string, wType models.WalletType) error {
+func (s *WalletManager) UpdateVaultAddress(ctx context.Context, clerkID, vaultAddr string, wType *models.WalletType) error {
 	if vaultAddr == "" {
 		return errors.New("vault address cannot be empty")
 	}
 
+	updates := map[string]interface{}{
+		"vault_address": vaultAddr,
+		"updated_at":    time.Now(),
+	}
+	if wType != nil {
+		updates["wallet_type"] = *wType
+	}
+
 	return s.DB.WithContext(ctx).Model(&models.User{}).
 		Where("clerk_id = ?", clerkID).
-		Updates(map[string]interface{}{
-			"vault_address": vaultAddr,
-			"wallet_type":   wType,
-			"updated_at":    time.Now(),
-		}).Error
+		Updates(updates).Error
 }
 
 

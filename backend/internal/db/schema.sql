@@ -26,8 +26,8 @@ CREATE TABLE IF NOT EXISTS users (
     -- The actual fund-holding contract (Proxy or Gnosis Safe)
     vault_address VARCHAR(42),
     
-    -- Type of vault wallet
-    wallet_type VARCHAR(20) CHECK (wallet_type IN ('PROXY', 'SAFE')),
+    -- Type of vault wallet (NULL if no wallet connected yet)
+    wallet_type VARCHAR(20) CHECK (wallet_type IS NULL OR wallet_type IN ('PROXY', 'SAFE')),
     
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
