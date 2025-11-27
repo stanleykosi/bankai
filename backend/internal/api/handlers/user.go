@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bankai-project/backend/internal/api/middleware"
+	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/models"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -40,17 +41,15 @@ func (h *UserHandler) SyncUser(c *fiber.Ctx) error {
 	// 1. Get Clerk ID from context
 	clerkID, err := middleware.GetUserID(c)
 	if err != nil {
+		logger.Error("SyncUser: Failed to get user ID from context: %v", err)
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
 	// 2. Parse Body
 	var req SyncUserRequest
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
-	}
-
-	if req.EOAAddress == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "eoa_address is required"})
+		logger.Error("SyncUser: Failed to parse request body: %v", err)
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body", "details": err.Error()})
 	}
 
 	// 3. Upsert User
@@ -58,7 +57,7 @@ func (h *UserHandler) SyncUser(c *fiber.Ctx) error {
 	user := models.User{
 		ClerkID:    clerkID,
 		Email:      req.Email,
-		EOAAddress: req.EOAAddress,
+		EOAAddress: req.EOAAddress, // Can be empty string if no wallet connected yet
 		UpdatedAt:  now,
 	}
 
@@ -69,13 +68,24 @@ func (h *UserHandler) SyncUser(c *fiber.Ctx) error {
 	}).Create(&user)
 
 	if result.Error != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to sync user"})
+		logger.Error("SyncUser: Database error during upsert: %v", result.Error)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error":   "Failed to sync user",
+			"details": result.Error.Error(),
+		})
 	}
 
 	// 4. Fetch full user to return (including ID and Vault Address)
 	var updatedUser models.User
 	if err := h.DB.Where("clerk_id = ?", clerkID).First(&updatedUser).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to fetch synced user"})
+		logger.Error("SyncUser: Failed to fetch user after upsert: %v", err)
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found after sync"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error":   "Failed to fetch synced user",
+			"details": err.Error(),
+		})
 	}
 
 	return c.Status(fiber.StatusOK).JSON(updatedUser)

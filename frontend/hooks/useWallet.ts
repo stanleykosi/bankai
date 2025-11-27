@@ -48,15 +48,35 @@ export function useWallet(): UseWalletReturn {
     return null;
   }, [clerkUser, isWagmiConnected, wagmiAddress]);
 
+  const ensureWallet = useCallback(
+    async (token: string) => {
+      try {
+        const { data } = await api.get<User>("/wallet", {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        setBackendUser(data);
+        return data;
+      } catch (error: any) {
+        console.error("useWallet: Failed to ensure wallet", error);
+        return null;
+      }
+    },
+    []
+  );
+
   const syncUser = useCallback(async () => {
-    if (!clerkUser || !eoaAddress) return;
+    // Sync user even if they don't have a wallet yet - they can connect it later
+    if (!clerkUser) {
+      return;
+    }
 
     try {
       setIsSyncing(true);
       const token = await getToken();
 
       if (!token) {
-        console.warn("No auth token available for sync");
         return;
       }
 
@@ -64,7 +84,7 @@ export function useWallet(): UseWalletReturn {
         "/user/sync",
         {
           email: clerkUser.primaryEmailAddress?.emailAddress,
-          eoa_address: eoaAddress,
+          eoa_address: eoaAddress || "", // Empty string if no wallet connected
         },
         {
           headers: {
@@ -73,26 +93,38 @@ export function useWallet(): UseWalletReturn {
         }
       );
 
-      setBackendUser(data);
-    } catch (error) {
-      console.error("Failed to sync user with backend:", error);
+      // Only call ensureWallet if we have an EOA address and no vault yet
+      if (eoaAddress && !data?.vault_address) {
+        await ensureWallet(token);
+      } else {
+        setBackendUser(data);
+      }
+    } catch (error: any) {
+      console.error("useWallet: Failed to sync user with backend", error);
     } finally {
       setIsSyncing(false);
     }
-  }, [clerkUser, eoaAddress, getToken]);
+  }, [clerkUser, eoaAddress, ensureWallet, getToken]);
 
   useEffect(() => {
-    if (!isClerkLoaded || !clerkUser || !eoaAddress) {
+    // Sync user when they sign in, even without a wallet
+    if (!isClerkLoaded || !clerkUser) {
       return;
     }
 
-    const alreadySynced =
-      backendUser?.eoa_address === eoaAddress && !!backendUser.vault_address;
+    // Check if we need to sync:
+    // 1. No backend user yet - always sync
+    // 2. EOA address changed - sync to update
+    // 3. User has no EOA but we now have one - sync to add it
+    const needsSync =
+      !backendUser ||
+      (eoaAddress && backendUser.eoa_address !== eoaAddress) ||
+      (!backendUser.eoa_address && eoaAddress);
 
-    if (!alreadySynced) {
+    if (needsSync) {
       syncUser();
     }
-  }, [backendUser?.eoa_address, backendUser?.vault_address, clerkUser, eoaAddress, isClerkLoaded, syncUser]);
+  }, [backendUser, clerkUser, eoaAddress, isClerkLoaded, syncUser]);
 
   const handleDisconnect = useCallback(() => {
     if (isWagmiConnected) {

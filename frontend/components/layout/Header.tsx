@@ -63,12 +63,12 @@ export function Header() {
 
         {/* User / Wallet Actions */}
         <div className="flex items-center space-x-3">
-          <WalletConnectButton />
-
           {isLoading ? (
             <div className="h-8 w-24 animate-pulse rounded bg-muted" />
           ) : isAuthenticated ? (
             <>
+              <WalletConnectButton />
+
               <div className="hidden items-center gap-3 rounded-md border border-border bg-card/50 px-3 py-1.5 md:flex">
                 <div className="flex flex-col text-xs">
                   <span className="font-mono text-muted-foreground">

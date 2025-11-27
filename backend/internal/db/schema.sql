@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(255),
     
     -- The Externally Owned Account (Metamask or Embedded Key)
-    eoa_address VARCHAR(42) NOT NULL,
+    -- Can be NULL initially - users can sign up with email first, then connect wallet later
+    eoa_address VARCHAR(42),
     
     -- The actual fund-holding contract (Proxy or Gnosis Safe)
     vault_address VARCHAR(42),

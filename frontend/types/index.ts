@@ -97,9 +97,9 @@ export interface User {
   id: string;
   clerk_id: string;
   email: string;
-  eoa_address: string;
-  vault_address: string;
-  wallet_type: 'PROXY' | 'SAFE';
+  eoa_address: string | null; // Optional - can be null if user hasn't connected wallet yet
+  vault_address: string | null;
+  wallet_type: 'PROXY' | 'SAFE' | null;
   created_at: string;
 }
 
