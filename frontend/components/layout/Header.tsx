@@ -90,46 +90,55 @@ export function Header() {
               <button
                 type="button"
                 onClick={() => setDepositModalOpen(true)}
+                disabled={!hasVault}
                 className={cn(
-                  "hidden md:flex min-w-[280px] flex-col justify-center gap-1 rounded-md border border-border bg-card/70 px-4 py-2 text-left transition hover:border-primary/60 hover:bg-card",
-                  !hasVault && "border-dashed text-muted-foreground"
+                  "hidden md:flex h-10 items-center gap-2.5 rounded-md border border-border bg-card/70 px-2.5 py-1.5 text-left transition hover:border-primary/60 hover:bg-card",
+                  !hasVault && "border-dashed cursor-not-allowed opacity-75"
                 )}
               >
                 {walletError ? (
-                  <span className="font-mono text-[10px] text-destructive">
+                  <span className="font-mono text-[10px] text-destructive whitespace-nowrap max-w-[200px] truncate">
                     {walletError}
                   </span>
                 ) : isLoading ? (
-                  <span className="font-mono text-[10px] text-muted-foreground">
-                    Syncing wallet...
+                  <span className="font-mono text-[10px] text-muted-foreground whitespace-nowrap">
+                    Syncing...
                   </span>
                 ) : (
-                  <>
-                    <div className="flex items-center justify-between text-[11px] uppercase text-muted-foreground">
-                      <span>Vault</span>
-                      <span>
-                        {hasVault
-                          ? isBalanceLoading
-                            ? "Fetching balance..."
-                            : `${balanceData?.balance_formatted ?? "0.00"} USDC`
-                          : "Balance unavailable"}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2 font-mono text-sm text-foreground">
-                      {hasVault && vaultAddress
-                        ? truncateAddress(vaultAddress)
-                        : "Pending deployment"}
-                      {hasVault && (
-                        <span className="flex items-center gap-1 text-[10px] uppercase text-constructive">
-                          <ShieldCheck className="h-3 w-3" />
+                  <div className="flex items-center gap-2.5 min-w-0 w-full">
+                    <div className="flex flex-col gap-0.5 min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground whitespace-nowrap">
                           {walletTypeLabel}
                         </span>
-                      )}
+                        <span className="font-mono text-[9px] text-muted-foreground whitespace-nowrap">
+                          {hasVault
+                            ? isBalanceLoading
+                              ? "Loading..."
+                              : `${balanceData?.balance_formatted ?? "0.00"} USDC`
+                            : "Unavailable"}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="font-mono text-[11px] text-foreground truncate">
+                          {hasVault && vaultAddress
+                            ? truncateAddress(vaultAddress)
+                            : "Pending deployment"}
+                        </span>
+                        {hasVault && (
+                          <span className="flex items-center gap-0.5 text-[8px] uppercase text-constructive whitespace-nowrap shrink-0">
+                            <ShieldCheck className="h-2.5 w-2.5" />
+                            Active
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <span className="text-[10px] uppercase text-muted-foreground">
-                      {hasVault ? "Click to manage funds" : "Connect wallet to deploy"}
-                    </span>
-                  </>
+                    {!hasVault && (
+                      <span className="font-mono text-[9px] uppercase text-muted-foreground whitespace-nowrap shrink-0">
+                        Connect wallet
+                      </span>
+                    )}
+                  </div>
                 )}
               </button>
 
