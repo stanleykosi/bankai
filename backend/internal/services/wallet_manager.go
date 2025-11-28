@@ -19,10 +19,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/models"
+	"github.com/bankai-project/backend/internal/polymarket/gamma"
 	"github.com/bankai-project/backend/internal/polymarket/relayer"
 	"gorm.io/gorm"
 )
@@ -30,12 +32,14 @@ import (
 type WalletManager struct {
 	DB      *gorm.DB
 	Relayer *relayer.Client
+	Gamma   *gamma.Client
 }
 
-func NewWalletManager(db *gorm.DB, relayer *relayer.Client) *WalletManager {
+func NewWalletManager(db *gorm.DB, relayer *relayer.Client, gammaClient *gamma.Client) *WalletManager {
 	return &WalletManager{
 		DB:      db,
 		Relayer: relayer,
+		Gamma:   gammaClient,
 	}
 }
 
@@ -77,6 +81,21 @@ func (s *WalletManager) EnsureWallet(ctx context.Context, clerkID string) (*mode
 	// For Metamask users, the Vault is usually a Gnosis Safe.
 	// The Relayer handles the logic of "deploy if not exists" usually.
 
+	// Attempt discovery via Polymarket public-search before deploying.
+	if vaultAddr, err := s.lookupVaultAddress(ctx, user.EOAAddress); err == nil && vaultAddr != "" {
+		logger.Info("🔎 Located existing Polymarket vault %s for user %s", vaultAddr, user.ClerkID)
+		wType := models.WalletTypeProxy
+		if err := s.UpdateVaultAddress(ctx, user.ClerkID, vaultAddr, &wType); err != nil {
+			logger.Error("Failed to persist discovered vault address: %v", err)
+		} else {
+			user.VaultAddress = vaultAddr
+			user.WalletType = &wType
+			return &user, nil
+		}
+	} else if err != nil {
+		logger.Error("Vault discovery failed for user %s: %v", user.ClerkID, err)
+	}
+
 	logger.Info("🧐 User %s (EOA: %s) has no vault. Triggering deployment check...", user.ClerkID, user.EOAAddress)
 
 	// 4. Call Relayer to Deploy
@@ -101,6 +120,18 @@ func (s *WalletManager) EnsureWallet(ctx context.Context, clerkID string) (*mode
 		// The frontend can call UpdateWallet once it detects the deployed address on-chain.
 	}
 
+	if resp.ProxyAddress != "" {
+		logger.Info("🏦 Safe deployed at %s for user %s", resp.ProxyAddress, user.ClerkID)
+		wType := models.WalletTypeSafe
+		if err := s.UpdateVaultAddress(ctx, user.ClerkID, resp.ProxyAddress, &wType); err != nil {
+			logger.Error("Failed to persist deployed safe address: %v", err)
+		} else {
+			user.VaultAddress = resp.ProxyAddress
+			user.WalletType = &wType
+			return &user, nil
+		}
+	}
+
 	return &user, nil
 }
 
@@ -123,5 +154,23 @@ func (s *WalletManager) UpdateVaultAddress(ctx context.Context, clerkID, vaultAd
 		Updates(updates).Error
 }
 
+// lookupVaultAddress queries the Polymarket Gamma API for a profile that matches the user's EOA.
+// References polymarket_documentation.md section "Search markets, events, and profiles".
+func (s *WalletManager) lookupVaultAddress(ctx context.Context, eoa string) (string, error) {
+	if s.Gamma == nil || eoa == "" {
+		return "", nil
+	}
 
+	profiles, err := s.Gamma.SearchProfiles(ctx, eoa, 5)
+	if err != nil {
+		return "", fmt.Errorf("gamma search failed: %w", err)
+	}
 
+	for _, profile := range profiles {
+		if strings.EqualFold(profile.BaseAddress, eoa) && profile.ProxyWallet != "" {
+			return profile.ProxyWallet, nil
+		}
+	}
+
+	return "", nil
+}

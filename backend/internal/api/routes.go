@@ -43,8 +43,8 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 
 	// 3. Initialize Services
 	marketService := services.NewMarketService(db, rdb, gammaClient)
-	walletManager := services.NewWalletManager(db, relayerClient)
-	
+	walletManager := services.NewWalletManager(db, relayerClient, gammaClient)
+
 	// Initialize Blockchain Service
 	blockchainService, err := services.NewBlockchainService(cfg)
 	if err != nil {
@@ -62,10 +62,10 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	// Root route for easy health checks
 	app.Get("/", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
-			"status": "ok",
+			"status":  "ok",
 			"service": "Bankai Trading Terminal API",
 			"version": "1.0.0",
-			"health": "/api/v1/health",
+			"health":  "/api/v1/health",
 		})
 	})
 
@@ -99,4 +99,3 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	wallet.Get("/balance", walletHandler.GetBalance)
 	wallet.Post("/withdraw", walletHandler.Withdraw)
 }
-

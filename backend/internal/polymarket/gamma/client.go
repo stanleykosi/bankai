@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bankai-project/backend/internal/config"
@@ -139,5 +140,51 @@ func (c *Client) GetMarket(ctx context.Context, id string) (*GammaMarket, error)
 	}
 
 	return &market, nil
+}
+
+// SearchProfiles queries Gamma's /public-search endpoint focusing on user profiles.
+// Documentation reference: polymarket_documentation.md -> "Search markets, events, and profiles"
+func (c *Client) SearchProfiles(ctx context.Context, query string, limit int) ([]Profile, error) {
+	if strings.TrimSpace(query) == "" {
+		return nil, fmt.Errorf("query cannot be empty")
+	}
+
+	if limit <= 0 {
+		limit = 1
+	}
+
+	u, err := url.Parse(fmt.Sprintf("%s/public-search", c.BaseURL))
+	if err != nil {
+		return nil, err
+	}
+
+	q := u.Query()
+	q.Set("q", query)
+	q.Set("search_profiles", "true")
+	q.Set("limit_per_type", strconv.Itoa(limit))
+	q.Set("cache", "false")
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("gamma search error: status %d", resp.StatusCode)
+	}
+
+	var searchResp SearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+		return nil, err
+	}
+
+	return searchResp.Profiles, nil
 }
 

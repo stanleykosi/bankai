@@ -140,6 +140,12 @@ func (h *WalletHandler) GetDepositAddress(c *fiber.Ctx) error {
 // GetBalance returns the USDC balance of the user's vault
 // GET /api/v1/wallet/balance
 func (h *WalletHandler) GetBalance(c *fiber.Ctx) error {
+	if h.Blockchain == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "Blockchain service unavailable",
+		})
+	}
+
 	clerkID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
@@ -154,9 +160,9 @@ func (h *WalletHandler) GetBalance(c *fiber.Ctx) error {
 
 	if user.VaultAddress == "" {
 		return c.JSON(fiber.Map{
-			"balance":       "0",
+			"balance":           "0",
 			"balance_formatted": "0.00",
-			"vault_address": "",
+			"vault_address":     "",
 		})
 	}
 
@@ -178,7 +184,7 @@ func (h *WalletHandler) GetBalance(c *fiber.Ctx) error {
 // WithdrawRequest represents a withdrawal request
 type WithdrawRequest struct {
 	ToAddress string `json:"to_address"` // Destination address (EOA)
-	Amount    string `json:"amount"`       // Amount in USDC (with 6 decimals, e.g., "1000000" for 1 USDC)
+	Amount    string `json:"amount"`     // Amount in USDC (with 6 decimals, e.g., "1000000" for 1 USDC)
 }
 
 // Withdraw initiates a withdrawal from the vault to the specified address
@@ -229,7 +235,3 @@ func (h *WalletHandler) Withdraw(c *fiber.Ctx) error {
 		"note":  "In production, this would submit a Safe transaction via the relayer to transfer USDC from the vault to the specified address.",
 	})
 }
-
-
-
-

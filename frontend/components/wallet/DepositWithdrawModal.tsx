@@ -6,7 +6,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { Copy, Check, ExternalLink, Wallet, ArrowDown, ArrowUp } from "lucide-react";
 import {
@@ -51,7 +51,7 @@ export function DepositWithdrawModal({
     token_address: string;
   } | null>(null);
 
-  const fetchDepositInfo = async () => {
+  const fetchDepositInfo = useCallback(async () => {
     try {
       const token = await getToken();
       if (!token) return;
@@ -66,7 +66,7 @@ export function DepositWithdrawModal({
       console.error("Failed to fetch deposit info:", error);
       setError("Failed to load deposit information");
     }
-  };
+  }, [getToken]);
 
   const handleCopy = async (text: string) => {
     try {
@@ -136,10 +136,15 @@ export function DepositWithdrawModal({
     }
   };
 
-  // Fetch deposit info when modal opens
-  if (open && !depositData && activeTab === "deposit") {
-    fetchDepositInfo();
-  }
+  useEffect(() => {
+    if (open && activeTab === "deposit" && !depositData) {
+      fetchDepositInfo();
+    }
+  }, [activeTab, depositData, fetchDepositInfo, open]);
+
+  useEffect(() => {
+    setDepositData(null);
+  }, [vaultAddress]);
 
   const truncateAddress = (address: string) =>
     `${address.slice(0, 6)}...${address.slice(-4)}`;

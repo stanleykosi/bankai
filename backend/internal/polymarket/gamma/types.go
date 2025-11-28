@@ -123,6 +123,32 @@ type GammaTag struct {
 	Slug  string `json:"slug"`
 }
 
+// Profile represents a Polymarket user profile returned by /public-search
+// Includes both the controlling EOA (baseAddress) and the custodial vault/proxy wallet.
+type Profile struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	BaseAddress      string `json:"baseAddress"`
+	ProxyWallet      string `json:"proxyWallet"`
+	Pseudonym        string `json:"pseudonym"`
+	DisplayPublic    bool   `json:"displayUsernamePublic"`
+	WalletActivated  bool   `json:"walletActivated"`
+	User             int    `json:"user"`
+	Referral         string `json:"referral"`
+	ProfileImage     string `json:"profileImage"`
+	Bio              string `json:"bio"`
+	IsCloseOnly      bool   `json:"isCloseOnly"`
+	IsCertReq        bool   `json:"isCertReq"`
+	CertReqDate      string `json:"certReqDate"`
+	CreatedAt        string `json:"createdAt"`
+	UpdatedAt        string `json:"updatedAt"`
+}
+
+// SearchResponse represents the Gamma /public-search payload
+type SearchResponse struct {
+	Profiles []Profile `json:"profiles"`
+}
+
 // ToDBModel converts a GammaMarket to our internal DB model
 func (gm *GammaMarket) ToDBModel() *models.Market {
 	startDate := parseTimePtr(gm.StartDate)

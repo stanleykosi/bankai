@@ -35,10 +35,31 @@ export function BalanceDisplay({ className, showIcon = true }: BalanceDisplayPro
   }
 
   if (!balanceData || !balanceData.vault_address) {
-    return null;
+    return (
+      <div
+        className={cn(
+          "flex items-center gap-2 rounded-md border border-border bg-card/50 px-3 py-1.5",
+          className
+        )}
+      >
+        {showIcon && (
+          <Wallet className="h-3.5 w-3.5 text-muted-foreground" />
+        )}
+        <div className="flex flex-col">
+          <span className="font-mono text-xs text-muted-foreground">
+            Vault pending
+          </span>
+          <span className="text-[10px] uppercase text-muted-foreground">
+            Balance unavailable
+          </span>
+        </div>
+      </div>
+    );
   }
 
-  const balance = parseFloat(balanceData.balance_formatted || "0");
+  const balanceFormatted =
+    balanceData.balance_formatted ??
+    (Number(balanceData.balance ?? "0") / 1_000_000).toFixed(2);
 
   return (
     <div
@@ -46,14 +67,14 @@ export function BalanceDisplay({ className, showIcon = true }: BalanceDisplayPro
         "flex items-center gap-2 rounded-md border border-border bg-card/50 px-3 py-1.5",
         className
       )}
-      title={`Balance: ${balanceData.balance_formatted} USDC`}
+      title={`Balance: ${balanceFormatted} USDC`}
     >
       {showIcon && (
         <Wallet className="h-3.5 w-3.5 text-muted-foreground" />
       )}
       <div className="flex items-baseline gap-1">
         <span className="font-mono text-xs font-semibold text-foreground">
-          {balanceData.balance_formatted}
+          {balanceFormatted}
         </span>
         <span className="text-[10px] uppercase text-muted-foreground">
           USDC

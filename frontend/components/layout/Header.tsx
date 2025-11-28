@@ -7,7 +7,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { SignInButton, UserButton } from "@clerk/nextjs";
@@ -33,6 +33,11 @@ export function Header() {
   const pathname = usePathname();
   const { isAuthenticated, isLoading, eoaAddress, vaultAddress, user } = useWallet();
   const [depositModalOpen, setDepositModalOpen] = useState(false);
+  const walletTypeLabel = useMemo(
+    () => (user?.wallet_type ? user.wallet_type : "VAULT"),
+    [user?.wallet_type]
+  );
+  const hasVault = Boolean(vaultAddress);
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -72,7 +77,7 @@ export function Header() {
               <WalletConnectButton />
 
               {/* Wallet Status - Compact */}
-              <div className="hidden items-center gap-2 rounded-md border border-border bg-card/50 px-2.5 py-1 md:flex">
+              <div className="hidden items-center gap-2 rounded-md border border-border bg-card/50 px-3 py-2 md:flex">
                 <div className="flex flex-col text-xs">
                   {isLoading ? (
                     <span className="font-mono text-muted-foreground animate-pulse text-[10px]">
@@ -80,34 +85,49 @@ export function Header() {
                     </span>
                   ) : (
                     <>
-                      <span className="font-mono text-[10px] text-muted-foreground">
-                        {eoaAddress ? truncateAddress(eoaAddress) : "No Wallet"}
+                      <span className="text-[9px] uppercase text-muted-foreground">
+                        Vault Address
                       </span>
-                      {vaultAddress && (
-                        <span className="flex items-center gap-1 font-mono text-[9px] uppercase text-constructive">
-                          <ShieldCheck className="h-2.5 w-2.5" />
-                          {(user?.wallet_type ?? "VAULT")} ACTIVE
-                        </span>
-                      )}
+                      <span className="font-mono text-xs text-foreground">
+                        {hasVault && vaultAddress
+                          ? truncateAddress(vaultAddress)
+                          : "Pending deployment"}
+                      </span>
+                      <span
+                        className={cn(
+                          "mt-1 flex items-center gap-1 font-mono text-[9px] uppercase",
+                          hasVault ? "text-constructive" : "text-muted-foreground"
+                        )}
+                      >
+                        {hasVault ? (
+                          <>
+                            <ShieldCheck className="h-2.5 w-2.5" />
+                            {walletTypeLabel} ACTIVE
+                          </>
+                        ) : (
+                          "Connect wallet to deploy"
+                        )}
+                      </span>
                     </>
                   )}
                 </div>
               </div>
 
               {/* Balance Display */}
-              {!isLoading && vaultAddress && (
-                <BalanceDisplay className="hidden md:flex" />
-              )}
+              {!isLoading && <BalanceDisplay className="hidden md:flex" />}
 
               {/* Deposit/Withdraw Button */}
-              {!isLoading && vaultAddress && (
+              {!isLoading && (
                 <Button
-                  variant="outline"
+                  variant={hasVault ? "outline" : "secondary"}
                   size="sm"
                   onClick={() => setDepositModalOpen(true)}
-                  className="hidden border-primary/30 text-xs font-mono uppercase tracking-wider hover:bg-primary/10 hover:text-primary md:flex"
+                  className={cn(
+                    "border-primary/30 text-xs font-mono uppercase tracking-wider hover:bg-primary/10 hover:text-primary",
+                    !hasVault && "border-dashed text-muted-foreground"
+                  )}
                 >
-                  Funds
+                  {hasVault ? "Funds" : "Vault Setup"}
                 </Button>
               )}
 
