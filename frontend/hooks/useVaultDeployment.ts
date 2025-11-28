@@ -13,7 +13,7 @@
 
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useSignTypedData } from "wagmi";
 
@@ -47,6 +47,7 @@ export function useVaultDeployment({
   const [deployError, setDeployError] = useState<string | null>(null);
   const [deploymentStatus, setDeploymentStatus] =
     useState<VaultDeploymentResult | null>(null);
+  const autoTriggeredRef = useRef(false);
 
   const fetchTypedData = useCallback(async () => {
     const token = await getToken();
@@ -123,6 +124,17 @@ export function useVaultDeployment({
     () => Boolean(eoaAddress) && !hasVault,
     [eoaAddress, hasVault]
   );
+
+  useEffect(() => {
+    if (!canDeploy) {
+      autoTriggeredRef.current = false;
+      return;
+    }
+    if (!isDeploying && !autoTriggeredRef.current) {
+      autoTriggeredRef.current = true;
+      deployVault();
+    }
+  }, [canDeploy, deployVault, isDeploying]);
 
   return {
     canDeploy,

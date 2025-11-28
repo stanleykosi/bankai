@@ -116,8 +116,10 @@ export function Header() {
 
               <button
                 type="button"
-                onClick={() => (hasVault ? setDepositModalOpen(true) : undefined)}
-                disabled={!hasVault}
+                onClick={() =>
+                  hasVault ? setDepositModalOpen(true) : deployVault()
+                }
+                disabled={!hasVault && (isVaultDeploying || !canDeploy)}
                 className={cn(
                   "hidden md:flex h-10 items-center gap-2.5 rounded-md border border-border bg-card/70 px-2.5 py-1.5 text-left transition hover:border-primary/60 hover:bg-card",
                   !hasVault && "border-dashed opacity-75"
@@ -162,14 +164,9 @@ export function Header() {
                     </div>
                     {!hasVault && (
                       <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={deployVault}
-                          disabled={!canDeploy || isVaultDeploying}
-                          className="rounded-sm border border-dashed border-primary/40 px-2 py-1 text-[10px] font-mono uppercase tracking-widest text-primary transition hover:border-primary hover:text-primary disabled:opacity-50"
-                        >
+                        <span className="rounded-sm border border-dashed border-primary/40 px-2 py-1 text-[10px] font-mono uppercase tracking-widest text-primary">
                           {isVaultDeploying ? "Deploying…" : "Deploy Vault"}
-                        </button>
+                        </span>
                         <div className="flex flex-col text-[9px] font-mono text-muted-foreground">
                           <span>
                             {eoaAddress
