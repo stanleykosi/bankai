@@ -14,7 +14,9 @@ package handlers
 
 import (
 	"github.com/bankai-project/backend/internal/api/middleware"
+	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/models"
+	"github.com/bankai-project/backend/internal/polymarket/relayer"
 	"github.com/bankai-project/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
 )
@@ -22,6 +24,11 @@ import (
 type WalletHandler struct {
 	Manager    *services.WalletManager
 	Blockchain *services.BlockchainService
+}
+
+type DeployWalletRequest struct {
+	Signature string `json:"signature"`
+	Metadata  string `json:"metadata"`
 }
 
 func NewWalletHandler(manager *services.WalletManager, blockchain *services.BlockchainService) *WalletHandler {
@@ -51,22 +58,81 @@ func (h *WalletHandler) GetWallet(c *fiber.Ctx) error {
 	return c.JSON(user)
 }
 
-// DeployWallet manually triggers the deployment process
-// POST /api/v1/wallet/deploy
+// GetDeployTypedData returns the EIP-712 payload the frontend must sign to request a Safe deployment.
+func (h *WalletHandler) GetDeployTypedData(c *fiber.Ctx) error {
+	clerkID, err := middleware.GetUserID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
+	}
+
+	user, err := h.Manager.GetUserWallet(c.Context(), clerkID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to load user: " + err.Error(),
+		})
+	}
+
+	if user.EOAAddress == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Connect a wallet before requesting deployment"})
+	}
+
+	typed := relayer.BuildSafeCreateTypedData()
+	return c.JSON(fiber.Map{
+		"owner":      user.EOAAddress,
+		"typed_data": typed,
+	})
+}
+
+// DeployWallet consumes a signed SAFE-CREATE request from the frontend and submits it to the relayer.
 func (h *WalletHandler) DeployWallet(c *fiber.Ctx) error {
 	clerkID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
-	user, err := h.Manager.EnsureWallet(c.Context(), clerkID)
+	var req DeployWalletRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid body"})
+	}
+
+	if req.Signature == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "signature is required"})
+	}
+
+	user, err := h.Manager.GetUserWallet(c.Context(), clerkID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Deployment failed: " + err.Error(),
+			"error": "Failed to load user: " + err.Error(),
 		})
 	}
 
-	return c.JSON(user)
+	if user.EOAAddress == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Connect a wallet before requesting deployment"})
+	}
+
+	txReq, err := relayer.BuildSafeCreateRequest(user.EOAAddress, req.Signature, req.Metadata)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	resp, err := h.Manager.Relayer.DeploySafe(c.Context(), txReq)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Relayer deployment failed: " + err.Error()})
+	}
+
+	if resp.ProxyAddress != "" {
+		wType := models.WalletTypeSafe
+		if err := h.Manager.UpdateVaultAddress(c.Context(), clerkID, resp.ProxyAddress, &wType); err != nil {
+			logger.Error("Failed to persist deployed safe address for user %s: %v", clerkID, err)
+		}
+	}
+
+	return c.JSON(fiber.Map{
+		"task_id":          resp.TaskID,
+		"state":            resp.State,
+		"transaction_hash": resp.TransactionHash,
+		"proxy_address":    resp.ProxyAddress,
+	})
 }
 
 // UpdateWallet allows the frontend to report a discovered wallet address

@@ -37,9 +37,6 @@ const (
 	// Used for Safe setup - standard address for Safe 1.3.0 on Polygon
 	// NOTE: Verify this address matches the actual fallback handler used by Polymarket
 	GnosisSafeFallbackHandlerAddress = "0xf48f2B2d2a534e402487b3ee7C18c33Aec0Fe5e4"
-
-	// Zero address for payment token and receiver
-	ZeroAddress = "0x0000000000000000000000000000000000000000"
 )
 
 // encodeSafeSetup encodes the Safe setup function call
@@ -161,4 +158,3 @@ func generateSaltNonce(ownerAddress string) *big.Int {
 	hash := crypto.Keccak256Hash([]byte(ownerAddress))
 	return new(big.Int).SetBytes(hash.Bytes())
 }
-

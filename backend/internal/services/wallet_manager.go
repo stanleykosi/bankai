@@ -102,49 +102,7 @@ func (s *WalletManager) EnsureWallet(ctx context.Context, clerkID string) (*mode
 		logger.Error("Vault discovery failed for user %s: %v", user.ClerkID, err)
 	}
 
-	logger.Info("🧐 User %s (EOA: %s) has no vault. Triggering deployment check...", user.ClerkID, user.EOAAddress)
-
-	// 4. Call Relayer to Deploy
-	// This will hit POST /submit on the Relayer with properly ABI-encoded transaction data.
-	// The DeploySafe method handles full ABI encoding of the Safe deployment transaction.
-	resp, err := s.Relayer.DeploySafe(ctx, user.EOAAddress)
-	if err != nil {
-		logger.Error("Relayer deployment failed for user %s: %v", user.ClerkID, err)
-		return nil, fmt.Errorf("relayer deployment failed: %w", err)
-	}
-
-	// 5. Check Response
-	if resp.TransactionHash != "" {
-		logger.Info("✅ Deployment Transaction Sent: %s", resp.TransactionHash)
-		// In a full system, we'd poll this TX hash to get the event logs and find the Safe Address.
-		// Since we don't have the address immediately from an async /submit call,
-		// we might need to wait or let the frontend poll 'GET /wallet' which could check the graph/chain.
-
-		// For now, we update a status flag if we had one, or just log it.
-		// The frontend can call UpdateWallet once it detects the deployed address on-chain.
-	}
-
-	if resp.ProxyAddress != "" {
-		logger.Info("🏦 Safe deployed at %s for user %s", resp.ProxyAddress, user.ClerkID)
-		wType := models.WalletTypeSafe
-		if err := s.UpdateVaultAddress(ctx, user.ClerkID, resp.ProxyAddress, &wType); err != nil {
-			logger.Error("Failed to persist deployed safe address: %v", err)
-		} else {
-			user.VaultAddress = resp.ProxyAddress
-			user.WalletType = &wType
-			return &user, nil
-		}
-	}
-
-	// Final attempt: poll Gamma briefly to catch the newly registered vault.
-	if addr, err := s.awaitVaultRegistration(ctx, user.EOAAddress); err == nil && addr != "" {
-		wType := models.WalletTypeSafe
-		if err := s.UpdateVaultAddress(ctx, user.ClerkID, addr, &wType); err == nil {
-			user.VaultAddress = addr
-			user.WalletType = &wType
-		}
-	}
-
+	logger.Info("🧐 User %s (EOA: %s) has no vault. Awaiting SAFE-CREATE signature.", user.ClerkID, user.EOAAddress)
 	return &user, nil
 }
 

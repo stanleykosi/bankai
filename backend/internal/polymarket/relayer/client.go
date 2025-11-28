@@ -30,7 +30,6 @@ import (
 	"time"
 
 	"github.com/bankai-project/backend/internal/config"
-	"github.com/bankai-project/backend/internal/logger"
 )
 
 const (
@@ -57,21 +56,6 @@ func NewClient(cfg *config.Config) *Client {
 	}
 }
 
-// MetaTransaction represents the payload sent to /submit
-// This matches standard GSN/Relayer formats
-type MetaTransaction struct {
-	To        string `json:"to"`
-	Data      string `json:"data"`
-	Value     string `json:"value"`
-	Operation int    `json:"operation"` // 0 = Call, 1 = DelegateCall
-}
-
-// RelayerRequest is the wrapper for the /submit endpoint
-type RelayerRequest struct {
-	Tx       MetaTransaction `json:"tx"`
-	Metadata string          `json:"metadata,omitempty"` // e.g. "Deploy Safe for User X"
-}
-
 // RelayerResponse is the response from /submit
 type RelayerResponse struct {
 	TransactionHash string `json:"transactionHash"`
@@ -86,47 +70,16 @@ type RelayerError struct {
 	Code    string `json:"code,omitempty"`
 }
 
-// DeploySafe constructs a transaction to create a Gnosis Safe for the given owner
-// and submits it to the Relayer.
-//
-// This method:
-// 1. Encodes the Safe setup data (owners, threshold, etc.)
-// 2. Encodes the Proxy Factory createProxyWithNonce call
-// 3. Submits the transaction to the relayer via POST /submit
-//
-// The relayer will execute the transaction on-chain, deploying a new Safe wallet
-// for the specified owner address.
-func (c *Client) DeploySafe(ctx context.Context, ownerAddress string) (*RelayerResponse, error) {
-	logger.Info("🚀 Preparing Safe Deployment for %s via Relayer...", ownerAddress)
-
-	// Generate a deterministic salt nonce based on the owner address
-	// This ensures the same owner always gets the same Safe address (if not already deployed)
-	saltNonce := generateSaltNonce(ownerAddress)
-
-	// Encode the createProxyWithNonce call with proper ABI encoding
-	encodedData, err := encodeCreateProxyWithNonce(ownerAddress, saltNonce)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode Safe deployment transaction: %w", err)
+// DeploySafe submits a SAFE-CREATE TransactionRequest to the relayer.
+func (c *Client) DeploySafe(ctx context.Context, request *TransactionRequest) (*RelayerResponse, error) {
+	if request == nil {
+		return nil, fmt.Errorf("transaction request cannot be nil")
 	}
-
-	logger.Info("✅ Encoded Safe deployment transaction data (length: %d bytes)", len(encodedData)/2-1)
-
-	// Construct the relayer request
-	reqBody := RelayerRequest{
-		Tx: MetaTransaction{
-			To:        GnosisSafeProxyFactoryAddress,
-			Data:      encodedData,
-			Value:     "0",
-			Operation: 0, // Call operation
-		},
-		Metadata: fmt.Sprintf("Deploy Safe for %s", ownerAddress),
-	}
-
-	return c.submitTransaction(ctx, reqBody)
+	return c.submitTransaction(ctx, request)
 }
 
 // submitTransaction sends a transaction to the relayer
-func (c *Client) submitTransaction(ctx context.Context, payload RelayerRequest) (*RelayerResponse, error) {
+func (c *Client) submitTransaction(ctx context.Context, payload interface{}) (*RelayerResponse, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -209,14 +162,17 @@ func (c *Client) setHeaders(req *http.Request, body []byte) error {
 // CheckAuth performs a lightweight POST /submit with a no-op transaction to verify credentials.
 // The relayer will reject the payload, but we only care that we pass authentication (i.e., avoid 401).
 func (c *Client) CheckAuth(ctx context.Context) error {
-	dummy := RelayerRequest{
-		Tx: MetaTransaction{
-			To:        "0x0000000000000000000000000000000000000000",
-			Data:      "0x",
-			Value:     "0",
-			Operation: 0,
+	dummy := TransactionRequest{
+		Type:      TransactionTypeSafeCreate,
+		From:      ZeroAddress,
+		To:        SafeFactoryAddress,
+		Data:      "0x",
+		Signature: "0x",
+		SignatureParams: SignatureParams{
+			PaymentToken:    ZeroAddress,
+			Payment:         paymentValue,
+			PaymentReceiver: ZeroAddress,
 		},
-		Metadata: "auth-check",
 	}
 
 	_, err := c.submitTransaction(ctx, dummy)
