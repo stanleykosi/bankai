@@ -72,6 +72,11 @@ func BuildSafeCreateTypedData() SafeCreateTypedData {
 			"verifyingContract": SafeFactoryAddress,
 		},
 		Types: map[string][]TypedDataField{
+			"EIP712Domain": {
+				{Name: "name", Type: "string"},
+				{Name: "chainId", Type: "uint256"},
+				{Name: "verifyingContract", Type: "address"},
+			},
 			safeCreatePrimaryType: {
 				{Name: "paymentToken", Type: "address"},
 				{Name: "payment", Type: "uint256"},

@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { WalletConnectButton } from "@/components/wallet/WalletConnectButton";
 import { DepositWithdrawModal } from "@/components/wallet/DepositWithdrawModal";
 import { useWallet } from "@/hooks/useWallet";
+import { useVaultDeployment } from "@/hooks/useVaultDeployment";
 import { useBalance } from "@/hooks/useBalance";
 import { cn } from "@/lib/utils";
 
@@ -38,6 +39,7 @@ export function Header() {
     vaultAddress,
     user,
     walletError,
+    refreshUser,
   } = useWallet();
   const {
     data: balanceData,
@@ -49,6 +51,31 @@ export function Header() {
     [user?.wallet_type]
   );
   const hasVault = Boolean(vaultAddress);
+  const {
+    canDeploy,
+    isDeploying: isVaultDeploying,
+    deployError,
+    deploymentStatus,
+    deployVault,
+  } = useVaultDeployment({
+    eoaAddress,
+    hasVault,
+    refreshUser,
+  });
+  const deploymentMessage = useMemo(() => {
+    if (deploymentStatus?.proxy_address) {
+      return `Vault pending at ${truncateAddress(
+        deploymentStatus.proxy_address
+      )}`;
+    }
+    if (deploymentStatus?.state) {
+      return `Relayer: ${deploymentStatus.state}`;
+    }
+    if (deploymentStatus?.task_id) {
+      return `Relayer task ${deploymentStatus.task_id}`;
+    }
+    return null;
+  }, [deploymentStatus]);
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -89,11 +116,11 @@ export function Header() {
 
               <button
                 type="button"
-                onClick={() => setDepositModalOpen(true)}
+                onClick={() => (hasVault ? setDepositModalOpen(true) : undefined)}
                 disabled={!hasVault}
                 className={cn(
                   "hidden md:flex h-10 items-center gap-2.5 rounded-md border border-border bg-card/70 px-2.5 py-1.5 text-left transition hover:border-primary/60 hover:bg-card",
-                  !hasVault && "border-dashed cursor-not-allowed opacity-75"
+                  !hasVault && "border-dashed opacity-75"
                 )}
               >
                 {walletError ? (
@@ -134,9 +161,33 @@ export function Header() {
                       </div>
                     </div>
                     {!hasVault && (
-                      <span className="font-mono text-[9px] uppercase text-muted-foreground whitespace-nowrap shrink-0">
-                        Connect wallet
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={deployVault}
+                          disabled={!canDeploy || isVaultDeploying}
+                          className="rounded-sm border border-dashed border-primary/40 px-2 py-1 text-[10px] font-mono uppercase tracking-widest text-primary transition hover:border-primary hover:text-primary disabled:opacity-50"
+                        >
+                          {isVaultDeploying ? "Deploying…" : "Deploy Vault"}
+                        </button>
+                        <div className="flex flex-col text-[9px] font-mono text-muted-foreground">
+                          <span>
+                            {eoaAddress
+                              ? "Sign once to deploy"
+                              : "Connect wallet"}
+                          </span>
+                          {deploymentMessage && (
+                            <span className="text-[8px] text-muted-foreground/80">
+                              {deploymentMessage}
+                            </span>
+                          )}
+                          {deployError && (
+                            <span className="text-[8px] text-destructive">
+                              {deployError}
+                            </span>
+                          )}
+                        </div>
+                      </div>
                     )}
                   </div>
                 )}
