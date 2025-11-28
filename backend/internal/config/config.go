@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -85,9 +86,9 @@ func Load() (*Config, error) {
 		Polymarket: PolymarketConfig{
 			ClobURL:       getEnv("POLYMARKET_CLOB_URL", "https://clob.polymarket.com"),
 			GammaURL:      getEnv("POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com"),
-			BuilderAPIKey: getEnv("POLY_BUILDER_API_KEY", ""),
-			BuilderSecret: getEnv("POLY_BUILDER_SECRET", ""), // Often empty/not used for local signing depending on setup, but good to have
-			BuilderPass:   getEnv("POLY_BUILDER_PASSPHRASE", ""),
+			BuilderAPIKey: sanitizeCredential(getEnv("POLY_BUILDER_API_KEY", "")),
+			BuilderSecret: sanitizeCredential(getEnv("POLY_BUILDER_SECRET", "")), // Often empty/not used for local signing depending on setup, but good to have
+			BuilderPass:   sanitizeCredential(getEnv("POLY_BUILDER_PASSPHRASE", "")),
 			RelayerURL:    getEnv("POLYMARKET_RELAYER_URL", "https://relayer-v2.polymarket.com"),
 		},
 		Services: ServicesConfig{
@@ -125,6 +126,11 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
+func sanitizeCredential(value string) string {
+	trimmed := strings.TrimSpace(value)
+	return strings.Trim(trimmed, "\"")
+}
+
 // Helper to get env var as int
 func getEnvAsInt(key string, fallback int) int {
 	valueStr := getEnv(key, "")
@@ -136,4 +142,3 @@ func getEnvAsInt(key string, fallback int) int {
 	}
 	return fallback
 }
-

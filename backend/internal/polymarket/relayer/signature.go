@@ -17,11 +17,18 @@ func buildBuilderSignature(secret string, timestamp int64, method, requestPath s
 	}
 
 	normalizedSecret := strings.TrimSpace(secret)
-	decodedSecret, err := base64.StdEncoding.DecodeString(normalizedSecret)
+
+	var decodedSecret []byte
+	var err error
+
+	// Builder docs note the secret is base64; the dashboard currently emits URL-safe (+/- replaced).
+	decodedSecret, err = base64.URLEncoding.DecodeString(normalizedSecret)
 	if err != nil {
-		// Some builder creds are provided as raw strings (non-base64). Fallback to raw bytes so
-		// deployments keep working even if the key isn't encoded.
-		decodedSecret = []byte(normalizedSecret)
+		decodedSecret, err = base64.StdEncoding.DecodeString(normalizedSecret)
+		if err != nil {
+			// As a last resort, treat it as raw bytes.
+			decodedSecret = []byte(normalizedSecret)
+		}
 	}
 
 	payload := fmt.Sprintf("%d%s%s", timestamp, strings.ToUpper(method), requestPath)

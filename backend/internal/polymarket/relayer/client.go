@@ -205,3 +205,20 @@ func (c *Client) setHeaders(req *http.Request, body []byte) error {
 
 	return nil
 }
+
+// CheckAuth performs a lightweight POST /submit with a no-op transaction to verify credentials.
+// The relayer will reject the payload, but we only care that we pass authentication (i.e., avoid 401).
+func (c *Client) CheckAuth(ctx context.Context) error {
+	dummy := RelayerRequest{
+		Tx: MetaTransaction{
+			To:        "0x0000000000000000000000000000000000000000",
+			Data:      "0x",
+			Value:     "0",
+			Operation: 0,
+		},
+		Metadata: "auth-check",
+	}
+
+	_, err := c.submitTransaction(ctx, dummy)
+	return err
+}
