@@ -93,6 +93,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	// Wallet Routes (Protected)
 	wallet := v1.Group("/wallet", middleware.Protected())
 	wallet.Get("/", walletHandler.GetWallet)
+	wallet.Get("", walletHandler.GetWallet)
 	wallet.Post("/deploy", walletHandler.DeployWallet)
 	wallet.Post("/update", walletHandler.UpdateWallet)
 	wallet.Get("/deposit", walletHandler.GetDepositAddress)

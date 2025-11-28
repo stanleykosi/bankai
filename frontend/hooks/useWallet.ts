@@ -179,6 +179,13 @@ export function useWallet(): UseWalletReturn {
   }, [isWagmiConnected, wagmiDisconnect]);
 
   useEffect(() => {
+    if (!isWagmiConnected) {
+      setBackendUser(null);
+      setWalletError(null);
+    }
+  }, [isWagmiConnected]);
+
+  useEffect(() => {
     if (!backendUser) {
       return;
     }
