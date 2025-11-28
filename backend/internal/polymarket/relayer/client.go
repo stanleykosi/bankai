@@ -25,6 +25,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bankai-project/backend/internal/config"
@@ -74,7 +76,7 @@ type RelayerRequest struct {
 type RelayerResponse struct {
 	TransactionHash string `json:"transactionHash"`
 	TaskID          string `json:"taskId"`
-	State           string `json:"state"` // PENDING, MINED, etc.
+	State           string `json:"state"`                  // PENDING, MINED, etc.
 	ProxyAddress    string `json:"proxyAddress,omitempty"` // Safe address after deployment (may not be in initial response)
 }
 
@@ -138,7 +140,9 @@ func (c *Client) submitTransaction(ctx context.Context, payload RelayerRequest) 
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	c.setHeaders(req)
+	if err := c.setHeaders(req, data); err != nil {
+		return nil, fmt.Errorf("failed to sign relayer request: %w", err)
+	}
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -171,17 +175,33 @@ func (c *Client) submitTransaction(ctx context.Context, payload RelayerRequest) 
 	return &result, nil
 }
 
-func (c *Client) setHeaders(req *http.Request) {
+func (c *Client) setHeaders(req *http.Request, body []byte) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "Bankai-Terminal/1.0")
 
-	// Builder Authentication Headers
-	// Required for "Trading Attribution" and Relayer access
-	if c.APIKey != "" {
-		req.Header.Set("POLY_BUILDER_API_KEY", c.APIKey)
-		// Note: Docs mention timestamp/signature headers for CLOB.
-		// For Relayer, the API Key is often sufficient for identification,
-		// but full signing might be needed depending on strictness.
+	if c.APIKey == "" || c.APISecret == "" || c.Passphrase == "" {
+		return fmt.Errorf("builder credentials are not configured")
 	}
-}
 
+	// Ensure we have just the path portion for signing (e.g., /submit)
+	path := req.URL.Path
+	if path == "" {
+		path = "/"
+	}
+
+	// Relayer docs require uppercase method in the signature payload.
+	method := strings.ToUpper(req.Method)
+	timestamp := time.Now().Unix()
+
+	sig, err := buildBuilderSignature(c.APISecret, timestamp, method, path, body)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("POLY_BUILDER_API_KEY", c.APIKey)
+	req.Header.Set("POLY_BUILDER_PASSPHRASE", c.Passphrase)
+	req.Header.Set("POLY_BUILDER_SIGNATURE", sig)
+	req.Header.Set("POLY_BUILDER_TIMESTAMP", strconv.FormatInt(timestamp, 10))
+
+	return nil
+}

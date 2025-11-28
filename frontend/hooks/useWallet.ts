@@ -12,7 +12,7 @@
 
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
 import { useAccount, useDisconnect } from "wagmi";
 
@@ -40,6 +40,7 @@ export function useWallet(): UseWalletReturn {
   const [isSyncing, setIsSyncing] = useState(false);
   const [clerkLoadTimeout, setClerkLoadTimeout] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
+  const syncInFlightRef = useRef(false);
 
   // Fallback: if Clerk takes too long to load, assume it's loaded to prevent infinite loading
   useEffect(() => {
@@ -89,16 +90,16 @@ export function useWallet(): UseWalletReturn {
 
   const syncUser = useCallback(async () => {
     // Sync user even if they don't have a wallet yet - they can connect it later
-    if (!clerkUser) {
+    if (!clerkUser || syncInFlightRef.current) {
       return;
     }
 
     try {
+      syncInFlightRef.current = true;
       setIsSyncing(true);
       const token = await getToken();
 
       if (!token) {
-        setIsSyncing(false);
         return;
       }
 
@@ -146,6 +147,7 @@ export function useWallet(): UseWalletReturn {
       // Even on error, set backendUser to null so UI can render
       // This prevents infinite loading state
     } finally {
+      syncInFlightRef.current = false;
       setIsSyncing(false);
     }
   }, [clerkUser, eoaAddress, ensureWallet, getToken]);

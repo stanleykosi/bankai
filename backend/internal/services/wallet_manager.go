@@ -109,6 +109,7 @@ func (s *WalletManager) EnsureWallet(ctx context.Context, clerkID string) (*mode
 	// The DeploySafe method handles full ABI encoding of the Safe deployment transaction.
 	resp, err := s.Relayer.DeploySafe(ctx, user.EOAAddress)
 	if err != nil {
+		logger.Error("Relayer deployment failed for user %s: %v", user.ClerkID, err)
 		return nil, fmt.Errorf("relayer deployment failed: %w", err)
 	}
 
