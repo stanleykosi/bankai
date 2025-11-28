@@ -91,7 +91,7 @@ export function Header() {
                 type="button"
                 onClick={() => setDepositModalOpen(true)}
                 className={cn(
-                  "hidden md:flex w-64 flex-col gap-1 rounded-md border border-border bg-card/50 px-3 py-2 text-left transition hover:border-primary/60 hover:bg-card",
+                  "hidden md:flex min-w-[280px] flex-col justify-center gap-1 rounded-md border border-border bg-card/70 px-4 py-2 text-left transition hover:border-primary/60 hover:bg-card",
                   !hasVault && "border-dashed text-muted-foreground"
                 )}
               >
