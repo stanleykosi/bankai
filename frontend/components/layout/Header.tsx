@@ -62,6 +62,7 @@ export function Header() {
     hasVault,
     refreshUser,
   });
+  const showVaultCard = isAuthenticated && Boolean(eoaAddress);
   const deploymentMessage = useMemo(() => {
     if (deploymentStatus?.proxy_address) {
       return `Vault pending at ${truncateAddress(
@@ -114,81 +115,65 @@ export function Header() {
             <>
               <WalletConnectButton />
 
-              <button
-                type="button"
-                onClick={() =>
-                  hasVault ? setDepositModalOpen(true) : deployVault()
-                }
-                disabled={!hasVault && (isVaultDeploying || !canDeploy)}
-                className={cn(
-                  "hidden md:flex h-10 items-center gap-2.5 rounded-md border border-border bg-card/70 px-2.5 py-1.5 text-left transition hover:border-primary/60 hover:bg-card",
-                  !hasVault && "border-dashed opacity-75"
-                )}
-              >
-                {walletError ? (
-                  <span className="font-mono text-[10px] text-destructive whitespace-nowrap max-w-[200px] truncate">
-                    {walletError}
-                  </span>
-                ) : isLoading ? (
-                  <span className="font-mono text-[10px] text-muted-foreground whitespace-nowrap">
-                    Syncing...
-                  </span>
-                ) : (
-                  <div className="flex items-center gap-2.5 min-w-0 w-full">
-                    <div className="flex flex-col gap-0.5 min-w-0 flex-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground whitespace-nowrap">
-                          {walletTypeLabel}
-                        </span>
-                        <span className="font-mono text-[9px] text-muted-foreground whitespace-nowrap">
-                          {hasVault
-                            ? isBalanceLoading
-                              ? "Loading..."
-                              : `${balanceData?.balance_formatted ?? "0.00"} USDC`
-                            : "Unavailable"}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <span className="font-mono text-[11px] text-foreground truncate">
-                          {hasVault && vaultAddress
-                            ? truncateAddress(vaultAddress)
-                            : "Pending deployment"}
-                        </span>
-                        {hasVault && (
-                          <span className="flex items-center gap-0.5 text-[8px] uppercase text-constructive whitespace-nowrap shrink-0">
-                            <ShieldCheck className="h-2.5 w-2.5" />
-                            Active
+              {showVaultCard && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    hasVault ? setDepositModalOpen(true) : deployVault()
+                  }
+                  disabled={!hasVault}
+                  className={cn(
+                    "hidden md:flex h-10 items-center gap-2.5 rounded-md border border-border bg-card/70 px-2.5 py-1.5 text-left transition hover:border-primary/60 hover:bg-card",
+                    !hasVault && "border-dashed opacity-75"
+                  )}
+                >
+                  {walletError ? (
+                    <span className="font-mono text-[10px] text-destructive whitespace-nowrap max-w-[200px] truncate">
+                      {walletError}
+                    </span>
+                  ) : (
+                    <div className="flex items-center gap-2.5 min-w-0 w-full">
+                      <div className="flex flex-col gap-0.5 min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground whitespace-nowrap">
+                            {walletTypeLabel}
+                          </span>
+                          <span className="font-mono text-[9px] text-muted-foreground whitespace-nowrap">
+                            {hasVault
+                              ? isBalanceLoading
+                                ? "Loading..."
+                                : `${balanceData?.balance_formatted ?? "0.00"} USDC`
+                              : ""}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="font-mono text-[11px] text-foreground truncate">
+                            {hasVault && vaultAddress
+                              ? truncateAddress(vaultAddress)
+                              : isVaultDeploying
+                              ? "Authorizing vault deployment..."
+                              : deploymentMessage ||
+                                (deployError || isLoading
+                                  ? "Syncing wallet..."
+                                  : "Preparing deployment...")}
+                          </span>
+                          {hasVault && (
+                            <span className="flex items-center gap-0.5 text-[8px] uppercase text-constructive whitespace-nowrap shrink-0">
+                              <ShieldCheck className="h-2.5 w-2.5" />
+                              Active
+                            </span>
+                          )}
+                        </div>
+                        {!hasVault && deployError && (
+                          <span className="text-[9px] text-destructive">
+                            {deployError}
                           </span>
                         )}
                       </div>
                     </div>
-                    {!hasVault && (
-                      <div className="flex items-center gap-2">
-                        <span className="rounded-sm border border-dashed border-primary/40 px-2 py-1 text-[10px] font-mono uppercase tracking-widest text-primary">
-                          {isVaultDeploying ? "Deploying…" : "Deploy Vault"}
-                        </span>
-                        <div className="flex flex-col text-[9px] font-mono text-muted-foreground">
-                          <span>
-                            {eoaAddress
-                              ? "Sign once to deploy"
-                              : "Connect wallet"}
-                          </span>
-                          {deploymentMessage && (
-                            <span className="text-[8px] text-muted-foreground/80">
-                              {deploymentMessage}
-                            </span>
-                          )}
-                          {deployError && (
-                            <span className="text-[8px] text-destructive">
-                              {deployError}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </button>
+                  )}
+                </button>
+              )}
 
               <UserButton
                 afterSignOutUrl="/"
