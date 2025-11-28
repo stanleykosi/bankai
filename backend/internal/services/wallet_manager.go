@@ -35,6 +35,13 @@ type WalletManager struct {
 	Gamma   *gamma.Client
 }
 
+const (
+	gammaRetryAttempts  = 3
+	gammaRetryDelay     = 400 * time.Millisecond
+	registrationChecks  = 5
+	registrationBackoff = 600 * time.Millisecond
+)
+
 func NewWalletManager(db *gorm.DB, relayer *relayer.Client, gammaClient *gamma.Client) *WalletManager {
 	return &WalletManager{
 		DB:      db,
@@ -82,14 +89,13 @@ func (s *WalletManager) EnsureWallet(ctx context.Context, clerkID string) (*mode
 	// The Relayer handles the logic of "deploy if not exists" usually.
 
 	// Attempt discovery via Polymarket public-search before deploying.
-	if vaultAddr, err := s.lookupVaultAddress(ctx, user.EOAAddress); err == nil && vaultAddr != "" {
-		logger.Info("🔎 Located existing Polymarket vault %s for user %s", vaultAddr, user.ClerkID)
-		wType := models.WalletTypeProxy
-		if err := s.UpdateVaultAddress(ctx, user.ClerkID, vaultAddr, &wType); err != nil {
+	if vaultAddr, walletType, err := s.lookupVaultAddress(ctx, user.EOAAddress); err == nil && vaultAddr != "" {
+		logger.Info("🔎 Located existing vault %s for user %s", vaultAddr, user.ClerkID)
+		if err := s.UpdateVaultAddress(ctx, user.ClerkID, vaultAddr, walletType); err != nil {
 			logger.Error("Failed to persist discovered vault address: %v", err)
 		} else {
 			user.VaultAddress = vaultAddr
-			user.WalletType = &wType
+			user.WalletType = walletType
 			return &user, nil
 		}
 	} else if err != nil {
@@ -103,10 +109,7 @@ func (s *WalletManager) EnsureWallet(ctx context.Context, clerkID string) (*mode
 	// The DeploySafe method handles full ABI encoding of the Safe deployment transaction.
 	resp, err := s.Relayer.DeploySafe(ctx, user.EOAAddress)
 	if err != nil {
-		logger.Error("Failed to request safe deployment via Relayer: %v", err)
-		// We don't block the user flow completely, but return error metadata if possible
-		// For now, just return user with empty vault
-		return &user, nil
+		return nil, fmt.Errorf("relayer deployment failed: %w", err)
 	}
 
 	// 5. Check Response
@@ -132,6 +135,15 @@ func (s *WalletManager) EnsureWallet(ctx context.Context, clerkID string) (*mode
 		}
 	}
 
+	// Final attempt: poll Gamma briefly to catch the newly registered vault.
+	if addr, err := s.awaitVaultRegistration(ctx, user.EOAAddress); err == nil && addr != "" {
+		wType := models.WalletTypeSafe
+		if err := s.UpdateVaultAddress(ctx, user.ClerkID, addr, &wType); err == nil {
+			user.VaultAddress = addr
+			user.WalletType = &wType
+		}
+	}
+
 	return &user, nil
 }
 
@@ -154,21 +166,87 @@ func (s *WalletManager) UpdateVaultAddress(ctx context.Context, clerkID, vaultAd
 		Updates(updates).Error
 }
 
-// lookupVaultAddress queries the Polymarket Gamma API for a profile that matches the user's EOA.
+// lookupVaultAddress attempts to find an existing vault by querying public Polymarket data (proxy wallets).
 // References polymarket_documentation.md section "Search markets, events, and profiles".
-func (s *WalletManager) lookupVaultAddress(ctx context.Context, eoa string) (string, error) {
-	if s.Gamma == nil || eoa == "" {
+func (s *WalletManager) lookupVaultAddress(ctx context.Context, eoa string) (string, *models.WalletType, error) {
+	if eoa == "" {
+		return "", nil, nil
+	}
+
+	if addr, err := s.lookupProxyVault(ctx, eoa); err == nil && addr != "" {
+		wType := models.WalletTypeProxy
+		return addr, &wType, nil
+	} else if err != nil {
+		logger.Info("[WARN] Proxy vault lookup failed for %s: %v", eoa, err)
+	}
+
+	return "", nil, nil
+}
+
+func (s *WalletManager) lookupProxyVault(ctx context.Context, eoa string) (string, error) {
+	if s.Gamma == nil {
 		return "", nil
 	}
 
-	profiles, err := s.Gamma.SearchProfiles(ctx, eoa, 5)
-	if err != nil {
-		return "", fmt.Errorf("gamma search failed: %w", err)
+	lower := strings.ToLower(eoa)
+	upper := strings.ToUpper(eoa)
+	var queries []string
+	queries = append(queries, eoa, lower, upper)
+	if len(lower) >= 8 {
+		prefix := lower[:8]
+		queries = append(queries, prefix, strings.ToUpper(prefix))
 	}
 
-	for _, profile := range profiles {
-		if strings.EqualFold(profile.BaseAddress, eoa) && profile.ProxyWallet != "" {
-			return profile.ProxyWallet, nil
+	for _, q := range queries {
+		for attempt := 0; attempt < gammaRetryAttempts; attempt++ {
+			profiles, err := s.Gamma.SearchProfiles(ctx, q, 10)
+			if err != nil {
+				logger.Info("[WARN] Gamma search attempt %d failed for %s: %v", attempt+1, q, err)
+				select {
+				case <-ctx.Done():
+					return "", ctx.Err()
+				case <-time.After(gammaRetryDelay):
+				}
+				continue
+			}
+
+			for _, profile := range profiles {
+				if profile.ProxyWallet == "" {
+					continue
+				}
+
+				switch {
+				case profile.BaseAddress != "" && strings.EqualFold(profile.BaseAddress, eoa):
+					return profile.ProxyWallet, nil
+				case profile.BaseAddress == "" && strings.Contains(strings.ToLower(profile.Name), lower):
+					return profile.ProxyWallet, nil
+				}
+			}
+
+			// No profile matched for this query; break retries to move to next query string.
+			break
+		}
+	}
+
+	return "", nil
+}
+
+// awaitVaultRegistration polls Gamma for a short duration after a successful relayer call.
+// This covers the short delay between relayer deployment and Gamma profile propagation.
+func (s *WalletManager) awaitVaultRegistration(ctx context.Context, eoa string) (string, error) {
+	for i := 0; i < registrationChecks; i++ {
+		addr, err := s.lookupProxyVault(ctx, eoa)
+		if err != nil {
+			return "", err
+		}
+		if addr != "" {
+			return addr, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(registrationBackoff):
 		}
 	}
 

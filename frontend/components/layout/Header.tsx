@@ -16,8 +16,8 @@ import { Activity, BarChart2, LayoutDashboard, ShieldCheck, Wallet } from "lucid
 import { Button } from "@/components/ui/button";
 import { WalletConnectButton } from "@/components/wallet/WalletConnectButton";
 import { DepositWithdrawModal } from "@/components/wallet/DepositWithdrawModal";
-import { BalanceDisplay } from "@/components/wallet/BalanceDisplay";
 import { useWallet } from "@/hooks/useWallet";
+import { useBalance } from "@/hooks/useBalance";
 import { cn } from "@/lib/utils";
 
 const navLinks = [
@@ -31,7 +31,18 @@ const truncateAddress = (address: string) =>
 
 export function Header() {
   const pathname = usePathname();
-  const { isAuthenticated, isLoading, eoaAddress, vaultAddress, user } = useWallet();
+  const {
+    isAuthenticated,
+    isLoading,
+    eoaAddress,
+    vaultAddress,
+    user,
+    walletError,
+  } = useWallet();
+  const {
+    data: balanceData,
+    isLoading: isBalanceLoading,
+  } = useBalance();
   const [depositModalOpen, setDepositModalOpen] = useState(false);
   const walletTypeLabel = useMemo(
     () => (user?.wallet_type ? user.wallet_type : "VAULT"),
@@ -76,60 +87,51 @@ export function Header() {
             <>
               <WalletConnectButton />
 
-              {/* Wallet Status - Compact */}
-              <div className="hidden items-center gap-2 rounded-md border border-border bg-card/50 px-3 py-2 md:flex">
-                <div className="flex flex-col text-xs">
-                  {isLoading ? (
-                    <span className="font-mono text-muted-foreground animate-pulse text-[10px]">
-                      Syncing...
+              <button
+                type="button"
+                onClick={() => setDepositModalOpen(true)}
+                className={cn(
+                  "hidden md:flex w-64 flex-col gap-1 rounded-md border border-border bg-card/50 px-3 py-2 text-left transition hover:border-primary/60 hover:bg-card",
+                  !hasVault && "border-dashed text-muted-foreground"
+                )}
+              >
+                {walletError ? (
+                  <span className="font-mono text-[10px] text-destructive">
+                    {walletError}
+                  </span>
+                ) : isLoading ? (
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    Syncing wallet...
+                  </span>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between text-[11px] uppercase text-muted-foreground">
+                      <span>Vault</span>
+                      <span>
+                        {hasVault
+                          ? isBalanceLoading
+                            ? "Fetching balance..."
+                            : `${balanceData?.balance_formatted ?? "0.00"} USDC`
+                          : "Balance unavailable"}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 font-mono text-sm text-foreground">
+                      {hasVault && vaultAddress
+                        ? truncateAddress(vaultAddress)
+                        : "Pending deployment"}
+                      {hasVault && (
+                        <span className="flex items-center gap-1 text-[10px] uppercase text-constructive">
+                          <ShieldCheck className="h-3 w-3" />
+                          {walletTypeLabel}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[10px] uppercase text-muted-foreground">
+                      {hasVault ? "Click to manage funds" : "Connect wallet to deploy"}
                     </span>
-                  ) : (
-                    <>
-                      <span className="text-[9px] uppercase text-muted-foreground">
-                        Vault Address
-                      </span>
-                      <span className="font-mono text-xs text-foreground">
-                        {hasVault && vaultAddress
-                          ? truncateAddress(vaultAddress)
-                          : "Pending deployment"}
-                      </span>
-                      <span
-                        className={cn(
-                          "mt-1 flex items-center gap-1 font-mono text-[9px] uppercase",
-                          hasVault ? "text-constructive" : "text-muted-foreground"
-                        )}
-                      >
-                        {hasVault ? (
-                          <>
-                            <ShieldCheck className="h-2.5 w-2.5" />
-                            {walletTypeLabel} ACTIVE
-                          </>
-                        ) : (
-                          "Connect wallet to deploy"
-                        )}
-                      </span>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              {/* Balance Display */}
-              {!isLoading && <BalanceDisplay className="hidden md:flex" />}
-
-              {/* Deposit/Withdraw Button */}
-              {!isLoading && (
-                <Button
-                  variant={hasVault ? "outline" : "secondary"}
-                  size="sm"
-                  onClick={() => setDepositModalOpen(true)}
-                  className={cn(
-                    "border-primary/30 text-xs font-mono uppercase tracking-wider hover:bg-primary/10 hover:text-primary",
-                    !hasVault && "border-dashed text-muted-foreground"
-                  )}
-                >
-                  {hasVault ? "Funds" : "Vault Setup"}
-                </Button>
-              )}
+                  </>
+                )}
+              </button>
 
               <UserButton
                 afterSignOutUrl="/"

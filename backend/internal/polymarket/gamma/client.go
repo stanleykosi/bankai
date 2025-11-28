@@ -163,6 +163,7 @@ func (c *Client) SearchProfiles(ctx context.Context, query string, limit int) ([
 	q.Set("search_profiles", "true")
 	q.Set("limit_per_type", strconv.Itoa(limit))
 	q.Set("cache", "false")
+	q.Set("optimized", "false")
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
@@ -187,4 +188,3 @@ func (c *Client) SearchProfiles(ctx context.Context, query string, limit int) ([
 
 	return searchResp.Profiles, nil
 }
-

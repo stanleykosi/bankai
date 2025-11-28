@@ -25,6 +25,7 @@ export interface UseWalletReturn {
   user: User | null;
   eoaAddress: string | null;
   vaultAddress: string | null;
+  walletError: string | null;
   disconnect: () => void;
   refreshUser: () => Promise<void>;
 }
@@ -38,6 +39,7 @@ export function useWallet(): UseWalletReturn {
   const [backendUser, setBackendUser] = useState<User | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [clerkLoadTimeout, setClerkLoadTimeout] = useState(false);
+  const [walletError, setWalletError] = useState<string | null>(null);
 
   // Fallback: if Clerk takes too long to load, assume it's loaded to prevent infinite loading
   useEffect(() => {
@@ -70,9 +72,15 @@ export function useWallet(): UseWalletReturn {
           },
         });
         setBackendUser(data);
+        setWalletError(null);
         return data;
       } catch (error: any) {
         console.error("useWallet: Failed to ensure wallet", error);
+        const message =
+          error.response?.data?.error ||
+          error.message ||
+          "Failed to setup vault";
+        setWalletError(message);
         return null;
       }
     },
@@ -117,7 +125,10 @@ export function useWallet(): UseWalletReturn {
       // Only call ensureWallet if we have an EOA address and no vault yet
       if (eoaAddress && !data?.vault_address) {
         try {
-          await ensureWallet(token);
+          const ensured = await ensureWallet(token);
+          if (!ensured) {
+            setBackendUser(data);
+          }
         } catch (walletError) {
           // Don't fail the whole sync if ensureWallet fails
           console.error("useWallet: Failed to ensure wallet", walletError);
@@ -127,6 +138,11 @@ export function useWallet(): UseWalletReturn {
       }
     } catch (error: any) {
       console.error("useWallet: Failed to sync user with backend", error);
+      const message =
+        error.response?.data?.error ||
+        error.message ||
+        "Failed to sync user";
+      setWalletError(message);
       // Even on error, set backendUser to null so UI can render
       // This prevents infinite loading state
     } finally {
@@ -136,7 +152,7 @@ export function useWallet(): UseWalletReturn {
 
   useEffect(() => {
     // Sync user when they sign in, even without a wallet
-    if (!isClerkLoaded || !clerkUser) {
+    if (!isClerkLoaded || !clerkUser || isSyncing) {
       return;
     }
 
@@ -152,13 +168,14 @@ export function useWallet(): UseWalletReturn {
     if (needsSync) {
       syncUser();
     }
-  }, [backendUser, clerkUser, eoaAddress, isClerkLoaded, syncUser]);
+  }, [backendUser, clerkUser, eoaAddress, isClerkLoaded, isSyncing, syncUser]);
 
   const handleDisconnect = useCallback(() => {
     if (isWagmiConnected) {
       wagmiDisconnect();
     }
     setBackendUser(null);
+    setWalletError(null);
   }, [isWagmiConnected, wagmiDisconnect]);
 
   useEffect(() => {
@@ -168,6 +185,7 @@ export function useWallet(): UseWalletReturn {
 
     if (!eoaAddress || backendUser.eoa_address !== eoaAddress) {
       setBackendUser(null);
+      setWalletError(null);
     }
   }, [backendUser, eoaAddress]);
 
@@ -180,6 +198,7 @@ export function useWallet(): UseWalletReturn {
     user: backendUser,
     eoaAddress,
     vaultAddress: backendUser?.vault_address ?? null,
+    walletError,
     disconnect: handleDisconnect,
     refreshUser: syncUser,
   };
