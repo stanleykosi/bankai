@@ -179,18 +179,26 @@ export function useWallet(): UseWalletReturn {
   }, [isWagmiConnected, wagmiDisconnect]);
 
   useEffect(() => {
-    if (!isWagmiConnected) {
-      setBackendUser(null);
-      setWalletError(null);
+    if (isWagmiConnected) {
+      return;
     }
-  }, [isWagmiConnected]);
+
+    if (backendUser?.eoa_address) {
+      setBackendUser(null);
+    }
+    setWalletError(null);
+  }, [backendUser?.eoa_address, isWagmiConnected]);
 
   useEffect(() => {
     if (!backendUser) {
       return;
     }
 
-    if (!eoaAddress || backendUser.eoa_address !== eoaAddress) {
+    if (!eoaAddress) {
+      return;
+    }
+
+    if (backendUser.eoa_address !== eoaAddress) {
       setBackendUser(null);
       setWalletError(null);
     }
