@@ -16,9 +16,12 @@ func buildBuilderSignature(secret string, timestamp int64, method, requestPath s
 		return "", fmt.Errorf("builder secret missing")
 	}
 
-	decodedSecret, err := base64.StdEncoding.DecodeString(secret)
+	normalizedSecret := strings.TrimSpace(secret)
+	decodedSecret, err := base64.StdEncoding.DecodeString(normalizedSecret)
 	if err != nil {
-		return "", fmt.Errorf("failed to decode builder secret: %w", err)
+		// Some builder creds are provided as raw strings (non-base64). Fallback to raw bytes so
+		// deployments keep working even if the key isn't encoded.
+		decodedSecret = []byte(normalizedSecret)
 	}
 
 	payload := fmt.Sprintf("%d%s%s", timestamp, strings.ToUpper(method), requestPath)
