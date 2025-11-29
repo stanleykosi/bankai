@@ -46,6 +46,7 @@ export function useVaultDeployment({
   const { switchChainAsync } = useSwitchChain();
 
   const [typedData, setTypedData] = useState<SafeCreateTypedData | null>(null);
+  const [typedDataOwner, setTypedDataOwner] = useState<string | null>(null);
   const [isDeploying, setIsDeploying] = useState(false);
   const [deployError, setDeployError] = useState<string | null>(null);
   const [deploymentStatus, setDeploymentStatus] =
@@ -64,6 +65,7 @@ export function useVaultDeployment({
       headers: { Authorization: `Bearer ${token}` },
     });
     setTypedData(data.typed_data);
+    setTypedDataOwner(data.owner.toLowerCase());
     return data.typed_data;
   }, [getToken]);
 
@@ -81,7 +83,16 @@ export function useVaultDeployment({
         throw new Error("Unable to fetch auth token");
       }
 
-      const payload = typedData ?? (await fetchTypedData());
+      let payload = typedData;
+      const ownerMismatch =
+        typedDataOwner &&
+        eoaAddress &&
+        typedDataOwner !== eoaAddress.toLowerCase();
+
+      if (!payload || ownerMismatch) {
+        payload = await fetchTypedData();
+      }
+
       if (!payload) {
         throw new Error("Failed to load deployment payload");
       }
@@ -137,6 +148,14 @@ export function useVaultDeployment({
     () => Boolean(eoaAddress) && !hasVault,
     [eoaAddress, hasVault]
   );
+
+  useEffect(() => {
+    autoTriggeredRef.current = false;
+    setTypedData(null);
+    setTypedDataOwner(null);
+    setDeploymentStatus(null);
+    setDeployError(null);
+  }, [eoaAddress]);
 
   useEffect(() => {
     if (!canDeploy) {
