@@ -102,6 +102,25 @@ func (s *WalletManager) EnsureWallet(ctx context.Context, clerkID string) (*mode
 		logger.Error("Vault discovery failed for user %s: %v", user.ClerkID, err)
 	}
 
+	// Check relayer /deployed endpoint (derives Safe address even if Gamma hasn't indexed it)
+	if safeAddr, err := relayer.DeriveSafeAddress(user.EOAAddress); err == nil {
+		if deployed, derr := s.Relayer.GetDeployed(ctx, safeAddr); derr != nil {
+			logger.Error("Relayer deployed lookup failed for user %s: %v", user.ClerkID, derr)
+		} else if deployed {
+			logger.Info("🛡️ Relayer confirms Safe %s exists for user %s", safeAddr, user.ClerkID)
+			wType := models.WalletTypeSafe
+			if err := s.UpdateVaultAddress(ctx, user.ClerkID, safeAddr, &wType); err != nil {
+				logger.Error("Failed to persist relayer detected safe: %v", err)
+			} else {
+				user.VaultAddress = safeAddr
+				user.WalletType = &wType
+				return &user, nil
+			}
+		}
+	} else {
+		logger.Error("Failed to derive safe address for user %s: %v", user.ClerkID, err)
+	}
+
 	logger.Info("🧐 User %s (EOA: %s) has no vault. Awaiting SAFE-CREATE signature.", user.ClerkID, user.EOAAddress)
 	return &user, nil
 }

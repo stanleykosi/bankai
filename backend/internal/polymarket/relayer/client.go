@@ -70,12 +70,50 @@ type RelayerError struct {
 	Code    string `json:"code,omitempty"`
 }
 
+type deployedResponse struct {
+	Deployed bool `json:"deployed"`
+}
+
 // DeploySafe submits a SAFE-CREATE TransactionRequest to the relayer.
 func (c *Client) DeploySafe(ctx context.Context, request *TransactionRequest) (*RelayerResponse, error) {
 	if request == nil {
 		return nil, fmt.Errorf("transaction request cannot be nil")
 	}
 	return c.submitTransaction(ctx, request)
+}
+
+// GetDeployed checks whether a Safe has already been deployed for the derived proxy address.
+func (c *Client) GetDeployed(ctx context.Context, safeAddress string) (bool, error) {
+	if safeAddress == "" {
+		return false, fmt.Errorf("safe address cannot be empty")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/deployed?address=%s", c.BaseURL, safeAddress), nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	if err := c.setHeaders(req, nil); err != nil {
+		return false, fmt.Errorf("failed to sign relayer request: %w", err)
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("relayer request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("relayer returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result deployedResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return false, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return result.Deployed, nil
 }
 
 // submitTransaction sends a transaction to the relayer
