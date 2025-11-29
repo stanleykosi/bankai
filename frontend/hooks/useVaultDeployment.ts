@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { polygon } from "viem/chains";
-import { useNetwork, useSignTypedData, useSwitchNetwork } from "wagmi";
+import { useChainId, useSignTypedData, useSwitchChain } from "wagmi";
 
 import { api } from "@/lib/api";
 import type { SafeCreateTypedData, VaultDeploymentResult } from "@/types/vault";
@@ -42,10 +42,8 @@ export function useVaultDeployment({
 }: UseVaultDeploymentArgs): UseVaultDeploymentResult {
   const { getToken } = useAuth();
   const { signTypedDataAsync } = useSignTypedData();
-  const { chain } = useNetwork();
-  const { switchNetworkAsync } = useSwitchNetwork({
-    chainId: polygon.id,
-  });
+  const chainId = useChainId();
+  const { switchChainAsync } = useSwitchChain();
 
   const [typedData, setTypedData] = useState<SafeCreateTypedData | null>(null);
   const [isDeploying, setIsDeploying] = useState(false);
@@ -88,9 +86,9 @@ export function useVaultDeployment({
         throw new Error("Failed to load deployment payload");
       }
 
-      if (chain?.id !== polygon.id) {
-        if (switchNetworkAsync) {
-          await switchNetworkAsync(polygon.id);
+      if (chainId !== polygon.id) {
+        if (switchChainAsync) {
+          await switchChainAsync({ chainId: polygon.id });
         } else {
           throw new Error("Switch wallet to Polygon before deploying");
         }
@@ -124,14 +122,14 @@ export function useVaultDeployment({
       setIsDeploying(false);
     }
   }, [
-    chain?.id,
+    chainId,
     eoaAddress,
     fetchTypedData,
     getToken,
     hasVault,
     refreshUser,
     signTypedDataAsync,
-    switchNetworkAsync,
+    switchChainAsync,
     typedData,
   ]);
 
