@@ -11,6 +11,7 @@
 package handlers
 
 import (
+	"strings"
 	"time"
 
 	"github.com/bankai-project/backend/internal/api/middleware"
@@ -52,7 +53,22 @@ func (h *UserHandler) SyncUser(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body", "details": err.Error()})
 	}
 
-	// 3. Upsert User
+	// 3. Fetch existing user to detect EOA changes
+	var existingUser models.User
+	var hasExisting bool
+	if err := h.DB.Where("clerk_id = ?", clerkID).First(&existingUser).Error; err != nil {
+		if err != gorm.ErrRecordNotFound {
+			logger.Error("SyncUser: Failed to fetch existing user: %v", err)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error":   "Failed to sync user",
+				"details": err.Error(),
+			})
+		}
+	} else {
+		hasExisting = true
+	}
+
+	// 4. Upsert User
 	now := time.Now()
 	user := models.User{
 		ClerkID:    clerkID,
@@ -75,7 +91,24 @@ func (h *UserHandler) SyncUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 4. Fetch full user to return (including ID and Vault Address)
+	// 5. Clear vault metadata if the connected EOA changed
+	if hasExisting {
+		oldEOA := strings.ToLower(strings.TrimSpace(existingUser.EOAAddress))
+		newEOA := strings.ToLower(strings.TrimSpace(req.EOAAddress))
+		if oldEOA != newEOA {
+			logger.Info("SyncUser: EOA changed for user %s. Clearing cached vault state.", clerkID)
+			reset := map[string]interface{}{
+				"vault_address": "",
+				"wallet_type":   gorm.Expr("NULL"),
+				"updated_at":    now,
+			}
+			if err := h.DB.Model(&models.User{}).Where("clerk_id = ?", clerkID).Updates(reset).Error; err != nil {
+				logger.Error("SyncUser: Failed to clear vault state for user %s: %v", clerkID, err)
+			}
+		}
+	}
+
+	// 6. Fetch full user to return (including ID and Vault Address)
 	var updatedUser models.User
 	if err := h.DB.Where("clerk_id = ?", clerkID).First(&updatedUser).Error; err != nil {
 		logger.Error("SyncUser: Failed to fetch user after upsert: %v", err)
@@ -109,4 +142,3 @@ func (h *UserHandler) GetMe(c *fiber.Ctx) error {
 
 	return c.Status(fiber.StatusOK).JSON(user)
 }
-

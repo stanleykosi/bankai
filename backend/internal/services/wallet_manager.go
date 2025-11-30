@@ -72,9 +72,19 @@ func (s *WalletManager) EnsureWallet(ctx context.Context, clerkID string) (*mode
 		return nil, fmt.Errorf("failed to fetch user: %w", err)
 	}
 
-	// 1. If Vault Address exists, we are good.
+	// 1. If Vault Address exists, ensure it matches the currently connected EOA.
 	if user.VaultAddress != "" {
-		return &user, nil
+		if user.EOAAddress != "" && !s.vaultMatchesEOA(&user) {
+			logger.Info("Vault %s no longer matches EOA %s for user %s. Clearing cached vault.", user.VaultAddress, user.EOAAddress, user.ClerkID)
+			if err := s.ClearVaultAddress(ctx, user.ClerkID); err != nil {
+				logger.Error("Failed to clear mismatched vault for user %s: %v", user.ClerkID, err)
+			} else {
+				user.VaultAddress = ""
+				user.WalletType = nil
+			}
+		} else {
+			return &user, nil
+		}
 	}
 
 	// 2. If user has no EOA address, they can't deploy a vault yet
@@ -137,6 +147,19 @@ func (s *WalletManager) UpdateVaultAddress(ctx context.Context, clerkID, vaultAd
 	}
 	if wType != nil {
 		updates["wallet_type"] = *wType
+	}
+
+	return s.DB.WithContext(ctx).Model(&models.User{}).
+		Where("clerk_id = ?", clerkID).
+		Updates(updates).Error
+}
+
+// ClearVaultAddress removes any cached vault metadata for the user (used when their EOA changes).
+func (s *WalletManager) ClearVaultAddress(ctx context.Context, clerkID string) error {
+	updates := map[string]interface{}{
+		"vault_address": "",
+		"wallet_type":   gorm.Expr("NULL"),
+		"updated_at":    time.Now(),
 	}
 
 	return s.DB.WithContext(ctx).Model(&models.User{}).
@@ -207,6 +230,25 @@ func (s *WalletManager) lookupProxyVault(ctx context.Context, eoa string) (strin
 	}
 
 	return "", nil
+}
+
+// vaultMatchesEOA verifies that the stored vault still belongs to the connected EOA (Safe wallets only).
+func (s *WalletManager) vaultMatchesEOA(user *models.User) bool {
+	if user == nil || user.VaultAddress == "" || user.EOAAddress == "" {
+		return true
+	}
+
+	if user.WalletType != nil && *user.WalletType == models.WalletTypeSafe {
+		derived, err := relayer.DeriveSafeAddress(user.EOAAddress)
+		if err != nil {
+			logger.Error("Failed to derive safe address for user %s: %v", user.ClerkID, err)
+			return false
+		}
+		return strings.EqualFold(derived, user.VaultAddress)
+	}
+
+	// For proxy wallets we cannot deterministically validate ownership, so assume valid.
+	return true
 }
 
 // awaitVaultRegistration polls Gamma for a short duration after a successful relayer call.
