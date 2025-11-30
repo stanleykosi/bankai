@@ -147,12 +147,8 @@ export function useVaultDeployment({
   ]);
 
   const canDeploy = useMemo(
-    () =>
-      Boolean(eoaAddress) &&
-      !hasVault &&
-      isReady &&
-      walletChainId === polygon.id,
-    [eoaAddress, hasVault, isReady, walletChainId]
+    () => Boolean(eoaAddress) && !hasVault && isReady,
+    [eoaAddress, hasVault, isReady]
   );
 
   useEffect(() => {
