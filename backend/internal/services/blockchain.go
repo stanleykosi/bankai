@@ -96,8 +96,7 @@ func (s *BlockchainService) GetUSDCBalance(ctx context.Context, address string) 
 	}
 
 	// Unpack the result - balanceOf returns a single uint256
-	var results []interface{}
-	err = parsedABI.UnpackIntoInterface(&results, "balanceOf", result)
+	results, err := parsedABI.Unpack("balanceOf", result)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unpack balance result: %w", err)
 	}
