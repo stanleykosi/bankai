@@ -65,6 +65,7 @@ type ServicesConfig struct {
 	ClerkJWKSURL   string // URL to fetch JSON Web Key Set for JWT validation
 	TavilyAPIKey   string
 	OpenAIAPIKey   string
+	PolygonRPCURL  string
 }
 
 // Load reads .env file and populates the Config struct
@@ -96,6 +97,7 @@ func Load() (*Config, error) {
 			ClerkJWKSURL:   getEnv("CLERK_JWKS_URL", ""),
 			TavilyAPIKey:   getEnv("TAVILY_API_KEY", ""),
 			OpenAIAPIKey:   getEnv("OPENAI_API_KEY", ""),
+			PolygonRPCURL:  getEnv("POLYGON_RPC_URL", ""),
 		},
 	}
 

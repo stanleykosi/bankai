@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"time"
 
 	"github.com/bankai-project/backend/internal/config"
 	"github.com/ethereum/go-ethereum"
@@ -30,24 +31,26 @@ const (
 	// Note: USDC.e (0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174) has been deprecated
 	// Polymarket now uses native USDC on Polygon as of 2024/2025
 	USDCAddressPolygon = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
-	
-	// Polygon RPC endpoint (public, replace with dedicated provider in production)
-	PolygonRPCEndpoint = "https://polygon-rpc.com"
+
+	// Default Polygon RPC endpoint (can be overridden via POLYGON_RPC_URL)
+	DefaultPolygonRPCEndpoint = "https://polygon-rpc.com"
 )
 
 // ERC20 ABI for balanceOf function
 const erc20BalanceOfABI = `[{"constant":true,"inputs":[{"name":"_owner","type":"address"}],"name":"balanceOf","outputs":[{"name":"balance","type":"uint256"}],"type":"function"}]`
 
 type BlockchainService struct {
-	client *ethclient.Client
+	client      *ethclient.Client
 	usdcAddress common.Address
 }
 
 func NewBlockchainService(cfg *config.Config) (*BlockchainService, error) {
 	// Use Polygon RPC from config or default
-	// In production, this should come from config or env
-	rpcURL := PolygonRPCEndpoint
-	
+	rpcURL := strings.TrimSpace(cfg.Services.PolygonRPCURL)
+	if rpcURL == "" {
+		rpcURL = DefaultPolygonRPCEndpoint
+	}
+
 	client, err := ethclient.Dial(rpcURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Polygon RPC: %w", err)
@@ -65,6 +68,9 @@ func (s *BlockchainService) GetUSDCBalance(ctx context.Context, address string) 
 	if addr == (common.Address{}) {
 		return nil, fmt.Errorf("invalid address: %s", address)
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
 
 	// Parse ABI
 	parsedABI, err := abi.JSON(strings.NewReader(erc20BalanceOfABI))
@@ -124,7 +130,7 @@ func (s *BlockchainService) FormatUSDCBalance(balance *big.Int) string {
 	for len(remainderStr) < 6 {
 		remainderStr = "0" + remainderStr
 	}
-	
+
 	// Take first 2 decimal places
 	if len(remainderStr) > 2 {
 		remainderStr = remainderStr[:2]
@@ -139,4 +145,3 @@ func (s *BlockchainService) Close() {
 		s.client.Close()
 	}
 }
-
