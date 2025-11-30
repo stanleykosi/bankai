@@ -24,6 +24,7 @@ import type { SafeCreateTypedData, VaultDeploymentResult } from "@/types/vault";
 interface UseVaultDeploymentArgs {
   eoaAddress: string | null;
   hasVault: boolean;
+  isReady: boolean;
   refreshUser: () => Promise<void>;
 }
 
@@ -38,6 +39,7 @@ interface UseVaultDeploymentResult {
 export function useVaultDeployment({
   eoaAddress,
   hasVault,
+  isReady,
   refreshUser,
 }: UseVaultDeploymentArgs): UseVaultDeploymentResult {
   const { getToken } = useAuth();
@@ -70,7 +72,7 @@ export function useVaultDeployment({
   }, [getToken]);
 
   const deployVault = useCallback(async () => {
-    if (!eoaAddress || hasVault) {
+    if (!eoaAddress || hasVault || !isReady) {
       return;
     }
 
@@ -138,6 +140,7 @@ export function useVaultDeployment({
     fetchTypedData,
     getToken,
     hasVault,
+    isReady,
     refreshUser,
     signTypedDataAsync,
     switchChainAsync,
@@ -145,8 +148,8 @@ export function useVaultDeployment({
   ]);
 
   const canDeploy = useMemo(
-    () => Boolean(eoaAddress) && !hasVault,
-    [eoaAddress, hasVault]
+    () => Boolean(eoaAddress) && !hasVault && isReady,
+    [eoaAddress, hasVault, isReady]
   );
 
   useEffect(() => {

@@ -60,6 +60,7 @@ export function Header() {
   } = useVaultDeployment({
     eoaAddress,
     hasVault,
+    isReady: !isLoading,
     refreshUser,
   });
   const showVaultCard = isAuthenticated && Boolean(eoaAddress);
@@ -121,7 +122,11 @@ export function Header() {
                   onClick={() =>
                     hasVault ? setDepositModalOpen(true) : deployVault()
                   }
-                  disabled={!hasVault}
+                  disabled={
+                    isVaultDeploying ||
+                    isLoading ||
+                    (hasVault ? false : !canDeploy)
+                  }
                   className={cn(
                     "hidden md:flex h-10 items-center gap-2.5 rounded-md border border-border bg-card/70 px-2.5 py-1.5 text-left transition hover:border-primary/60 hover:bg-card",
                     !hasVault && "border-dashed opacity-75"
