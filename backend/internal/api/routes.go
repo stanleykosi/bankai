@@ -19,6 +19,7 @@ import (
 	"github.com/bankai-project/backend/internal/api/middleware"
 	"github.com/bankai-project/backend/internal/config"
 	"github.com/bankai-project/backend/internal/logger"
+	"github.com/bankai-project/backend/internal/polymarket/clob"
 	"github.com/bankai-project/backend/internal/polymarket/gamma"
 	"github.com/bankai-project/backend/internal/polymarket/relayer"
 	"github.com/bankai-project/backend/internal/services"
@@ -40,10 +41,12 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	// 2. Initialize Clients
 	gammaClient := gamma.NewClient(cfg)
 	relayerClient := relayer.NewClient(cfg)
+	clobClient := clob.NewClient(cfg)
 
 	// 3. Initialize Services
 	marketService := services.NewMarketService(db, rdb, gammaClient)
 	walletManager := services.NewWalletManager(db, relayerClient, gammaClient)
+	tradeService := services.NewTradeService(db, clobClient)
 
 	// Initialize Blockchain Service
 	blockchainService, err := services.NewBlockchainService(cfg)
@@ -57,6 +60,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	userHandler := handlers.NewUserHandler(db)
 	marketHandler := handlers.NewMarketHandler(marketService)
 	walletHandler := handlers.NewWalletHandler(walletManager, blockchainService)
+	tradeHandler := handlers.NewTradeHandler(tradeService, cfg)
 
 	// 5. Define Routes
 	// Root route for easy health checks
@@ -84,6 +88,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	markets.Get("/meta", marketHandler.GetActiveMarketsMeta)
 	markets.Get("/lanes", marketHandler.GetMarketLanes)
 	markets.Get("/stream", marketHandler.StreamPriceUpdates)
+	markets.Get("/:slug", marketHandler.GetMarketBySlug)
 
 	// User Routes (Protected)
 	user := v1.Group("/user", middleware.Protected())
@@ -100,4 +105,9 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	wallet.Get("/deposit", walletHandler.GetDepositAddress)
 	wallet.Get("/balance", walletHandler.GetBalance)
 	wallet.Post("/withdraw", walletHandler.Withdraw)
+
+	// Trade Routes (Protected)
+	trade := v1.Group("/trade", middleware.Protected())
+	trade.Post("/", tradeHandler.PostTrade)
+	trade.Post("", tradeHandler.PostTrade)
 }

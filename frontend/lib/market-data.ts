@@ -103,3 +103,12 @@ export const fetchMarketsPage = async (
   }
 };
 
+export const fetchMarketBySlug = async (slug: string): Promise<Market> => {
+  if (!slug) {
+    throw new Error("Market slug is required");
+  }
+
+  const { data } = await api.get<Market>(`/markets/${slug}`);
+  return data;
+};
+

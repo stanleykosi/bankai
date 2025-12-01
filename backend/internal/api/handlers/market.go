@@ -165,3 +165,30 @@ func (h *MarketHandler) GetMarketLanes(c *fiber.Ctx) error {
 
 	return c.JSON(lanes)
 }
+
+// GetMarketBySlug returns a single market by slug.
+// GET /api/v1/markets/:slug
+func (h *MarketHandler) GetMarketBySlug(c *fiber.Ctx) error {
+	slug := c.Params("slug")
+	if slug == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Market slug is required",
+		})
+	}
+
+	ctx := c.Context()
+	market, err := h.Service.GetMarketBySlug(ctx, slug)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to fetch market: " + err.Error(),
+		})
+	}
+
+	if market == nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "Market not found",
+		})
+	}
+
+	return c.JSON(market)
+}

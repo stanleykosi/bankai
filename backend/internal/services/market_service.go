@@ -16,6 +16,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -377,6 +378,27 @@ func (s *MarketService) GetFreshDrops(ctx context.Context) ([]models.Market, err
 	s.attachRealtimePrices(ctx, markets)
 
 	return markets, nil
+}
+
+// GetMarketBySlug fetches a single market by its slug and attaches the latest price snapshot.
+func (s *MarketService) GetMarketBySlug(ctx context.Context, slug string) (*models.Market, error) {
+	if slug == "" {
+		return nil, fmt.Errorf("slug is required")
+	}
+
+	var market models.Market
+	if err := s.DB.WithContext(ctx).Where("slug = ?", slug).First(&market).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to query market: %w", err)
+	}
+
+	markets := []models.Market{market}
+	s.attachRealtimePrices(ctx, markets)
+	market = markets[0]
+
+	return &market, nil
 }
 
 func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []models.Market) {
@@ -754,9 +776,9 @@ func (s *MarketService) queryTrendingMarkets(ctx context.Context, params QueryAc
 	velocities := s.fetchVelocityScores(ctx, markets)
 
 	type metrics struct {
-		momentum float64
+		momentum  float64
 		liquidity float64
-		velocity float64
+		velocity  float64
 	}
 
 	values := make([]metrics, len(markets))
