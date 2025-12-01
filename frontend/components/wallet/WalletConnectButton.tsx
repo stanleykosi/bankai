@@ -135,8 +135,9 @@ export function WalletConnectButton() {
     setConnectingId(null);
   };
 
-  // Only disable if we're connecting a DIFFERENT connector
-  const isBusy = isPending || isConnecting || isReconnecting;
+  // Only disable primary trigger if we actively kicked off a connection
+  const isBusy =
+    Boolean(connectingId) && (isPending || isConnecting || isReconnecting);
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
