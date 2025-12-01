@@ -28,11 +28,22 @@ interface UseVaultDeploymentArgs {
   refreshUser: () => Promise<void>;
 }
 
+type DeploymentStep =
+  | "idle"
+  | "preparing"
+  | "fetchingPayload"
+  | "checkingNetwork"
+  | "switchingNetwork"
+  | "awaitingSignature"
+  | "submitting"
+  | "pollingRelayer";
+
 interface UseVaultDeploymentResult {
   canDeploy: boolean;
   isDeploying: boolean;
   deployError: string | null;
   deploymentStatus: VaultDeploymentResult | null;
+  deploymentStep: DeploymentStep;
   deployVault: () => Promise<void>;
 }
 
@@ -53,6 +64,8 @@ export function useVaultDeployment({
   const [deployError, setDeployError] = useState<string | null>(null);
   const [deploymentStatus, setDeploymentStatus] =
     useState<VaultDeploymentResult | null>(null);
+  const [deploymentStep, setDeploymentStep] =
+    useState<DeploymentStep>("idle");
   const autoTriggeredRef = useRef(false);
 
   const fetchTypedData = useCallback(async () => {
@@ -79,6 +92,8 @@ export function useVaultDeployment({
     try {
       setIsDeploying(true);
       setDeployError(null);
+       setDeploymentStatus(null);
+       setDeploymentStep("preparing");
 
       const token = await getToken();
       if (!token) {
@@ -92,6 +107,7 @@ export function useVaultDeployment({
         typedDataOwner !== eoaAddress.toLowerCase();
 
       if (!payload || ownerMismatch) {
+        setDeploymentStep("fetchingPayload");
         payload = await fetchTypedData();
       }
 
@@ -99,14 +115,19 @@ export function useVaultDeployment({
         throw new Error("Failed to load deployment payload");
       }
 
+      setDeploymentStep("checkingNetwork");
       if (walletChainId !== polygon.id) {
+        setDeploymentStep("switchingNetwork");
         if (switchChainAsync) {
           await switchChainAsync({ chainId: polygon.id });
-          return; // wait for chain change before continuing flow
+          autoTriggeredRef.current = false;
+          setIsDeploying(false);
+          return;
         }
         throw new Error("Switch wallet to Polygon before deploying");
       }
 
+      setDeploymentStep("awaitingSignature");
       const signature = await signTypedDataAsync({
         domain: payload.domain,
         types: payload.types as any,
@@ -114,6 +135,7 @@ export function useVaultDeployment({
         message: payload.message,
       });
 
+      setDeploymentStep("submitting");
       const { data } = await api.post<VaultDeploymentResult>(
         "/wallet/deploy",
         {
@@ -126,11 +148,13 @@ export function useVaultDeployment({
       );
 
       setDeploymentStatus(data);
+      setDeploymentStep("pollingRelayer");
       await refreshUser();
     } catch (error: any) {
       const message =
         error?.response?.data?.error || error?.message || "Deployment failed";
       setDeployError(message);
+      setDeploymentStep("idle");
     } finally {
       setIsDeploying(false);
     }
@@ -157,6 +181,7 @@ export function useVaultDeployment({
     setTypedDataOwner(null);
     setDeploymentStatus(null);
     setDeployError(null);
+    setDeploymentStep("idle");
   }, [eoaAddress]);
 
   useEffect(() => {
@@ -170,11 +195,18 @@ export function useVaultDeployment({
     }
   }, [canDeploy, deployVault, isDeploying]);
 
+  useEffect(() => {
+    if (hasVault) {
+      setDeploymentStep("idle");
+    }
+  }, [hasVault]);
+
   return {
     canDeploy,
     isDeploying,
     deployError,
     deploymentStatus,
+    deploymentStep,
     deployVault,
   };
 }

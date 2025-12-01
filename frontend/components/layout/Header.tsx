@@ -56,6 +56,7 @@ export function Header() {
     isDeploying: isVaultDeploying,
     deployError,
     deploymentStatus,
+    deploymentStep,
     deployVault,
   } = useVaultDeployment({
     eoaAddress,
@@ -65,19 +66,63 @@ export function Header() {
   });
   const showVaultCard = isAuthenticated && Boolean(eoaAddress);
   const deploymentMessage = useMemo(() => {
-    if (deploymentStatus?.proxy_address) {
+    if (!deploymentStatus) return null;
+    if (deploymentStatus.proxy_address) {
       return `Vault pending at ${truncateAddress(
         deploymentStatus.proxy_address
       )}`;
     }
-    if (deploymentStatus?.state) {
-      return `Relayer: ${deploymentStatus.state}`;
+    if (deploymentStatus.state) {
+      switch (deploymentStatus.state) {
+        case "STATE_FAILED":
+          return "Relayer: Failed";
+        case "STATE_NEW":
+          return "Relayer: Pending...";
+        case "STATE_EXECUTED":
+          return "Relayer: Executed";
+        case "STATE_MINED":
+          return "Relayer: Mined";
+        case "STATE_CONFIRMED":
+          return "Relayer: Confirmed";
+        default:
+          return `Relayer: ${deploymentStatus.state}`;
+      }
     }
-    if (deploymentStatus?.task_id) {
+    if (deploymentStatus.task_id) {
       return `Relayer task ${deploymentStatus.task_id}`;
     }
     return null;
   }, [deploymentStatus]);
+
+  const vaultStatusText = useMemo(() => {
+    if (walletError) return `Error: ${walletError}`;
+    if (deployError) return deployError;
+    if (isLoading) return "Syncing wallet...";
+    switch (deploymentStep) {
+      case "preparing":
+        return "Preparing deployment...";
+      case "fetchingPayload":
+        return "Fetching payload from backend...";
+      case "checkingNetwork":
+        return "Checking wallet network...";
+      case "switchingNetwork":
+        return "Switch wallet to Polygon (137)";
+      case "awaitingSignature":
+        return "Awaiting wallet signature...";
+      case "submitting":
+        return "Submitting to relayer...";
+      case "pollingRelayer":
+        return deploymentMessage || "Waiting for relayer...";
+      default:
+        return deploymentMessage || "Sign once to deploy";
+    }
+  }, [
+    deployError,
+    deploymentMessage,
+    deploymentStep,
+    isLoading,
+    walletError,
+  ]);
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -151,21 +196,23 @@ export function Header() {
                               : ""}
                           </span>
                         </div>
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <span className="font-mono text-[11px] text-foreground truncate">
-                            {hasVault && vaultAddress
-                              ? truncateAddress(vaultAddress)
-                              : isVaultDeploying
-                              ? "Authorizing vault deployment..."
-                              : deploymentMessage ||
-                                (deployError || isLoading
-                                  ? "Syncing wallet..."
-                                  : "Preparing deployment...")}
-                          </span>
+                        <div className="flex flex-col gap-0.5 min-w-0">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="font-mono text-[11px] text-foreground truncate">
+                              {hasVault && vaultAddress
+                                ? truncateAddress(vaultAddress)
+                                : vaultStatusText}
+                            </span>
                           {hasVault && (
                             <span className="flex items-center gap-0.5 text-[8px] uppercase text-constructive whitespace-nowrap shrink-0">
                               <ShieldCheck className="h-2.5 w-2.5" />
                               Active
+                            </span>
+                          )}
+                          </div>
+                          {!hasVault && deploymentMessage && (
+                            <span className="font-mono text-[9px] text-muted-foreground truncate">
+                              {deploymentMessage}
                             </span>
                           )}
                         </div>
