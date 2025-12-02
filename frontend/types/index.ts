@@ -103,3 +103,57 @@ export interface User {
   created_at: string;
 }
 
+export type OrderStatus =
+  | "PENDING"
+  | "OPEN"
+  | "FILLED"
+  | "CANCELED"
+  | "FAILED";
+
+export interface OrderRecord {
+  id: string;
+  user_id: string;
+  clob_order_id: string;
+  market_id?: string | null;
+  side: "BUY" | "SELL";
+  outcome: string;
+  outcome_token_id: string;
+  price: number;
+  size: number;
+  order_type: string;
+  status: OrderStatus;
+  status_detail?: string | null;
+  order_hashes?: string[] | null;
+  error_msg?: string | null;
+  tx_hash?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrderHistoryResponse {
+  data: OrderRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface DepthEstimateLevel {
+  price: number;
+  available: number;
+  used: number;
+  cumulativeSize: number;
+  cumulativeValue: number;
+}
+
+export interface DepthEstimate {
+  marketId: string;
+  tokenId: string;
+  side: "BUY" | "SELL";
+  requestedSize: number;
+  fillableSize: number;
+  estimatedAveragePrice: number;
+  estimatedTotalValue: number;
+  insufficientLiquidity: boolean;
+  levels: DepthEstimateLevel[];
+}
+

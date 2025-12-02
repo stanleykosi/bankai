@@ -138,7 +138,9 @@ type PostOrderResponse struct {
 	Success     bool     `json:"success"`
 	ErrorMsg    string   `json:"errorMsg"`
 	OrderID     string   `json:"orderId"`
+	OrderIDs    []string `json:"orderIds,omitempty"`
 	OrderHashes []string `json:"orderHashes"` // Hashes of settlement transactions if matched
+	Status      string   `json:"status,omitempty"`
 }
 
 // PostOrdersRequest represents the payload for batch orders (POST /orders)

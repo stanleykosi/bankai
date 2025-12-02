@@ -166,7 +166,11 @@ CREATE TABLE IF NOT EXISTS orders (
     
     market_id VARCHAR(66) REFERENCES markets(condition_id),
     side VARCHAR(4) CHECK (side IN ('BUY', 'SELL')),
-    outcome VARCHAR(4) CHECK (outcome IN ('YES', 'NO')),
+    outcome VARCHAR(64),
+    outcome_token_id VARCHAR(255),
+    status_detail VARCHAR(32),
+    order_hashes TEXT[],
+    error_msg TEXT,
     
     price DECIMAL NOT NULL,
     size DECIMAL NOT NULL,

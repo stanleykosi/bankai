@@ -22,7 +22,15 @@ import React, { useState, useMemo, useEffect } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useSignTypedData, useAccount, useSwitchChain } from "wagmi";
 import { polygon } from "viem/chains";
-import { Loader2, AlertCircle, Wallet } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Loader2,
+  AlertCircle,
+  Wallet,
+  ListPlus,
+  Send,
+  Trash2,
+} from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -32,6 +40,7 @@ import { useBalance } from "@/hooks/useBalance";
 import { buildOrderTypedData } from "@/lib/signing";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { fetchDepthEstimate } from "@/lib/market-data";
 import type { Market } from "@/types";
 
 interface TradeFormProps {
@@ -39,8 +48,10 @@ interface TradeFormProps {
 }
 
 type OrderSide = "BUY" | "SELL";
+type OrderTypeValue = "GTC" | "GTD" | "FOK" | "FAK";
 
 const OUTCOME_FALLBACKS = ["Yes", "No"];
+const MIN_GTD_BUFFER_SECONDS = 90; // Polymarket enforces ~60s security threshold, keep 90s for safety.
 
 type OutcomeOption = {
   label: string;
@@ -49,6 +60,69 @@ type OutcomeOption = {
   bestBid?: number;
   bestAsk?: number;
   accent: "constructive" | "destructive";
+};
+
+type OrderTypeOption = {
+  value: OrderTypeValue;
+  label: string;
+  description: string;
+};
+
+const ORDER_TYPE_OPTIONS: OrderTypeOption[] = [
+  {
+    value: "GTC",
+    label: "GTC",
+    description: "Rest on book until cancelled.",
+  },
+  {
+    value: "GTD",
+    label: "GTD",
+    description: "Set an explicit expiration timestamp.",
+  },
+  {
+    value: "FOK",
+    label: "FOK",
+    description: "Fill the entire size immediately or cancel.",
+  },
+  {
+    value: "FAK",
+    label: "FAK",
+    description: "Fill what you can immediately, cancel remainder.",
+  },
+];
+
+const toDateTimeLocalValue = (date: Date) => {
+  const tzOffsetMs = date.getTimezoneOffset() * 60 * 1000;
+  const local = new Date(date.getTime() - tzOffsetMs);
+  return local.toISOString().slice(0, 16);
+};
+
+type SerializedOrderPayload = {
+  salt: string;
+  maker: `0x${string}`;
+  signer: `0x${string}`;
+  taker: `0x${string}`;
+  tokenId: string;
+  makerAmount: string;
+  takerAmount: string;
+  expiration: string;
+  nonce: string;
+  feeRateBps: string;
+  side: OrderSide;
+  signatureType: number;
+  signature: string;
+};
+
+type PreparedBatchOrder = {
+  id: string;
+  order: SerializedOrderPayload;
+  orderType: OrderTypeValue;
+  summary: {
+    outcomeLabel: string;
+    side: OrderSide;
+    price: number;
+    shares: number;
+  };
 };
 
 const formatPriceLabel = (value?: number) => {
@@ -80,14 +154,20 @@ export function TradeForm({ market }: TradeFormProps) {
   const { signTypedDataAsync } = useSignTypedData();
   const { chainId } = useAccount();
   const { switchChainAsync } = useSwitchChain();
+  const queryClient = useQueryClient();
 
   const [side, setSide] = useState<OrderSide>("BUY");
+  const [orderType, setOrderType] = useState<OrderTypeValue>("GTC");
+  const [gtdExpiration, setGtdExpiration] = useState<string>("");
   const [price, setPrice] = useState<string>("");
   const [shares, setShares] = useState<string>("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isPlacingOrder, setIsPlacingOrder] = useState(false);
+  const [isAddingToBatch, setIsAddingToBatch] = useState(false);
+  const [isSubmittingBatch, setIsSubmittingBatch] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [selectedOutcomeIndex, setSelectedOutcomeIndex] = useState(0);
+  const [batchOrders, setBatchOrders] = useState<PreparedBatchOrder[]>([]);
 
   const outcomeLabels = useMemo(
     () => parseOutcomeLabels(market?.outcomes),
@@ -131,6 +211,36 @@ export function TradeForm({ market }: TradeFormProps) {
   const selectedOutcome =
     outcomeOptions[selectedOutcomeIndex] ?? outcomeOptions[0];
   const selectedOutcomeLabel = selectedOutcome?.label ?? "Outcome";
+  const hasBatchOrders = batchOrders.length > 0;
+
+  const gtdExpirationSeconds = useMemo(() => {
+    if (orderType !== "GTD" || !gtdExpiration) return null;
+    const parsed = Date.parse(gtdExpiration);
+    if (Number.isNaN(parsed)) return null;
+    return Math.floor(parsed / 1000);
+  }, [orderType, gtdExpiration]);
+
+  const gtdExpirationError = useMemo(() => {
+    if (orderType !== "GTD") return null;
+    if (!gtdExpiration) return "Expiration date/time is required for GTD.";
+    if (gtdExpirationSeconds === null) return "Invalid expiration value.";
+    const minAllowed = Math.floor(Date.now() / 1000) + MIN_GTD_BUFFER_SECONDS;
+    if (gtdExpirationSeconds < minAllowed) {
+      return `Expiration must be at least ${MIN_GTD_BUFFER_SECONDS} seconds from now to satisfy Polymarket's security buffer.`;
+    }
+    return null;
+  }, [orderType, gtdExpiration, gtdExpirationSeconds]);
+
+  useEffect(() => {
+    if (orderType !== "GTD") {
+      setGtdExpiration("");
+      return;
+    }
+    if (!gtdExpiration) {
+      const defaultDate = new Date(Date.now() + 2 * 60 * 60 * 1000);
+      setGtdExpiration(toDateTimeLocalValue(defaultDate));
+    }
+  }, [orderType, gtdExpiration]);
 
   // Pre-fill price based on market data when switching sides or loading
   useEffect(() => {
@@ -165,6 +275,40 @@ export function TradeForm({ market }: TradeFormProps) {
 
   const currentBalance = parseFloat(balanceData?.balance ?? "0") / 1_000_000;
   const vaultAddress = user?.vault_address;
+  const isBusy = isPlacingOrder || isAddingToBatch;
+  const depthEnabled =
+    Boolean(selectedOutcome?.tokenId) &&
+    numericShares > 0 &&
+    Number.isFinite(numericShares);
+  const {
+    data: depthEstimate,
+    isFetching: isDepthLoading,
+  } = useQuery({
+    queryKey: [
+      "depth-estimate",
+      market.condition_id,
+      selectedOutcome?.tokenId,
+      side,
+      numericShares,
+    ],
+    queryFn: () =>
+      fetchDepthEstimate(
+        market.condition_id,
+        selectedOutcome?.tokenId as string,
+        side,
+        numericShares
+      ),
+    enabled: depthEnabled,
+    staleTime: 10_000,
+  });
+  const depthHeadline =
+    side === "BUY" ? "Estimated Cost" : "Estimated Proceeds";
+  const depthFillPercent = depthEstimate?.requestedSize
+    ? Math.min(
+        (depthEstimate.fillableSize / depthEstimate.requestedSize) * 100,
+        100
+      )
+    : 0;
 
   // Validation
   const canSubmit = useMemo(() => {
@@ -172,11 +316,9 @@ export function TradeForm({ market }: TradeFormProps) {
     if (!selectedOutcome?.tokenId) return false;
     if (numericPrice <= 0 || numericPrice >= 1) return false;
     if (numericShares <= 0) return false;
-    if (isSubmitting) return false;
-
-    // Simple balance check for buys
+    if (isBusy) return false;
+    if (gtdExpirationError) return false;
     if (side === "BUY" && totalCost > currentBalance) return false;
-
     return true;
   }, [
     isAuthenticated,
@@ -184,104 +326,209 @@ export function TradeForm({ market }: TradeFormProps) {
     vaultAddress,
     numericPrice,
     numericShares,
-    isSubmitting,
+    isBusy,
     side,
     totalCost,
     currentBalance,
     selectedOutcome?.tokenId,
+    gtdExpirationError,
   ]);
+
+  const prepareOrderPayload = async () => {
+    if (!eoaAddress || !vaultAddress) {
+      throw new Error("Wallet not connected or vault not deployed.");
+    }
+
+    if (chainId !== polygon.id) {
+      if (switchChainAsync) {
+        await switchChainAsync({ chainId: polygon.id });
+      } else {
+        throw new Error("Switch wallet to Polygon (137) before trading.");
+      }
+    }
+
+    const tokenId = selectedOutcome?.tokenId;
+    if (!tokenId) {
+      throw new Error("Selected outcome does not have a tradable token.");
+    }
+
+    const expirationSeconds =
+      orderType === "GTD" ? gtdExpirationSeconds ?? 0 : 0;
+
+    if (
+      orderType === "GTD" &&
+      (!gtdExpirationSeconds || gtdExpirationSeconds <= 0)
+    ) {
+      throw new Error(
+        gtdExpirationError ??
+          "Invalid expiration provided for GTD order. Choose a timestamp at least 90 seconds from now."
+      );
+    }
+
+    const typedData = buildOrderTypedData({
+      maker: vaultAddress as `0x${string}`,
+      signer: eoaAddress as `0x${string}`,
+      tokenId,
+      price: numericPrice,
+      size: numericShares,
+      side,
+      expiration: expirationSeconds,
+    });
+
+    const signature = await signTypedDataAsync({
+      domain: typedData.domain,
+      types: typedData.types,
+      primaryType: typedData.primaryType,
+      message: typedData.message,
+    });
+
+    const orderPayload: SerializedOrderPayload = {
+      salt: typedData.message.salt.toString(),
+      maker: typedData.message.maker,
+      signer: typedData.message.signer,
+      taker: typedData.message.taker,
+      tokenId: typedData.message.tokenId.toString(),
+      makerAmount: typedData.message.makerAmount.toString(),
+      takerAmount: typedData.message.takerAmount.toString(),
+      expiration: typedData.message.expiration.toString(),
+      nonce: typedData.message.nonce.toString(),
+      feeRateBps: typedData.message.feeRateBps.toString(),
+      side,
+      signatureType: user?.wallet_type === "SAFE" ? 2 : 1,
+      signature,
+    };
+
+    return {
+      order: orderPayload,
+      orderType,
+      summary: {
+        outcomeLabel: selectedOutcomeLabel,
+        side,
+        price: numericPrice,
+        shares: numericShares,
+      },
+    };
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccessMsg(null);
-    setIsSubmitting(true);
+    setIsPlacingOrder(true);
 
     try {
-      if (!eoaAddress || !vaultAddress) {
-        throw new Error("Wallet not connected or vault not deployed.");
-      }
-
-      if (chainId !== polygon.id) {
-        if (switchChainAsync) {
-          await switchChainAsync({ chainId: polygon.id });
-        } else {
-          throw new Error("Switch wallet to Polygon (137) before trading.");
-        }
-      }
-
-      // 1. Build EIP-712 Typed Data
-      const tokenId = selectedOutcome?.tokenId;
-      if (!tokenId) {
-        throw new Error("Selected outcome does not have a tradable token.");
-      }
-
-      const makerAddress = vaultAddress as `0x${string}`;
-      const signerAddress = eoaAddress as `0x${string}`;
-
-      const typedData = buildOrderTypedData({
-        maker: makerAddress, // The order is placed by the Proxy/Safe
-        signer: signerAddress,  // But signed by the EOA
-        tokenId,
-        price: numericPrice,
-        size: numericShares,
-        side,
-        expiration: 0, // GTC
-      });
-
-      // 2. Sign
-      // Note: We need to handle JSON bigints serialization for wagmi
-      // wagmi expects standard types, our buildOrderTypedData returns BigInts in 'message'
-      // which signTypedDataAsync handles fine.
-      const signature = await signTypedDataAsync({
-        domain: typedData.domain,
-        types: typedData.types,
-        primaryType: typedData.primaryType,
-        message: typedData.message,
-      });
-
-      // 3. Serialize BigInts for JSON payload to Backend
-      // The backend expects string representations for numbers
-      // The backend Order struct expects:
-      // - All numeric fields as strings
-      // - Side as "BUY" or "SELL" (OrderSide type)
-      // - SignatureType as int (0=EOA, 1=PolyProxy, 2=GnosisSafe)
-      const orderPayload = {
-        salt: typedData.message.salt.toString(),
-        maker: typedData.message.maker,
-        signer: typedData.message.signer,
-        taker: typedData.message.taker,
-        tokenId: typedData.message.tokenId.toString(),
-        makerAmount: typedData.message.makerAmount.toString(),
-        takerAmount: typedData.message.takerAmount.toString(),
-        expiration: typedData.message.expiration.toString(),
-        nonce: typedData.message.nonce.toString(),
-        feeRateBps: typedData.message.feeRateBps.toString(),
-        side: side, // Backend expects "BUY" or "SELL" string
-        signatureType: user?.wallet_type === "SAFE" ? 2 : 1, // 1=Proxy, 2=Safe (0=EOA not used here)
-        signature,
-      };
-
+      const prepared = await prepareOrderPayload();
       const token = await getToken();
-      const response = await api.post("/trade", {
-        order: orderPayload,
-        orderType: "GTC"
-      }, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      if (!token) throw new Error("Wallet authentication required.");
 
-      setSuccessMsg(`Order placed successfully for ${selectedOutcomeLabel}!`);
-      setShares(""); // Reset form slightly
-      // Refresh balance after short delay
-      setTimeout(() => refreshUser(), 2000);
+      await api.post(
+        "/trade",
+        {
+          order: prepared.order,
+          orderType: prepared.orderType,
+        },
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
 
+      setSuccessMsg(
+        `Order placed for ${prepared.summary.side} ${prepared.summary.outcomeLabel}!`
+      );
+      setShares("");
+      await queryClient.invalidateQueries({ queryKey: ["orders"] });
+      setTimeout(() => refreshUser(), 1500);
     } catch (err: any) {
       console.error("Trade failed:", err);
-      setError(err.response?.data?.error || err.message || "Failed to place order");
+      setError(
+        err?.response?.data?.error ||
+          err.message ||
+          "Failed to place order"
+      );
     } finally {
-      setIsSubmitting(false);
+      setIsPlacingOrder(false);
     }
   };
+
+  const handleAddToBatch = async () => {
+    if (!canSubmit) return;
+    if (batchOrders.length >= 15) {
+      setError("Batch queue can hold at most 15 orders.");
+      return;
+    }
+    setError(null);
+    setSuccessMsg(null);
+    setIsAddingToBatch(true);
+    try {
+      const prepared = await prepareOrderPayload();
+      const batchId =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random()}`;
+      setBatchOrders((prev) => [
+        ...prev,
+        {
+          id: batchId,
+          order: prepared.order,
+          orderType: prepared.orderType,
+          summary: prepared.summary,
+        },
+      ]);
+      setShares("");
+      setSuccessMsg(
+        `Added ${prepared.summary.side} ${prepared.summary.outcomeLabel} to batch queue.`
+      );
+    } catch (err: any) {
+      console.error("Add to batch failed:", err);
+      setError(
+        err?.response?.data?.error ||
+          err.message ||
+          "Failed to add order to batch"
+      );
+    } finally {
+      setIsAddingToBatch(false);
+    }
+  };
+
+  const handleSubmitBatch = async () => {
+    if (!hasBatchOrders) return;
+    setError(null);
+    setSuccessMsg(null);
+    setIsSubmittingBatch(true);
+    try {
+      const token = await getToken();
+      if (!token) throw new Error("Wallet authentication required.");
+      await api.post(
+        "/trade/batch",
+        {
+          orders: batchOrders.map((entry) => ({
+            order: entry.order,
+            orderType: entry.orderType,
+          })),
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setSuccessMsg(`Submitted ${batchOrders.length} batched orders.`);
+      setBatchOrders([]);
+      await queryClient.invalidateQueries({ queryKey: ["orders"] });
+      setTimeout(() => refreshUser(), 1500);
+    } catch (err: any) {
+      console.error("Batch submit failed:", err);
+      setError(
+        err?.response?.data?.error ||
+          err.message ||
+          "Failed to submit batched orders"
+      );
+    } finally {
+      setIsSubmittingBatch(false);
+    }
+  };
+
+  const handleRemoveBatchOrder = (id: string) => {
+    setBatchOrders((prev) => prev.filter((order) => order.id !== id));
+  };
+
+  const handleClearBatchOrders = () => setBatchOrders([]);
 
   return (
     <Card className="w-full h-full border-border bg-card/60 backdrop-blur-md shadow-xl">
@@ -384,6 +631,60 @@ export function TradeForm({ market }: TradeFormProps) {
             />
           </div>
 
+          <div className="space-y-1.5">
+            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
+              Order Type
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              {ORDER_TYPE_OPTIONS.map((option) => {
+                const isSelected = option.value === orderType;
+                return (
+                  <button
+                    type="button"
+                    key={option.value}
+                    onClick={() => setOrderType(option.value)}
+                    className={cn(
+                      "rounded-md border px-3 py-2 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2",
+                      isSelected
+                        ? "border-primary bg-primary/10 text-foreground"
+                        : "border-border bg-background/40 text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                    )}
+                  >
+                    <span className="text-[11px] font-mono uppercase tracking-wide block">
+                      {option.label}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground block">
+                      {option.description}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[10px] text-muted-foreground font-mono">
+              FOK/FAK behave like market orders—use aggressive prices if you need immediate execution.
+            </p>
+            {orderType === "GTD" && (
+              <div className="space-y-1.5">
+                <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
+                  Expiration (UTC)
+                </label>
+                <Input
+                  type="datetime-local"
+                  min={toDateTimeLocalValue(new Date(Date.now() + MIN_GTD_BUFFER_SECONDS * 1000))}
+                  value={gtdExpiration}
+                  onChange={(e) => setGtdExpiration(e.target.value)}
+                  className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Polymarket enforces a one-minute security buffer. Pick a time at least {MIN_GTD_BUFFER_SECONDS} seconds out.
+                </p>
+                {gtdExpirationError && (
+                  <p className="text-[10px] text-destructive font-mono">{gtdExpirationError}</p>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Totals */}
           <div className="p-3 rounded bg-muted/20 border border-border/50 space-y-2">
             <div className="flex justify-between text-xs font-mono">
@@ -397,6 +698,79 @@ export function TradeForm({ market }: TradeFormProps) {
                   {numericPrice > 0 ? ((1 - numericPrice) / numericPrice * 100).toFixed(0) : 0}%
                 </span>
               </div>
+            )}
+          </div>
+
+          <div className="rounded border border-border/50 bg-background/60 p-3 space-y-2">
+            <div className="flex items-center justify-between text-xs font-mono">
+              <span className="text-muted-foreground uppercase tracking-wide">
+                Depth Estimate
+              </span>
+              {depthEnabled ? (
+                isDepthLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                ) : (
+                  <span className="text-foreground font-semibold">
+                    {depthEstimate
+                      ? `${depthHeadline}: $${depthEstimate.estimatedTotalValue.toFixed(2)}`
+                      : "—"}
+                  </span>
+                )
+              ) : (
+                <span className="text-muted-foreground">Enter size</span>
+              )}
+            </div>
+            {depthEstimate ? (
+              <>
+                <div className="flex items-center justify-between text-[11px] font-mono text-muted-foreground">
+                  <span>
+                    Fillable {depthEstimate.fillableSize.toFixed(2)} /{" "}
+                    {depthEstimate.requestedSize.toFixed(2)} shares
+                  </span>
+                  <span>{depthFillPercent.toFixed(0)}%</span>
+                </div>
+                <div className="h-2 w-full rounded bg-muted">
+                  <div
+                    className={cn(
+                      "h-2 rounded transition-all",
+                      depthEstimate.insufficientLiquidity
+                        ? "bg-destructive"
+                        : "bg-primary"
+                    )}
+                    style={{ width: `${depthFillPercent}%` }}
+                  />
+                </div>
+                {depthEstimate.insufficientLiquidity && (
+                  <p className="text-[11px] font-mono text-destructive">
+                    Not enough on-book liquidity to fully satisfy this size.
+                  </p>
+                )}
+                <div className="space-y-1">
+                  {depthEstimate.levels.slice(0, 3).map((lvl, idx) => (
+                    <div
+                      key={`${lvl.price}-${idx}`}
+                      className="flex items-center justify-between text-[11px] font-mono"
+                    >
+                      <span className="text-muted-foreground">
+                        @ {lvl.price.toFixed(3)} • uses {lvl.used.toFixed(2)} /{" "}
+                        {lvl.available.toFixed(2)}
+                      </span>
+                      <span className="text-muted-foreground">
+                        Cum {lvl.cumulativeSize.toFixed(2)} • $
+                        {lvl.cumulativeValue.toFixed(2)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : depthEnabled ? (
+              <p className="text-[11px] font-mono text-muted-foreground">
+                Order book snapshot unavailable. Retrying shortly.
+              </p>
+            ) : (
+              <p className="text-[11px] font-mono text-muted-foreground">
+                Enter a share size to preview depth.
+              </p>
             )}
           </div>
 
@@ -414,30 +788,116 @@ export function TradeForm({ market }: TradeFormProps) {
             </div>
           )}
 
-          {/* Submit Button */}
-          <Button
-            type="submit"
-            className={cn(
-              "w-full font-mono font-bold tracking-wider",
-              side === "BUY"
-                ? "bg-constructive text-black hover:bg-constructive/90"
-                : "bg-destructive text-white hover:bg-destructive/90"
-            )}
-            disabled={!canSubmit}
-          >
-            {isSubmitting ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : !isAuthenticated ? (
-              "Connect Wallet"
-            ) : !vaultAddress ? (
-              "Deploy Vault"
-            ) : !selectedOutcome?.tokenId ? (
-              "Outcome unavailable"
-            ) : (
-              `${side} ${selectedOutcomeLabel}`
-            )}
-          </Button>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button
+              type="submit"
+              className={cn(
+                "flex-1 font-mono font-bold tracking-wider",
+                side === "BUY"
+                  ? "bg-constructive text-black hover:bg-constructive/90"
+                  : "bg-destructive text-white hover:bg-destructive/90"
+              )}
+              disabled={!canSubmit}
+            >
+              {isPlacingOrder ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : !isAuthenticated ? (
+                "Connect Wallet"
+              ) : !vaultAddress ? (
+                "Deploy Vault"
+              ) : !selectedOutcome?.tokenId ? (
+                "Outcome unavailable"
+              ) : (
+                <>
+                  <Send className="mr-2 h-4 w-4" />
+                  {`${side} ${selectedOutcomeLabel} • ${orderType}`}
+                </>
+              )}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              className="flex-1 font-mono font-bold tracking-wider"
+              disabled={!canSubmit}
+              onClick={handleAddToBatch}
+            >
+              {isAddingToBatch ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <>
+                  <ListPlus className="mr-2 h-4 w-4" />
+                  Add To Batch
+                </>
+              )}
+            </Button>
+          </div>
         </form>
+
+        <div className="space-y-2 rounded-md border border-dashed border-border/60 bg-muted/5 p-3">
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground">
+              Batch Queue ({batchOrders.length}/15)
+            </p>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={!hasBatchOrders || isSubmittingBatch}
+                onClick={handleSubmitBatch}
+                className="text-[11px] font-mono"
+              >
+                {isSubmittingBatch ? (
+                  <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                ) : (
+                  <Send className="mr-2 h-3 w-3" />
+                )}
+                Submit Batch
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                disabled={!hasBatchOrders}
+                onClick={handleClearBatchOrders}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+          {batchOrders.length === 0 ? (
+            <p className="text-[11px] font-mono text-muted-foreground">
+              Queue multiple signed orders, then submit them together for faster placement.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {batchOrders.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="flex items-center justify-between rounded border border-border/50 bg-background/60 px-3 py-2 text-xs font-mono"
+                >
+                  <div className="flex flex-col">
+                    <span className="font-semibold text-foreground">
+                      {entry.summary.side} {entry.summary.outcomeLabel}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {entry.summary.shares} @{" "}
+                      {(entry.summary.price || 0).toFixed(2)} • {entry.orderType}
+                    </span>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => handleRemoveBatchOrder(entry.id)}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </CardContent>
     </Card>
   );

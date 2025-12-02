@@ -4,7 +4,7 @@
  */
 
 import { api } from "@/lib/api";
-import type { Market } from "@/types";
+import type { DepthEstimate, Market } from "@/types";
 import type { SortOption } from "@/components/terminal/MarketFilters";
 
 export type ActiveMarketParams = Partial<{
@@ -109,6 +109,33 @@ export const fetchMarketBySlug = async (slug: string): Promise<Market> => {
   }
 
   const { data } = await api.get<Market>(`/markets/${slug}`);
+  return data;
+};
+
+export const fetchDepthEstimate = async (
+  conditionId: string,
+  tokenId: string,
+  side: "BUY" | "SELL",
+  size: number
+): Promise<DepthEstimate> => {
+  if (!conditionId || !tokenId) {
+    throw new Error("conditionId and tokenId are required");
+  }
+  if (size <= 0) {
+    throw new Error("size must be greater than zero");
+  }
+
+  const { data } = await api.get<DepthEstimate>(
+    `/markets/${encodeURIComponent(conditionId)}/depth`,
+    {
+      params: {
+        tokenId,
+        side,
+        size,
+      },
+    }
+  );
+
   return data;
 };
 

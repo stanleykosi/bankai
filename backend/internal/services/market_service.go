@@ -23,6 +23,7 @@ import (
 	"math/rand"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bankai-project/backend/internal/models"
@@ -46,11 +47,50 @@ const (
 	lanePoolCap       = 2000
 )
 
+var (
+	ErrOrderBookUnavailable = errors.New("order book snapshot not available")
+)
+
 type MarketService struct {
 	DB          *gorm.DB
 	Redis       *redis.Client
 	GammaClient *gamma.Client
 	streamHub   *PriceStreamHub
+}
+
+type depthOrderSummary struct {
+	Price float64
+	Size  float64
+}
+
+type orderBookSnapshot struct {
+	Bids []orderBookLevel `json:"bids"`
+	Asks []orderBookLevel `json:"asks"`
+}
+
+type orderBookLevel struct {
+	Price string `json:"price"`
+	Size  string `json:"size"`
+}
+
+type DepthLevel struct {
+	Price           float64 `json:"price"`
+	Available       float64 `json:"available"`
+	Used            float64 `json:"used"`
+	CumulativeSize  float64 `json:"cumulativeSize"`
+	CumulativeValue float64 `json:"cumulativeValue"`
+}
+
+type DepthEstimate struct {
+	MarketID              string       `json:"marketId"`
+	TokenID               string       `json:"tokenId"`
+	Side                  string       `json:"side"`
+	RequestedSize         float64      `json:"requestedSize"`
+	FillableSize          float64      `json:"fillableSize"`
+	EstimatedAveragePrice float64      `json:"estimatedAveragePrice"`
+	EstimatedTotalValue   float64      `json:"estimatedTotalValue"`
+	InsufficientLiquidity bool         `json:"insufficientLiquidity"`
+	Levels                []DepthLevel `json:"levels"`
 }
 
 type MarketMeta struct {
@@ -399,6 +439,121 @@ func (s *MarketService) GetMarketBySlug(ctx context.Context, slug string) (*mode
 	market = markets[0]
 
 	return &market, nil
+}
+
+// GetDepthEstimate returns an estimated execution summary for a requested size.
+func (s *MarketService) GetDepthEstimate(ctx context.Context, marketID, tokenID, side string, size float64) (*DepthEstimate, error) {
+	marketID = strings.TrimSpace(marketID)
+	tokenID = strings.TrimSpace(tokenID)
+	side = strings.ToUpper(strings.TrimSpace(side))
+
+	if marketID == "" || tokenID == "" {
+		return nil, fmt.Errorf("marketId and tokenId are required")
+	}
+	if side != "BUY" && side != "SELL" {
+		return nil, fmt.Errorf("invalid side: %s", side)
+	}
+	if size <= 0 {
+		return nil, fmt.Errorf("size must be greater than zero")
+	}
+
+	key := fmt.Sprintf("book:%s:%s", marketID, tokenID)
+	raw, err := s.Redis.Get(ctx, key).Result()
+	if errors.Is(err, redis.Nil) {
+		return nil, ErrOrderBookUnavailable
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to read order book snapshot: %w", err)
+	}
+
+	var snapshot orderBookSnapshot
+	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+		return nil, fmt.Errorf("failed to decode order book snapshot: %w", err)
+	}
+
+	source := snapshot.Asks
+	if side == "SELL" {
+		source = snapshot.Bids
+	}
+	if len(source) == 0 {
+		return nil, ErrOrderBookUnavailable
+	}
+
+	levels := make([]depthOrderSummary, 0, len(source))
+	for _, lvl := range source {
+		price, err := strconv.ParseFloat(lvl.Price, 64)
+		if err != nil || price <= 0 {
+			continue
+		}
+		sizeFloat, err := strconv.ParseFloat(lvl.Size, 64)
+		if err != nil || sizeFloat <= 0 {
+			continue
+		}
+		levels = append(levels, depthOrderSummary{
+			Price: price,
+			Size:  sizeFloat,
+		})
+	}
+
+	if len(levels) == 0 {
+		return nil, ErrOrderBookUnavailable
+	}
+
+	sort.Slice(levels, func(i, j int) bool {
+		if side == "BUY" {
+			return levels[i].Price < levels[j].Price
+		}
+		return levels[i].Price > levels[j].Price
+	})
+
+	remaining := size
+	var cumulativeSize float64
+	var cumulativeValue float64
+	resultLevels := make([]DepthLevel, 0, len(levels))
+
+	for _, lvl := range levels {
+		if remaining <= 0 {
+			break
+		}
+		use := math.Min(lvl.Size, remaining)
+		if use <= 0 {
+			continue
+		}
+		cumulativeSize += use
+		cumulativeValue += use * lvl.Price
+		resultLevels = append(resultLevels, DepthLevel{
+			Price:           lvl.Price,
+			Available:       lvl.Size,
+			Used:            use,
+			CumulativeSize:  cumulativeSize,
+			CumulativeValue: cumulativeValue,
+		})
+		remaining -= use
+	}
+
+	if len(resultLevels) == 0 {
+		return nil, ErrOrderBookUnavailable
+	}
+
+	fillable := cumulativeSize
+	avgPrice := 0.0
+	if fillable > 0 {
+		avgPrice = cumulativeValue / fillable
+	}
+
+	estimate := &DepthEstimate{
+		MarketID:              marketID,
+		TokenID:               tokenID,
+		Side:                  side,
+		RequestedSize:         size,
+		FillableSize:          fillable,
+		EstimatedAveragePrice: avgPrice,
+		EstimatedTotalValue:   cumulativeValue,
+		InsufficientLiquidity: fillable+1e-9 < size,
+		Levels:                resultLevels,
+	}
+
+	return estimate, nil
 }
 
 func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []models.Market) {

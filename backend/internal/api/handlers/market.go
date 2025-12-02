@@ -13,8 +13,10 @@ package handlers
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/bankai-project/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
@@ -191,4 +193,35 @@ func (h *MarketHandler) GetMarketBySlug(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(market)
+}
+
+// GetDepthEstimate returns an estimated execution summary for a market/token pair.
+func (h *MarketHandler) GetDepthEstimate(c *fiber.Ctx) error {
+	marketID := c.Params("condition_id")
+	tokenID := c.Query("tokenId")
+	side := strings.ToUpper(c.Query("side"))
+	size := c.QueryFloat("size", 0)
+
+	if strings.TrimSpace(marketID) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "condition_id param is required"})
+	}
+	if strings.TrimSpace(tokenID) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "tokenId query param is required"})
+	}
+	if side != "BUY" && side != "SELL" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "side must be BUY or SELL"})
+	}
+	if size <= 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "size must be greater than zero"})
+	}
+
+	estimate, err := h.Service.GetDepthEstimate(c.Context(), marketID, tokenID, side, size)
+	if err != nil {
+		if errors.Is(err, services.ErrOrderBookUnavailable) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Order book snapshot unavailable"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(estimate)
 }

@@ -60,7 +60,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	userHandler := handlers.NewUserHandler(db)
 	marketHandler := handlers.NewMarketHandler(marketService)
 	walletHandler := handlers.NewWalletHandler(walletManager, blockchainService)
-	tradeHandler := handlers.NewTradeHandler(tradeService, cfg)
+	tradeHandler := handlers.NewTradeHandler(tradeService, cfg, db)
 
 	// 5. Define Routes
 	// Root route for easy health checks
@@ -88,6 +88,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	markets.Get("/meta", marketHandler.GetActiveMarketsMeta)
 	markets.Get("/lanes", marketHandler.GetMarketLanes)
 	markets.Get("/stream", marketHandler.StreamPriceUpdates)
+	markets.Get("/:condition_id/depth", marketHandler.GetDepthEstimate)
 	markets.Get("/:slug", marketHandler.GetMarketBySlug)
 
 	// User Routes (Protected)
@@ -110,4 +111,8 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	trade := v1.Group("/trade", middleware.Protected())
 	trade.Post("/", tradeHandler.PostTrade)
 	trade.Post("", tradeHandler.PostTrade)
+	trade.Post("/batch", tradeHandler.PostBatchTrade)
+	trade.Get("/orders", tradeHandler.GetOrders)
+	trade.Post("/cancel", tradeHandler.CancelOrder)
+	trade.Post("/cancel/batch", tradeHandler.CancelOrders)
 }

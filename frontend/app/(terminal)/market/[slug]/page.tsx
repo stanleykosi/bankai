@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Loader2, ArrowLeft, RefreshCcw } from "lucide-react";
 
 import { TradeForm } from "@/components/terminal/TradeForm";
+import { OrdersPanel } from "@/components/terminal/OrdersPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { fetchMarketBySlug } from "@/lib/market-data";
@@ -152,11 +153,14 @@ export default function MarketDetailPage() {
           </CardContent>
         </Card>
 
-        <Card className="border-border bg-card/70 backdrop-blur">
-          <CardContent className="p-4">
-            <TradeForm market={market} />
-          </CardContent>
-        </Card>
+        <div className="space-y-4">
+          <Card className="border-border bg-card/70 backdrop-blur">
+            <CardContent className="p-4">
+              <TradeForm market={market} />
+            </CardContent>
+          </Card>
+          <OrdersPanel />
+        </div>
       </div>
     </div>
   );
