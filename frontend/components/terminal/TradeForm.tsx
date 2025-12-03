@@ -309,6 +309,9 @@ export function TradeForm({ market }: TradeFormProps) {
         100
       )
     : 0;
+  const isLimitOrderType = orderType === "GTC" || orderType === "GTD";
+  const isImmediateOrderType = orderType === "FOK" || orderType === "FAK";
+  const leadDepthLevel = depthEstimate?.levels?.[0];
 
   // Validation
   const canSubmit = useMemo(() => {
@@ -604,35 +607,6 @@ export function TradeForm({ market }: TradeFormProps) {
 
           <div className="space-y-1.5">
             <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
-              Limit Price ({selectedOutcomeLabel})
-            </label>
-            <Input
-              type="number"
-              step="0.01"
-              min="0.01"
-              max="0.99"
-              placeholder="0.00"
-              className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
-              value={price}
-              onChange={(e) => setPrice(e.target.value)}
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">Shares</label>
-            <Input
-              type="number"
-              step="1"
-              min="1"
-              placeholder="0"
-              className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
-              value={shares}
-              onChange={(e) => setShares(e.target.value)}
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
               Order Type
             </label>
             <div className="grid grid-cols-2 gap-2">
@@ -660,118 +634,172 @@ export function TradeForm({ market }: TradeFormProps) {
                 );
               })}
             </div>
-            <p className="text-[10px] text-muted-foreground font-mono">
-              FOK/FAK behave like market orders—use aggressive prices if you need immediate execution.
-            </p>
-            {orderType === "GTD" && (
-              <div className="space-y-1.5">
-                <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
-                  Expiration (UTC)
-                </label>
-                <Input
-                  type="datetime-local"
-                  min={toDateTimeLocalValue(new Date(Date.now() + MIN_GTD_BUFFER_SECONDS * 1000))}
-                  value={gtdExpiration}
-                  onChange={(e) => setGtdExpiration(e.target.value)}
-                  className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
-                />
-                <p className="text-[10px] text-muted-foreground">
-                  Polymarket enforces a one-minute security buffer. Pick a time at least {MIN_GTD_BUFFER_SECONDS} seconds out.
-                </p>
-                {gtdExpirationError && (
-                  <p className="text-[10px] text-destructive font-mono">{gtdExpirationError}</p>
-                )}
-              </div>
+            {isLimitOrderType && (
+              <p className="text-[10px] text-muted-foreground font-mono">
+                Good-til orders rest on the book at your limit price until filled or cancelled.
+              </p>
+            )}
+            {isImmediateOrderType && (
+              <p className="text-[10px] text-muted-foreground font-mono">
+                {orderType} sweeps available liquidity instantly—size depends on the current depth.
+              </p>
             )}
           </div>
 
-          {/* Totals */}
-          <div className="p-3 rounded bg-muted/20 border border-border/50 space-y-2">
-            <div className="flex justify-between text-xs font-mono">
-              <span className="text-muted-foreground">Est. Total</span>
-              <span className="text-foreground font-semibold">${totalCost.toFixed(2)}</span>
-            </div>
-            {side === "BUY" && (
-              <div className="flex justify-between text-xs font-mono">
-                <span className="text-muted-foreground">Potential ROI</span>
-                <span className="text-constructive">
-                  {numericPrice > 0 ? ((1 - numericPrice) / numericPrice * 100).toFixed(0) : 0}%
-                </span>
-              </div>
-            )}
-          </div>
-
-          <div className="rounded border border-border/50 bg-background/60 p-3 space-y-2">
-            <div className="flex items-center justify-between text-xs font-mono">
-              <span className="text-muted-foreground uppercase tracking-wide">
-                Depth Estimate
-              </span>
-              {depthEnabled ? (
-                isDepthLoading ? (
-                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                ) : (
-                  <span className="text-foreground font-semibold">
-                    {depthEstimate
-                      ? `${depthHeadline}: $${depthEstimate.estimatedTotalValue.toFixed(2)}`
-                      : "—"}
-                  </span>
-                )
-              ) : (
-                <span className="text-muted-foreground">Enter size</span>
-              )}
-            </div>
-            {depthEstimate ? (
-              <>
-                <div className="flex items-center justify-between text-[11px] font-mono text-muted-foreground">
-                  <span>
-                    Fillable {depthEstimate.fillableSize.toFixed(2)} /{" "}
-                    {depthEstimate.requestedSize.toFixed(2)} shares
-                  </span>
-                  <span>{depthFillPercent.toFixed(0)}%</span>
-                </div>
-                <div className="h-2 w-full rounded bg-muted">
-                  <div
-                    className={cn(
-                      "h-2 rounded transition-all",
-                      depthEstimate.insufficientLiquidity
-                        ? "bg-destructive"
-                        : "bg-primary"
-                    )}
-                    style={{ width: `${depthFillPercent}%` }}
+          <div className="grid gap-3 sm:grid-cols-2">
+            {isLimitOrderType && (
+              <div className="space-y-2 rounded border border-border/50 bg-background/60 p-3">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
+                    Limit Price ({selectedOutcomeLabel})
+                  </label>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    max="0.99"
+                    placeholder="0.00"
+                    className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
+                    value={price}
+                    onChange={(e) => setPrice(e.target.value)}
                   />
                 </div>
-                {depthEstimate.insufficientLiquidity && (
-                  <p className="text-[11px] font-mono text-destructive">
-                    Not enough on-book liquidity to fully satisfy this size.
-                  </p>
+                <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
+                  <span>Min $0.01</span>
+                  <span>Max $0.99</span>
+                </div>
+                {orderType === "GTD" && (
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
+                      Expiration (UTC)
+                    </label>
+                    <Input
+                      type="datetime-local"
+                      min={toDateTimeLocalValue(
+                        new Date(Date.now() + MIN_GTD_BUFFER_SECONDS * 1000)
+                      )}
+                      value={gtdExpiration}
+                      onChange={(e) => setGtdExpiration(e.target.value)}
+                      className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
+                    />
+                    {gtdExpirationError ? (
+                      <p className="text-[10px] text-destructive font-mono">
+                        {gtdExpirationError}
+                      </p>
+                    ) : (
+                      <p className="text-[10px] text-muted-foreground">
+                        Pick a time at least {MIN_GTD_BUFFER_SECONDS} seconds out.
+                      </p>
+                    )}
+                  </div>
                 )}
-                <div className="space-y-1">
-                  {depthEstimate.levels.slice(0, 3).map((lvl, idx) => (
+              </div>
+            )}
+
+            <div
+              className={cn(
+                "space-y-2 rounded border border-border/50 bg-background/60 p-3",
+                !isLimitOrderType && "sm:col-span-2"
+              )}
+            >
+              <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wide">
+                <span>Depth Snapshot</span>
+                {depthEnabled ? (
+                  isDepthLoading ? (
+                    <span className="text-muted-foreground">Syncing...</span>
+                  ) : (
+                    <span className="text-foreground">{depthFillPercent.toFixed(0)}% cover</span>
+                  )
+                ) : (
+                  <span className="text-muted-foreground">Enter size</span>
+                )}
+              </div>
+              {depthEstimate ? (
+                <>
+                  <div className="flex justify-between text-xs font-mono">
+                    <span className="text-muted-foreground">{depthHeadline}</span>
+                    <span className="font-semibold">
+                      ${depthEstimate.estimatedTotalValue.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="h-2 w-full rounded bg-muted">
                     <div
-                      key={`${lvl.price}-${idx}`}
-                      className="flex items-center justify-between text-[11px] font-mono"
-                    >
-                      <span className="text-muted-foreground">
-                        @ {lvl.price.toFixed(3)} • uses {lvl.used.toFixed(2)} /{" "}
-                        {lvl.available.toFixed(2)}
-                      </span>
-                      <span className="text-muted-foreground">
-                        Cum {lvl.cumulativeSize.toFixed(2)} • $
-                        {lvl.cumulativeValue.toFixed(2)}
+                      className={cn(
+                        "h-2 rounded transition-all",
+                        depthEstimate.insufficientLiquidity ? "bg-destructive" : "bg-primary"
+                      )}
+                      style={{ width: `${depthFillPercent}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
+                    <span>
+                      {depthEstimate.fillableSize.toFixed(0)}/{depthEstimate.requestedSize.toFixed(0)}{" "}
+                      shares
+                    </span>
+                    <span>VWAP {depthEstimate.estimatedAveragePrice.toFixed(3)}</span>
+                  </div>
+                  {leadDepthLevel && (
+                    <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
+                      <span>Top level</span>
+                      <span>
+                        @ {leadDepthLevel.price.toFixed(3)} • {leadDepthLevel.used.toFixed(0)}/
+                        {leadDepthLevel.available.toFixed(0)}
                       </span>
                     </div>
-                  ))}
+                  )}
+                  {depthEstimate.insufficientLiquidity && (
+                    <p className="text-[10px] text-destructive font-mono">
+                      Only {depthEstimate.fillableSize.toFixed(0)} shares currently available.
+                    </p>
+                  )}
+                  {isImmediateOrderType && (
+                    <p className="text-[10px] text-muted-foreground font-mono">
+                      {orderType} submits against these levels immediately.
+                    </p>
+                  )}
+                </>
+              ) : depthEnabled ? (
+                <p className="text-[10px] text-muted-foreground font-mono">
+                  Order book snapshot unavailable. Retrying shortly.
+                </p>
+              ) : (
+                <p className="text-[10px] text-muted-foreground font-mono">
+                  Set a share size to preview liquidity.
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 items-start">
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
+                Shares
+              </label>
+              <Input
+                type="number"
+                step="1"
+                min="1"
+                placeholder="0"
+                className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
+                value={shares}
+                onChange={(e) => setShares(e.target.value)}
+              />
+            </div>
+
+            <div className="p-3 rounded bg-muted/20 border border-border/50 space-y-2">
+              <div className="flex justify-between text-xs font-mono">
+                <span className="text-muted-foreground">Est. Total</span>
+                <span className="text-foreground font-semibold">${totalCost.toFixed(2)}</span>
+              </div>
+              {side === "BUY" && (
+                <div className="flex justify-between text-xs font-mono">
+                  <span className="text-muted-foreground">Potential ROI</span>
+                  <span className="text-constructive">
+                    {numericPrice > 0 ? ((1 - numericPrice) / numericPrice * 100).toFixed(0) : 0}%
+                  </span>
                 </div>
-              </>
-            ) : depthEnabled ? (
-              <p className="text-[11px] font-mono text-muted-foreground">
-                Order book snapshot unavailable. Retrying shortly.
-              </p>
-            ) : (
-              <p className="text-[11px] font-mono text-muted-foreground">
-                Enter a share size to preview depth.
-              </p>
-            )}
+              )}
+            </div>
           </div>
 
           {/* Status Messages */}
