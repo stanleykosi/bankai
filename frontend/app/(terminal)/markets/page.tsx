@@ -210,9 +210,7 @@ export default function MarketsPage() {
                       ) : null}
                       <div className="flex-1">
                         <Link
-                          href={`https://polymarket.com/event/${market.slug}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                          href={`/market/${market.slug}`}
                           className="font-semibold text-primary hover:underline"
                         >
                           {market.title}
