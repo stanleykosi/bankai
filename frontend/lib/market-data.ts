@@ -139,3 +139,16 @@ export const fetchDepthEstimate = async (
   return data;
 };
 
+export const requestMarketStream = async (conditionId: string): Promise<void> => {
+  if (!conditionId) {
+    return;
+  }
+  try {
+    await api.post(`/markets/${encodeURIComponent(conditionId)}/stream`);
+  } catch (error) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("Failed to request market stream", error);
+    }
+  }
+};
+

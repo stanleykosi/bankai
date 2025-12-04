@@ -31,6 +31,8 @@ import (
 	"github.com/bankai-project/backend/internal/services"
 )
 
+const maxTrackedAssets = 800
+
 func main() {
 	logger.Info("🔥 Starting Bankai Worker...")
 
@@ -95,12 +97,12 @@ func main() {
 
 	logger.Info("Shutting down worker...")
 	cancel()
-	
+
 	// Close WebSocket connection gracefully
 	if err := wsClient.Close(); err != nil {
 		logger.Error("Error closing WebSocket: %v", err)
 	}
-	
+
 	time.Sleep(1 * time.Second) // Give connections time to close
 	logger.Info("Worker exited.")
 }
@@ -122,22 +124,30 @@ func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds
 		// Don't return - continue with active markets even if fresh drops fail
 	}
 
-	// 2. Get active markets
-	markets, err := ms.GetActiveMarkets(ctx)
+	// 2. Get prioritised market assets (top liquidity/volume)
+	marketAssets, err := ms.GetMarketAssets(ctx, maxTrackedAssets)
 	if err != nil {
-		logger.Error("Failed to get active markets: %v", err)
+		logger.Error("Failed to get market assets: %v", err)
 		return
 	}
 
-	// 3. Collect Token IDs
+	// 3. Collect token IDs
 	var assetIDs []string
-	for _, m := range markets {
-		if m.TokenIDYes != "" {
-			assetIDs = append(assetIDs, m.TokenIDYes)
+	for _, asset := range marketAssets {
+		if asset.TokenIDYes != "" {
+			assetIDs = append(assetIDs, asset.TokenIDYes)
 		}
-		if m.TokenIDNo != "" {
-			assetIDs = append(assetIDs, m.TokenIDNo)
+		if asset.TokenIDNo != "" {
+			assetIDs = append(assetIDs, asset.TokenIDNo)
 		}
+	}
+
+	// 4. Include any ad-hoc stream requests (e.g., markets opened in the UI)
+	if requested, err := ms.PopRequestedStreamTokens(ctx, maxTrackedAssets*2); err != nil {
+		logger.Error("Failed to pop requested stream tokens: %v", err)
+	} else if len(requested) > 0 {
+		logger.Info("Including %d requested assets in subscription set...", len(requested))
+		assetIDs = append(assetIDs, requested...)
 	}
 
 	if len(assetIDs) == 0 {
@@ -147,12 +157,8 @@ func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds
 
 	logger.Info("Subscribing to %d assets...", len(assetIDs))
 
-	// 4. Subscribe via WebSocket
-	// Note: The CLOB WS might have limits on message size for subscriptions.
-	// We might need to batch this in chunks if len > 500.
-	// For MVP, assuming < 500 active tokens.
-	if err := ws.Subscribe(assetIDs); err != nil {
+	// 5. Subscribe via WebSocket (client batches internally)
+	if err := ws.ReplaceSubscriptions(assetIDs); err != nil {
 		logger.Error("Failed to subscribe: %v", err)
 	}
 }
-

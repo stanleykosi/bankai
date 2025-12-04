@@ -38,7 +38,10 @@ const (
 	CacheKeyActiveMarkets = "markets:active"
 	CacheKeyMarketMeta    = "markets:meta"
 	CacheKeyMarketLanes   = "markets:lanes"
+	CacheKeyMarketAssets  = "markets:assets"
 	CacheKeyFreshDrops    = "markets:fresh"
+	streamRequestTokenKey = "markets:stream:requested"
+	streamRequestTokenTTL = 30 * time.Minute
 	CacheTTL              = 5 * time.Minute
 
 	PriceUpdateChannel = "market:price_updates"
@@ -49,6 +52,7 @@ const (
 
 var (
 	ErrOrderBookUnavailable = errors.New("order book snapshot not available")
+	ErrMarketHasNoTokens    = errors.New("market has no tradable tokens")
 )
 
 type MarketService struct {
@@ -91,6 +95,14 @@ type DepthEstimate struct {
 	EstimatedTotalValue   float64      `json:"estimatedTotalValue"`
 	InsufficientLiquidity bool         `json:"insufficientLiquidity"`
 	Levels                []DepthLevel `json:"levels"`
+}
+
+type MarketAsset struct {
+	ConditionID string  `json:"condition_id"`
+	TokenIDYes  string  `json:"token_id_yes"`
+	TokenIDNo   string  `json:"token_id_no"`
+	Liquidity   float64 `json:"liquidity"`
+	Volume24h   float64 `json:"volume_24h"`
 }
 
 type MarketMeta struct {
@@ -713,7 +725,12 @@ func (s *MarketService) GetMarketLanes(ctx context.Context, params MarketLanePar
 		}
 	}
 
-	lanes, err := s.buildMarketLanes(ctx, params)
+	markets, err := s.loadAllActiveMarkets(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	lanes, err := s.buildMarketLanesFromSnapshot(ctx, markets, params)
 	if err != nil {
 		return nil, err
 	}
@@ -771,39 +788,29 @@ func computeMarketMeta(markets []models.Market) *MarketMeta {
 	}
 }
 
-func (s *MarketService) queryTopMarkets(ctx context.Context, orderBy string, params MarketLaneParams) ([]models.Market, error) {
-	query := s.DB.WithContext(ctx).Model(&models.Market{}).Where(activeWhereClause, true, false, true)
-
-	if params.Category != "" {
-		query = query.Where("category = ?", params.Category)
+func (s *MarketService) buildMarketLanesFromSnapshot(ctx context.Context, markets []models.Market, params MarketLaneParams) (*MarketLanes, error) {
+	filtered := filterMarketsForParams(markets, params.Category, params.Tag)
+	if len(filtered) == 0 {
+		return &MarketLanes{}, nil
 	}
 
-	if params.Tag != "" {
-		query = query.Where("? = ANY(tags)", params.Tag)
-	}
+	fresh := topMarkets(filtered, 20, func(a, b models.Market) bool {
+		return a.CreatedAt.After(b.CreatedAt)
+	})
 
-	var markets []models.Market
-	if err := query.Order(orderBy).Limit(20).Find(&markets).Error; err != nil {
-		return nil, err
-	}
-	return markets, nil
-}
+	velocity := topMarkets(filtered, 20, func(a, b models.Market) bool {
+		if a.Volume24h == b.Volume24h {
+			return a.VolumeAllTime > b.VolumeAllTime
+		}
+		return a.Volume24h > b.Volume24h
+	})
 
-func (s *MarketService) buildMarketLanes(ctx context.Context, params MarketLaneParams) (*MarketLanes, error) {
-	fresh, err := s.queryTopMarkets(ctx, "created_at DESC", params)
-	if err != nil {
-		return nil, err
-	}
-
-	velocity, err := s.queryTopMarkets(ctx, "volume_all_time DESC", params)
-	if err != nil {
-		return nil, err
-	}
-
-	liquidity, err := s.queryTopMarkets(ctx, "liquidity DESC", params)
-	if err != nil {
-		return nil, err
-	}
+	liquidity := topMarkets(filtered, 20, func(a, b models.Market) bool {
+		if a.Liquidity == b.Liquidity {
+			return a.Volume24h > b.Volume24h
+		}
+		return a.Liquidity > b.Liquidity
+	})
 
 	return &MarketLanes{
 		FreshDrops:    fresh,
@@ -812,120 +819,101 @@ func (s *MarketService) buildMarketLanes(ctx context.Context, params MarketLaneP
 	}, nil
 }
 
-func (s *MarketService) cacheMarketMeta(ctx context.Context, meta *MarketMeta) {
-	if meta == nil {
-		return
+func filterMarketsForParams(markets []models.Market, category, tag string) []models.Market {
+	if category == "" && tag == "" {
+		result := make([]models.Market, 0, len(markets))
+		for _, market := range markets {
+			if !market.Active || market.Closed || !market.AcceptingOrders {
+				continue
+			}
+			result = append(result, market)
+		}
+		return result
 	}
-	if data, err := json.Marshal(meta); err == nil {
-		_ = s.Redis.Set(ctx, CacheKeyMarketMeta, data, CacheTTL).Err()
+
+	tag = strings.TrimSpace(tag)
+	category = strings.TrimSpace(category)
+
+	result := make([]models.Market, 0, len(markets))
+	for _, market := range markets {
+		if !market.Active || market.Closed || !market.AcceptingOrders {
+			continue
+		}
+		if category != "" && !strings.EqualFold(market.Category, category) {
+			continue
+		}
+		if tag != "" && !containsTag(market.Tags, tag) {
+			continue
+		}
+		result = append(result, market)
 	}
+	return result
 }
 
-func (s *MarketService) cacheMarketLanes(ctx context.Context, lanes *MarketLanes) {
-	if lanes == nil {
-		return
+func containsTag(tags []string, needle string) bool {
+	for _, tag := range tags {
+		if strings.EqualFold(tag, needle) {
+			return true
+		}
 	}
-	if data, err := json.Marshal(lanes); err == nil {
-		_ = s.Redis.Set(ctx, CacheKeyMarketLanes, data, CacheTTL).Err()
-	}
+	return false
 }
 
-func (s *MarketService) cacheDerivedSnapshots(ctx context.Context, markets []models.Market) {
-	meta := computeMarketMeta(markets)
-	s.cacheMarketMeta(ctx, meta)
-
-	if lanes, err := s.buildMarketLanes(ctx, MarketLaneParams{}); err == nil {
-		s.cacheMarketLanes(ctx, lanes)
+func topMarkets(source []models.Market, limit int, compare func(a, b models.Market) bool) []models.Market {
+	if limit <= 0 || len(source) == 0 {
+		return []models.Market{}
 	}
+
+	work := make([]models.Market, len(source))
+	copy(work, source)
+	sort.SliceStable(work, func(i, j int) bool {
+		return compare(work[i], work[j])
+	})
+
+	if len(work) > limit {
+		work = work[:limit]
+	}
+
+	result := make([]models.Market, len(work))
+	copy(result, work)
+	return result
 }
 
-type QueryActiveMarketsParams struct {
-	Category string
-	Tag      string
-	Sort     string
-	Limit    int
-	Offset   int
-}
-
-func (s *MarketService) QueryActiveMarkets(ctx context.Context, params QueryActiveMarketsParams) ([]models.Market, error) {
-	if params.Sort == "trending" {
-		return s.queryTrendingMarkets(ctx, params)
-	}
-
-	query := s.DB.WithContext(ctx).Model(&models.Market{}).Where(activeWhereClause, true, false, true)
-
-	if params.Category != "" {
-		query = query.Where("category = ?", params.Category)
-	}
-
-	if params.Tag != "" {
-		query = query.Where("? = ANY(tags)", params.Tag)
-	}
-
-	switch params.Sort {
+func sortMarketsByParam(markets []models.Market, sortKey string) {
+	switch sortKey {
 	case "liquidity":
-		query = query.Order("liquidity DESC")
-	case "created":
-		query = query.Order("created_at DESC")
+		sort.SliceStable(markets, func(i, j int) bool {
+			if markets[i].Liquidity == markets[j].Liquidity {
+				return markets[i].Volume24h > markets[j].Volume24h
+			}
+			return markets[i].Liquidity > markets[j].Liquidity
+		})
 	case "volume_all_time":
-		query = query.Order("volume_all_time DESC")
+		sort.SliceStable(markets, func(i, j int) bool {
+			return markets[i].VolumeAllTime > markets[j].VolumeAllTime
+		})
 	case "spread":
-		query = query.Order("spread DESC")
+		sort.SliceStable(markets, func(i, j int) bool {
+			return markets[i].Spread > markets[j].Spread
+		})
 	case "volume":
-		query = query.Order("volume_24h DESC")
+		sort.SliceStable(markets, func(i, j int) bool {
+			return markets[i].Volume24h > markets[j].Volume24h
+		})
+	case "created":
+		sort.SliceStable(markets, func(i, j int) bool {
+			return markets[i].CreatedAt.After(markets[j].CreatedAt)
+		})
 	default:
-		query = query.Order("created_at DESC")
+		sort.SliceStable(markets, func(i, j int) bool {
+			return markets[i].CreatedAt.After(markets[j].CreatedAt)
+		})
 	}
-
-	if params.Offset < 0 {
-		params.Offset = 0
-	}
-
-	if params.Limit > 0 {
-		query = query.Limit(params.Limit)
-	}
-
-	if params.Offset > 0 {
-		query = query.Offset(params.Offset)
-	}
-
-	var markets []models.Market
-	if err := query.Find(&markets).Error; err != nil {
-		return nil, err
-	}
-
-	s.attachRealtimePrices(ctx, markets)
-	return markets, nil
 }
 
-func (s *MarketService) queryTrendingMarkets(ctx context.Context, params QueryActiveMarketsParams) ([]models.Market, error) {
-	limit := params.Limit
-	if limit <= 0 {
-		limit = 200
-	}
-
-	candidateLimit := limit * 3
-	if candidateLimit < 200 {
-		candidateLimit = 200
-	}
-
-	query := s.DB.WithContext(ctx).Where(activeWhereClause, true, false, true)
-
-	if params.Category != "" {
-		query = query.Where("category = ?", params.Category)
-	}
-
-	if params.Tag != "" {
-		query = query.Where("? = ANY(tags)", params.Tag)
-	}
-
-	var markets []models.Market
-	if err := query.Order("volume_24h DESC").Limit(candidateLimit).Find(&markets).Error; err != nil {
-		return nil, err
-	}
-
+func (s *MarketService) rankTrendingMarkets(ctx context.Context, markets []models.Market) {
 	if len(markets) == 0 {
-		return markets, nil
+		return
 	}
 
 	velocities := s.fetchVelocityScores(ctx, markets)
@@ -975,9 +963,6 @@ func (s *MarketService) queryTrendingMarkets(ctx context.Context, params QueryAc
 
 	normalize := func(value, min, max float64) float64 {
 		if max <= min {
-			if max == 0 {
-				return 0
-			}
 			return 0
 		}
 		norm := (value - min) / (max - min)
@@ -1002,23 +987,214 @@ func (s *MarketService) queryTrendingMarkets(ctx context.Context, params QueryAc
 		}
 		return markets[i].TrendingScore > markets[j].TrendingScore
 	})
+}
 
-	offset := params.Offset
-	if offset < 0 {
-		offset = 0
+func (s *MarketService) cacheMarketMeta(ctx context.Context, meta *MarketMeta) {
+	if meta == nil {
+		return
 	}
-	if offset >= len(markets) {
+	if data, err := json.Marshal(meta); err == nil {
+		_ = s.Redis.Set(ctx, CacheKeyMarketMeta, data, CacheTTL).Err()
+	}
+}
+
+func (s *MarketService) cacheMarketLanes(ctx context.Context, lanes *MarketLanes) {
+	if lanes == nil {
+		return
+	}
+	if data, err := json.Marshal(lanes); err == nil {
+		_ = s.Redis.Set(ctx, CacheKeyMarketLanes, data, CacheTTL).Err()
+	}
+}
+
+func (s *MarketService) cacheMarketAssets(ctx context.Context, markets []models.Market) {
+	if len(markets) == 0 {
+		return
+	}
+
+	assets := make([]MarketAsset, 0, len(markets))
+	for _, market := range markets {
+		if market.TokenIDYes == "" && market.TokenIDNo == "" {
+			continue
+		}
+		assets = append(assets, MarketAsset{
+			ConditionID: market.ConditionID,
+			TokenIDYes:  market.TokenIDYes,
+			TokenIDNo:   market.TokenIDNo,
+			Liquidity:   market.Liquidity,
+			Volume24h:   market.Volume24h,
+		})
+	}
+
+	if len(assets) == 0 {
+		return
+	}
+
+	if data, err := json.Marshal(assets); err == nil {
+		_ = s.Redis.Set(ctx, CacheKeyMarketAssets, data, CacheTTL).Err()
+	}
+}
+
+func (s *MarketService) cacheDerivedSnapshots(ctx context.Context, markets []models.Market) {
+	meta := computeMarketMeta(markets)
+	s.cacheMarketMeta(ctx, meta)
+
+	s.cacheMarketAssets(ctx, markets)
+
+	if lanes, err := s.buildMarketLanesFromSnapshot(ctx, markets, MarketLaneParams{}); err == nil {
+		s.cacheMarketLanes(ctx, lanes)
+	}
+}
+
+func (s *MarketService) GetMarketAssets(ctx context.Context, maxCount int) ([]MarketAsset, error) {
+	var assets []MarketAsset
+	if val, err := s.Redis.Get(ctx, CacheKeyMarketAssets).Result(); err == nil {
+		if err := json.Unmarshal([]byte(val), &assets); err == nil {
+			return trimMarketAssets(assets, maxCount), nil
+		}
+	}
+
+	markets, err := s.loadAllActiveMarkets(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	assets = make([]MarketAsset, 0, len(markets))
+	for _, market := range markets {
+		if market.TokenIDYes == "" && market.TokenIDNo == "" {
+			continue
+		}
+		assets = append(assets, MarketAsset{
+			ConditionID: market.ConditionID,
+			TokenIDYes:  market.TokenIDYes,
+			TokenIDNo:   market.TokenIDNo,
+			Liquidity:   market.Liquidity,
+			Volume24h:   market.Volume24h,
+		})
+	}
+
+	s.cacheMarketAssets(ctx, markets)
+	return trimMarketAssets(assets, maxCount), nil
+}
+
+func trimMarketAssets(assets []MarketAsset, maxCount int) []MarketAsset {
+	if maxCount <= 0 || len(assets) <= maxCount {
+		return assets
+	}
+
+	sort.SliceStable(assets, func(i, j int) bool {
+		if assets[i].Liquidity == assets[j].Liquidity {
+			return assets[i].Volume24h > assets[j].Volume24h
+		}
+		return assets[i].Liquidity > assets[j].Liquidity
+	})
+
+	return assets[:maxCount]
+}
+
+func (s *MarketService) RequestMarketStream(ctx context.Context, conditionID string) error {
+	conditionID = strings.TrimSpace(conditionID)
+	if conditionID == "" {
+		return errors.New("condition id is required")
+	}
+
+	var market models.Market
+	if err := s.DB.WithContext(ctx).Where("condition_id = ?", conditionID).First(&market).Error; err != nil {
+		return err
+	}
+
+	tokens := make([]interface{}, 0, 2)
+	if market.TokenIDYes != "" {
+		tokens = append(tokens, market.TokenIDYes)
+	}
+	if market.TokenIDNo != "" {
+		tokens = append(tokens, market.TokenIDNo)
+	}
+
+	if len(tokens) == 0 {
+		return ErrMarketHasNoTokens
+	}
+
+	if err := s.Redis.SAdd(ctx, streamRequestTokenKey, tokens...).Err(); err != nil {
+		return fmt.Errorf("failed to queue stream tokens: %w", err)
+	}
+	_ = s.Redis.Expire(ctx, streamRequestTokenKey, streamRequestTokenTTL).Err()
+	return nil
+}
+
+func (s *MarketService) PopRequestedStreamTokens(ctx context.Context, max int) ([]string, error) {
+	if max <= 0 {
+		max = 50
+	}
+
+	tokens, err := s.Redis.SPopN(ctx, streamRequestTokenKey, int64(max)).Result()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return tokens, nil
+}
+
+type QueryActiveMarketsParams struct {
+	Category string
+	Tag      string
+	Sort     string
+	Limit    int
+	Offset   int
+}
+
+func (s *MarketService) QueryActiveMarkets(ctx context.Context, params QueryActiveMarketsParams) ([]models.Market, error) {
+	markets, err := s.loadAllActiveMarkets(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := filterMarketsForParams(markets, params.Category, params.Tag)
+	if len(filtered) == 0 {
 		return []models.Market{}, nil
 	}
 
-	end := offset + limit
-	if end > len(markets) {
-		end = len(markets)
+	if params.Limit <= 0 {
+		params.Limit = 200
 	}
 
-	markets = markets[offset:end]
-	s.attachRealtimePrices(ctx, markets)
-	return markets, nil
+	if params.Sort == "trending" {
+		candidateLimit := params.Limit * 3
+		if candidateLimit < 200 {
+			candidateLimit = 200
+		}
+		if candidateLimit > len(filtered) {
+			candidateLimit = len(filtered)
+		}
+
+		sort.SliceStable(filtered, func(i, j int) bool {
+			return filtered[i].Volume24h > filtered[j].Volume24h
+		})
+		filtered = filtered[:candidateLimit]
+		s.rankTrendingMarkets(ctx, filtered)
+	} else {
+		sortMarketsByParam(filtered, params.Sort)
+	}
+
+	if params.Offset < 0 {
+		params.Offset = 0
+	}
+	if params.Offset >= len(filtered) {
+		return []models.Market{}, nil
+	}
+
+	end := params.Offset + params.Limit
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+
+	page := make([]models.Market, end-params.Offset)
+	copy(page, filtered[params.Offset:end])
+
+	s.attachRealtimePrices(ctx, page)
+	return page, nil
 }
 
 func (s *MarketService) fetchVelocityScores(ctx context.Context, markets []models.Market) map[string]float64 {

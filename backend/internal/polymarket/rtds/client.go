@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,23 +33,24 @@ const (
 	// Doc: wss://ws-subscriptions-clob.polymarket.com/ws/market
 	MarketChannelURL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
-	WriteWait         = 10 * time.Second
-	PongWait          = 60 * time.Second
-	PingPeriod        = (PongWait * 9) / 10
-	MaxConnectRetries = 5
+	WriteWait             = 10 * time.Second
+	PongWait              = 60 * time.Second
+	PingPeriod            = (PongWait * 9) / 10
+	MaxConnectRetries     = 5
+	maxAssetsPerSubscribe = 400
 )
 
 type SubscriptionMessage struct {
-	Type     string   `json:"type"`      // "market"
+	Type     string   `json:"type"`       // "market"
 	AssetIDs []string `json:"assets_ids"` // Note: API uses "assets_ids" (plural) not "asset_ids"
 }
 
 type Client struct {
-	url        string
-	conn       *websocket.Conn
-	mu         sync.Mutex
-	done       chan struct{}
-	handler    *MessageHandler
+	url     string
+	conn    *websocket.Conn
+	mu      sync.Mutex
+	done    chan struct{}
+	handler *MessageHandler
 
 	// subscriptions holds the current list of asset IDs to track
 	subscriptions []string
@@ -113,22 +115,54 @@ func (c *Client) connectWithRetry(ctx context.Context) error {
 
 // Subscribe adds assets to the tracking list and sends the subscription message
 func (c *Client) Subscribe(assetIDs []string) error {
+	ids := dedupeAssetIDs(assetIDs)
+	if len(ids) == 0 {
+		return nil
+	}
+
 	c.subMu.Lock()
-	// Append unique new assets to subscription list
-	// For MVP simplicity, we just replace/append.
-	// In production, you might want to merge sets.
-	c.subscriptions = append(c.subscriptions, assetIDs...)
+	c.subscriptions = dedupeAssetIDs(append(c.subscriptions, ids...))
 	c.subMu.Unlock()
 
-	return c.sendSubscribe(assetIDs)
+	return c.sendSubscribe(ids)
 }
 
 func (c *Client) sendSubscribe(assets []string) error {
-	msg := SubscriptionMessage{
-		Type:     "market",
-		AssetIDs: assets,
+	if len(assets) == 0 {
+		return nil
 	}
-	return c.WriteJSON(msg)
+
+	for start := 0; start < len(assets); start += maxAssetsPerSubscribe {
+		end := start + maxAssetsPerSubscribe
+		if end > len(assets) {
+			end = len(assets)
+		}
+
+		msg := SubscriptionMessage{
+			Type:     "market",
+			AssetIDs: assets[start:end],
+		}
+
+		if err := c.WriteJSON(msg); err != nil {
+			return err
+		}
+
+		// avoid spamming the gateway with back-to-back large messages
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	return nil
+}
+
+// ReplaceSubscriptions swaps the entire tracked asset list atomically.
+func (c *Client) ReplaceSubscriptions(assetIDs []string) error {
+	ids := dedupeAssetIDs(assetIDs)
+
+	c.subMu.Lock()
+	c.subscriptions = ids
+	c.subMu.Unlock()
+
+	return c.sendSubscribe(ids)
 }
 
 // WriteJSON sends a JSON message to the websocket thread-safely
@@ -259,3 +293,23 @@ func (c *Client) pingLoop(ctx context.Context) {
 	}
 }
 
+func dedupeAssetIDs(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(ids))
+	unique := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	return unique
+}

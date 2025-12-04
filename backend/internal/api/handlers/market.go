@@ -20,6 +20,7 @@ import (
 
 	"github.com/bankai-project/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
 )
 
 type MarketHandler struct {
@@ -224,4 +225,27 @@ func (h *MarketHandler) GetDepthEstimate(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(estimate)
+}
+
+// RequestMarketStream allows clients to request live streaming for a specific market.
+func (h *MarketHandler) RequestMarketStream(c *fiber.Ctx) error {
+	conditionID := strings.TrimSpace(c.Params("condition_id"))
+	if conditionID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "condition_id param is required"})
+	}
+
+	if err := h.Service.RequestMarketStream(c.Context(), conditionID); err != nil {
+		if errors.Is(err, services.ErrMarketHasNoTokens) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "market has no tradable tokens"})
+		}
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "market not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
+		"status":       "queued",
+		"condition_id": conditionID,
+	})
 }

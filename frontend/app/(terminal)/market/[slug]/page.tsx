@@ -3,18 +3,20 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
 import { Loader2, ArrowLeft, RefreshCcw } from "lucide-react";
 
 import { TradeForm } from "@/components/terminal/TradeForm";
 import { OrdersPanel } from "@/components/terminal/OrdersPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { fetchMarketBySlug } from "@/lib/market-data";
+import { fetchMarketBySlug, requestMarketStream } from "@/lib/market-data";
 import { cn } from "@/lib/utils";
 
 export default function MarketDetailPage() {
   const params = useParams<{ slug: string }>();
   const slug = params?.slug;
+  const streamRequestedRef = useRef<string | null>(null);
 
   const {
     data: market,
@@ -29,6 +31,22 @@ export default function MarketDetailPage() {
   });
 
   const loadingState = isLoading || !slug;
+
+  useEffect(() => {
+    const conditionId = market?.condition_id;
+    if (!conditionId) {
+      return;
+    }
+    if (streamRequestedRef.current === conditionId) {
+      return;
+    }
+    streamRequestedRef.current = conditionId;
+    requestMarketStream(conditionId).catch((err) => {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("Failed to request live stream for market", conditionId, err);
+      }
+    });
+  }, [market?.condition_id]);
 
   if (loadingState) {
     return (
