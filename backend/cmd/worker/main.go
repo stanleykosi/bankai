@@ -75,6 +75,8 @@ func main() {
 
 	go watchStreamRequests(ctx, marketService, wsClient)
 
+	go persistMarketsLoop(ctx, marketService)
+
 	// 6. Subscription Loop
 	// Periodically fetch "Active Markets" and subscribe to their tokens
 	go func() {
@@ -193,6 +195,22 @@ func watchStreamRequests(ctx context.Context, ms *services.MarketService, ws *rt
 
 		if err := ws.Subscribe(payload.Tokens); err != nil {
 			logger.Error("Failed to subscribe to requested tokens: %v", err)
+		}
+	}
+}
+
+func persistMarketsLoop(ctx context.Context, ms *services.MarketService) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := ms.PersistActiveMarkets(ctx); err != nil {
+				logger.Error("PersistActiveMarkets failed: %v", err)
+			}
 		}
 	}
 }

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Loader2, ArrowLeft, RefreshCcw } from "lucide-react";
 
 import { TradeForm } from "@/components/terminal/TradeForm";
@@ -11,12 +11,14 @@ import { OrdersPanel } from "@/components/terminal/OrdersPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { fetchMarketBySlug, requestMarketStream } from "@/lib/market-data";
+import { usePriceStream } from "@/hooks/usePriceStream";
 import { cn } from "@/lib/utils";
 
 export default function MarketDetailPage() {
   const params = useParams<{ slug: string }>();
   const slug = params?.slug;
   const streamRequestedRef = useRef<string | null>(null);
+  const { augmentMarket } = usePriceStream();
 
   const {
     data: market,
@@ -47,6 +49,11 @@ export default function MarketDetailPage() {
       }
     });
   }, [market?.condition_id]);
+
+  const liveMarket = useMemo(
+    () => (market ? augmentMarket(market) : null),
+    [augmentMarket, market]
+  );
 
   if (loadingState) {
     return (
@@ -82,12 +89,14 @@ export default function MarketDetailPage() {
     );
   }
 
+  const marketData = liveMarket ?? market;
+
   const outcomes = (() => {
-    if (!market.outcomes) {
+    if (!marketData.outcomes) {
       return ["Yes", "No"];
     }
     try {
-      const parsed = JSON.parse(market.outcomes);
+      const parsed = JSON.parse(marketData.outcomes);
       if (Array.isArray(parsed) && parsed.length) {
         return parsed.map((value: unknown) => String(value));
       }
@@ -127,7 +136,7 @@ export default function MarketDetailPage() {
           <CardContent className="p-6 space-y-4">
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
-                {market.tags?.slice(0, 4).map((tag) => (
+                {marketData.tags?.slice(0, 4).map((tag) => (
                   <span
                     key={tag}
                     className="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono uppercase tracking-wide text-muted-foreground"
@@ -137,25 +146,25 @@ export default function MarketDetailPage() {
                 ))}
               </div>
               <h1 className="text-2xl font-semibold leading-tight text-foreground">
-                {market.title}
+                {marketData.title}
               </h1>
-              <p className="text-sm text-muted-foreground">{market.description}</p>
+              <p className="text-sm text-muted-foreground">{marketData.description}</p>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-3 font-mono text-xs text-muted-foreground">
               <div>
                 <p className="uppercase tracking-wide text-[10px]">Ends</p>
                 <p className="text-foreground">
-                  {market.end_date
-                    ? new Date(market.end_date).toLocaleString()
+                {marketData.end_date
+                    ? new Date(marketData.end_date).toLocaleString()
                     : "--"}
                 </p>
               </div>
               <div>
                 <p className="uppercase tracking-wide text-[10px]">Liquidity</p>
                 <p className="text-foreground">
-                  {market.liquidity
-                    ? `$${market.liquidity.toLocaleString(undefined, {
+                  {marketData.liquidity
+                    ? `$${marketData.liquidity.toLocaleString(undefined, {
                         maximumFractionDigits: 0,
                       })}`
                     : "$0"}
@@ -174,7 +183,7 @@ export default function MarketDetailPage() {
         <div className="space-y-4">
           <Card className="border-border bg-card/70 backdrop-blur">
             <CardContent className="p-4">
-              <TradeForm market={market} />
+              <TradeForm market={marketData} />
             </CardContent>
           </Card>
           <OrdersPanel />

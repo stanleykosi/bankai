@@ -46,11 +46,10 @@ func ConnectPostgres(cfg *config.Config) (*gorm.DB, error) {
 		return nil, err
 	}
 
-	// Set connection pool settings
-	// These values should be tuned based on infrastructure limits (e.g. AWS RDS instance size)
-	sqlDB.SetMaxIdleConns(10)
-	sqlDB.SetMaxOpenConns(100)
-	sqlDB.SetConnMaxLifetime(time.Hour)
+	// Set conservative connection pool settings for managed Postgres (e.g. Supabase)
+	sqlDB.SetMaxIdleConns(5)
+	sqlDB.SetMaxOpenConns(10)
+	sqlDB.SetConnMaxLifetime(30 * time.Minute)
 
 	logger.Info("✅ Connected to PostgreSQL")
 	return db, nil

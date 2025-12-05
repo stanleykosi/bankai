@@ -148,6 +148,63 @@ func (s *MarketService) StreamHub() *PriceStreamHub {
 
 // SyncActiveMarkets fetches top active markets from Gamma and updates DB + Cache
 func (s *MarketService) SyncActiveMarkets(ctx context.Context) error {
+	return s.syncActiveMarketsCache(ctx)
+}
+
+func (s *MarketService) PersistActiveMarkets(ctx context.Context) error {
+	markets, err := s.loadAllActiveMarkets(ctx)
+	if err != nil {
+		return err
+	}
+
+	if len(markets) == 0 {
+		return nil
+	}
+
+	top := selectTopMarkets(markets, 800)
+
+	unlock, lockErr := s.acquireMarketSyncLock(ctx)
+	if lockErr != nil {
+		return fmt.Errorf("failed to acquire market sync lock: %w", lockErr)
+	}
+	defer unlock()
+
+	const maxRetries = 5
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		err = s.DB.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "condition_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"volume_24h",
+				"liquidity",
+				"active",
+				"closed",
+				"archived",
+				"title",
+				"description",
+				"resolution_rules",
+				"category",
+				"tags",
+				"token_id_yes",
+				"token_id_no",
+				"end_date",
+			}),
+		}).CreateInBatches(top, 50).Error
+		if err == nil {
+			return nil
+		}
+
+		if pgErr, ok := err.(*pgconn.PgError); ok && (pgErr.Code == "40P01" || pgErr.Code == "40001") {
+			backoff := time.Duration(attempt*100+rand.Intn(100)) * time.Millisecond
+			time.Sleep(backoff)
+			continue
+		}
+		break
+	}
+
+	return fmt.Errorf("failed to persist markets to db: %w", err)
+}
+
+func (s *MarketService) syncActiveMarketsCache(ctx context.Context) error {
 	active := true
 	closed := false
 	desc := false
@@ -212,48 +269,6 @@ func (s *MarketService) SyncActiveMarkets(ctx context.Context) error {
 	allMarkets = allMarkets[:0]
 	for _, market := range dedup {
 		allMarkets = append(allMarkets, market)
-	}
-
-	unlock, lockErr := s.acquireMarketSyncLock(ctx)
-	if lockErr != nil {
-		return fmt.Errorf("failed to acquire market sync lock: %w", lockErr)
-	}
-	defer unlock()
-
-	const maxRetries = 5
-	var err error
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		err = s.DB.Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "condition_id"}},
-			DoUpdates: clause.AssignmentColumns([]string{
-				"volume_24h",
-				"liquidity",
-				"active",
-				"closed",
-				"archived",
-				"title",
-				"description",
-				"resolution_rules",
-				"category",
-				"tags",
-				"token_id_yes",
-				"token_id_no",
-				"end_date",
-			}),
-		}).CreateInBatches(allMarkets, 100).Error
-		if err == nil {
-			break
-		}
-
-		if pgErr, ok := err.(*pgconn.PgError); ok && (pgErr.Code == "40P01" || pgErr.Code == "40001") {
-			backoff := time.Duration(attempt*100+rand.Intn(100)) * time.Millisecond
-			time.Sleep(backoff)
-			continue
-		}
-		break
-	}
-	if err != nil {
-		return fmt.Errorf("failed to upsert markets to db: %w", err)
 	}
 
 	data, err := json.Marshal(allMarkets)
@@ -1095,6 +1110,24 @@ func trimMarketAssets(assets []MarketAsset, maxCount int) []MarketAsset {
 	})
 
 	return assets[:maxCount]
+}
+
+func selectTopMarkets(markets []models.Market, max int) []models.Market {
+	if max <= 0 || len(markets) <= max {
+		return markets
+	}
+
+	sorted := make([]models.Market, len(markets))
+	copy(sorted, markets)
+
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].Liquidity == sorted[j].Liquidity {
+			return sorted[i].Volume24h > sorted[j].Volume24h
+		}
+		return sorted[i].Liquidity > sorted[j].Liquidity
+	})
+
+	return sorted[:max]
 }
 
 func (s *MarketService) SubscribeStreamRequests(ctx context.Context) *redis.PubSub {

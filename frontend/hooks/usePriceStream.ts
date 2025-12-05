@@ -105,6 +105,6 @@ export const usePriceStream = () => {
     [augmentMarket]
   );
 
-  return { hydrateMarkets };
+  return { hydrateMarkets, augmentMarket };
 };
 
