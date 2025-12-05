@@ -219,7 +219,7 @@ func (h *MarketHandler) GetDepthEstimate(c *fiber.Ctx) error {
 	estimate, err := h.Service.GetDepthEstimate(c.Context(), marketID, tokenID, side, size)
 	if err != nil {
 		if errors.Is(err, services.ErrOrderBookUnavailable) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Order book snapshot unavailable"})
+			return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"error": "Order book snapshot unavailable"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}

@@ -35,14 +35,15 @@ import (
 )
 
 const (
-	CacheKeyActiveMarkets = "markets:active"
-	CacheKeyMarketMeta    = "markets:meta"
-	CacheKeyMarketLanes   = "markets:lanes"
-	CacheKeyMarketAssets  = "markets:assets"
-	CacheKeyFreshDrops    = "markets:fresh"
-	streamRequestTokenKey = "markets:stream:requested"
-	streamRequestTokenTTL = 30 * time.Minute
-	CacheTTL              = 5 * time.Minute
+	CacheKeyActiveMarkets   = "markets:active"
+	CacheKeyMarketMeta      = "markets:meta"
+	CacheKeyMarketLanes     = "markets:lanes"
+	CacheKeyMarketAssets    = "markets:assets"
+	CacheKeyFreshDrops      = "markets:fresh"
+	streamRequestTokenKey   = "markets:stream:requested"
+	streamRequestTokenTTL   = 30 * time.Minute
+	streamRequestPubSubChan = "markets:stream:requests"
+	CacheTTL                = 5 * time.Minute
 
 	PriceUpdateChannel = "market:price_updates"
 
@@ -60,6 +61,10 @@ type MarketService struct {
 	Redis       *redis.Client
 	GammaClient *gamma.Client
 	streamHub   *PriceStreamHub
+}
+
+type StreamRequestPayload struct {
+	Tokens []string `json:"tokens"`
 }
 
 type depthOrderSummary struct {
@@ -1092,6 +1097,20 @@ func trimMarketAssets(assets []MarketAsset, maxCount int) []MarketAsset {
 	return assets[:maxCount]
 }
 
+func (s *MarketService) SubscribeStreamRequests(ctx context.Context) *redis.PubSub {
+	return s.Redis.Subscribe(ctx, streamRequestPubSubChan)
+}
+
+func (s *MarketService) publishStreamRequest(ctx context.Context, tokens []string) {
+	if len(tokens) == 0 {
+		return
+	}
+	payload := StreamRequestPayload{Tokens: tokens}
+	if data, err := json.Marshal(payload); err == nil {
+		_ = s.Redis.Publish(ctx, streamRequestPubSubChan, data).Err()
+	}
+}
+
 func (s *MarketService) RequestMarketStream(ctx context.Context, conditionID string) error {
 	conditionID = strings.TrimSpace(conditionID)
 	if conditionID == "" {
@@ -1103,22 +1122,29 @@ func (s *MarketService) RequestMarketStream(ctx context.Context, conditionID str
 		return err
 	}
 
-	tokens := make([]interface{}, 0, 2)
+	tokenValues := make([]string, 0, 2)
 	if market.TokenIDYes != "" {
-		tokens = append(tokens, market.TokenIDYes)
+		tokenValues = append(tokenValues, market.TokenIDYes)
 	}
 	if market.TokenIDNo != "" {
-		tokens = append(tokens, market.TokenIDNo)
+		tokenValues = append(tokenValues, market.TokenIDNo)
 	}
 
-	if len(tokens) == 0 {
+	if len(tokenValues) == 0 {
 		return ErrMarketHasNoTokens
 	}
 
-	if err := s.Redis.SAdd(ctx, streamRequestTokenKey, tokens...).Err(); err != nil {
+	args := make([]interface{}, len(tokenValues))
+	for i, token := range tokenValues {
+		args[i] = token
+	}
+
+	if err := s.Redis.SAdd(ctx, streamRequestTokenKey, args...).Err(); err != nil {
 		return fmt.Errorf("failed to queue stream tokens: %w", err)
 	}
 	_ = s.Redis.Expire(ctx, streamRequestTokenKey, streamRequestTokenTTL).Err()
+
+	s.publishStreamRequest(ctx, tokenValues)
 	return nil
 }
 

@@ -19,6 +19,7 @@
 "use client";
 
 import React, { useState, useMemo, useEffect } from "react";
+import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import { useSignTypedData, useAccount, useSwitchChain } from "wagmi";
 import { polygon } from "viem/chains";
@@ -34,6 +35,7 @@ import {
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { WalletConnectButton } from "@/components/wallet/WalletConnectButton";
 import { Input } from "@/components/ui/input";
 import { useWallet } from "@/hooks/useWallet";
 import { useBalance } from "@/hooks/useBalance";
@@ -533,6 +535,70 @@ export function TradeForm({ market }: TradeFormProps) {
 
   const handleClearBatchOrders = () => setBatchOrders([]);
 
+  const primaryAction = useMemo(() => {
+    const baseClasses = cn(
+      "flex-1 font-mono font-bold tracking-wider",
+      side === "BUY"
+        ? "bg-constructive text-black hover:bg-constructive/90"
+        : "bg-destructive text-white hover:bg-destructive/90"
+    );
+
+    if (!isAuthenticated) {
+      return (
+        <Button asChild className={baseClasses}>
+          <Link href="/sign-in">Sign in</Link>
+        </Button>
+      );
+    }
+
+    if (!eoaAddress) {
+      return (
+        <div className="flex-1">
+          <WalletConnectButton />
+        </div>
+      );
+    }
+
+    if (!vaultAddress) {
+      return (
+        <Button type="button" className={baseClasses} disabled>
+          Connecting…
+        </Button>
+      );
+    }
+
+    const submitting = isPlacingOrder || !canSubmit;
+
+    return (
+      <Button
+        type="submit"
+        className={baseClasses}
+        disabled={submitting}
+      >
+        {isPlacingOrder ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : !selectedOutcome?.tokenId ? (
+          "Outcome unavailable"
+        ) : (
+          <>
+            <Send className="mr-2 h-4 w-4" />
+            {`${side} ${selectedOutcomeLabel} • ${orderType}`}
+          </>
+        )}
+      </Button>
+    );
+  }, [
+    canSubmit,
+    eoaAddress,
+    isAuthenticated,
+    isPlacingOrder,
+    orderType,
+    selectedOutcome?.tokenId,
+    selectedOutcomeLabel,
+    side,
+    vaultAddress,
+  ]);
+
   return (
     <Card className="w-full h-full border-border bg-card/60 backdrop-blur-md shadow-xl">
       <CardHeader className="pb-3 border-b border-border/50">
@@ -817,36 +883,12 @@ export function TradeForm({ market }: TradeFormProps) {
           )}
 
           <div className="flex flex-col gap-2 sm:flex-row">
-            <Button
-              type="submit"
-              className={cn(
-                "flex-1 font-mono font-bold tracking-wider",
-                side === "BUY"
-                  ? "bg-constructive text-black hover:bg-constructive/90"
-                  : "bg-destructive text-white hover:bg-destructive/90"
-              )}
-              disabled={!canSubmit}
-            >
-              {isPlacingOrder ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : !isAuthenticated ? (
-                "Sign in"
-              ) : !vaultAddress ? (
-                "Deploy Vault"
-              ) : !selectedOutcome?.tokenId ? (
-                "Outcome unavailable"
-              ) : (
-                <>
-                  <Send className="mr-2 h-4 w-4" />
-                  {`${side} ${selectedOutcomeLabel} • ${orderType}`}
-                </>
-              )}
-            </Button>
+            {primaryAction}
             <Button
               type="button"
               variant="secondary"
               className="flex-1 font-mono font-bold tracking-wider"
-              disabled={!canSubmit}
+              disabled={!isAuthenticated || !eoaAddress || !vaultAddress || !canSubmit}
               onClick={handleAddToBatch}
             >
               {isAddingToBatch ? (

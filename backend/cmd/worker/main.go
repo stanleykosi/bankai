@@ -18,6 +18,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"os/signal"
 	"syscall"
@@ -70,6 +72,8 @@ func main() {
 			// In prod, might want to restart the pod, but here we just log
 		}
 	}()
+
+	go watchStreamRequests(ctx, marketService, wsClient)
 
 	// 6. Subscription Loop
 	// Periodically fetch "Active Markets" and subscribe to their tokens
@@ -160,5 +164,35 @@ func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds
 	// 5. Subscribe via WebSocket (client batches internally)
 	if err := ws.ReplaceSubscriptions(assetIDs); err != nil {
 		logger.Error("Failed to subscribe: %v", err)
+	}
+}
+
+func watchStreamRequests(ctx context.Context, ms *services.MarketService, ws *rtds.Client) {
+	sub := ms.SubscribeStreamRequests(ctx)
+	defer sub.Close()
+
+	for {
+		msg, err := sub.ReceiveMessage(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
+			}
+			logger.Error("Stream request listener error: %v", err)
+			continue
+		}
+
+		var payload services.StreamRequestPayload
+		if err := json.Unmarshal([]byte(msg.Payload), &payload); err != nil {
+			logger.Error("Invalid stream request payload: %v", err)
+			continue
+		}
+
+		if len(payload.Tokens) == 0 {
+			continue
+		}
+
+		if err := ws.Subscribe(payload.Tokens); err != nil {
+			logger.Error("Failed to subscribe to requested tokens: %v", err)
+		}
 	}
 }
