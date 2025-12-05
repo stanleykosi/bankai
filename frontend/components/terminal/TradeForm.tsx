@@ -858,8 +858,8 @@ export function TradeForm({ market }: TradeFormProps) {
                 <Button
                   type="button"
                   variant={amountMode === "shares" ? "default" : "ghost"}
-                  size="xs"
-                  className="h-5 px-2"
+                  size="sm"
+                  className="h-5 px-2 text-[10px]"
                   onClick={() => setAmountMode("shares")}
                 >
                   Shares
@@ -867,8 +867,8 @@ export function TradeForm({ market }: TradeFormProps) {
                 <Button
                   type="button"
                   variant={amountMode === "dollars" ? "default" : "ghost"}
-                  size="xs"
-                  className="h-5 px-2"
+                  size="sm"
+                  className="h-5 px-2 text-[10px]"
                   onClick={() => setAmountMode("dollars")}
                 >
                   USD
