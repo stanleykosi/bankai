@@ -43,7 +43,7 @@ import { buildOrderTypedData } from "@/lib/signing";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { fetchDepthEstimate } from "@/lib/market-data";
-import type { Market } from "@/types";
+import type { DepthEstimate, Market } from "@/types";
 
 interface TradeFormProps {
   market: Market;
@@ -285,7 +285,7 @@ export function TradeForm({ market }: TradeFormProps) {
   const {
     data: depthEstimate,
     isFetching: isDepthLoading,
-  } = useQuery({
+  } = useQuery<DepthEstimate | null>({
     queryKey: [
       "depth-estimate",
       market.condition_id,
@@ -340,9 +340,9 @@ export function TradeForm({ market }: TradeFormProps) {
   ]);
 
   const prepareOrderPayload = async () => {
-    if (!eoaAddress || !vaultAddress) {
-      throw new Error("Wallet not connected or vault not deployed.");
-    }
+      if (!eoaAddress || !vaultAddress) {
+        throw new Error("Wallet not connected or vault not deployed.");
+      }
 
     if (chainId !== polygon.id) {
       if (switchChainAsync) {
@@ -370,38 +370,38 @@ export function TradeForm({ market }: TradeFormProps) {
       );
     }
 
-    const typedData = buildOrderTypedData({
+      const typedData = buildOrderTypedData({
       maker: vaultAddress as `0x${string}`,
       signer: eoaAddress as `0x${string}`,
-      tokenId,
-      price: numericPrice,
-      size: numericShares,
-      side,
+        tokenId,
+        price: numericPrice,
+        size: numericShares,
+        side,
       expiration: expirationSeconds,
-    });
+      });
 
-    const signature = await signTypedDataAsync({
-      domain: typedData.domain,
-      types: typedData.types,
-      primaryType: typedData.primaryType,
-      message: typedData.message,
-    });
+      const signature = await signTypedDataAsync({
+        domain: typedData.domain,
+        types: typedData.types,
+        primaryType: typedData.primaryType,
+        message: typedData.message,
+      });
 
     const orderPayload: SerializedOrderPayload = {
-      salt: typedData.message.salt.toString(),
-      maker: typedData.message.maker,
-      signer: typedData.message.signer,
-      taker: typedData.message.taker,
-      tokenId: typedData.message.tokenId.toString(),
-      makerAmount: typedData.message.makerAmount.toString(),
-      takerAmount: typedData.message.takerAmount.toString(),
-      expiration: typedData.message.expiration.toString(),
-      nonce: typedData.message.nonce.toString(),
-      feeRateBps: typedData.message.feeRateBps.toString(),
+        salt: typedData.message.salt.toString(),
+        maker: typedData.message.maker,
+        signer: typedData.message.signer,
+        taker: typedData.message.taker,
+        tokenId: typedData.message.tokenId.toString(),
+        makerAmount: typedData.message.makerAmount.toString(),
+        takerAmount: typedData.message.takerAmount.toString(),
+        expiration: typedData.message.expiration.toString(),
+        nonce: typedData.message.nonce.toString(),
+        feeRateBps: typedData.message.feeRateBps.toString(),
       side,
       signatureType: user?.wallet_type === "SAFE" ? 2 : 1,
-      signature,
-    };
+        signature,
+      };
 
     return {
       order: orderPayload,
@@ -605,22 +605,22 @@ export function TradeForm({ market }: TradeFormProps) {
         <CardTitle className="text-sm font-mono uppercase tracking-widest flex justify-between items-center">
           <span>Execution</span>
           <div className="flex gap-2">
-            <span className={cn(
-              "px-2 py-0.5 rounded-sm text-[10px] cursor-pointer transition-colors",
-              side === "BUY" ? "bg-constructive text-black font-bold" : "bg-muted text-muted-foreground hover:text-foreground"
-            )} onClick={() => setSide("BUY")}>
-              BUY
-            </span>
-            <span className={cn(
-              "px-2 py-0.5 rounded-sm text-[10px] cursor-pointer transition-colors",
-              side === "SELL" ? "bg-destructive text-white font-bold" : "bg-muted text-muted-foreground hover:text-foreground"
-            )} onClick={() => setSide("SELL")}>
-              SELL
-            </span>
+             <span className={cn(
+               "px-2 py-0.5 rounded-sm text-[10px] cursor-pointer transition-colors",
+               side === "BUY" ? "bg-constructive text-black font-bold" : "bg-muted text-muted-foreground hover:text-foreground"
+             )} onClick={() => setSide("BUY")}>
+               BUY
+             </span>
+             <span className={cn(
+               "px-2 py-0.5 rounded-sm text-[10px] cursor-pointer transition-colors",
+               side === "SELL" ? "bg-destructive text-white font-bold" : "bg-muted text-muted-foreground hover:text-foreground"
+             )} onClick={() => setSide("SELL")}>
+               SELL
+             </span>
           </div>
         </CardTitle>
       </CardHeader>
-
+      
       <CardContent className="pt-4 space-y-4">
         {/* Balance Row */}
         <div className="flex justify-between text-xs font-mono text-muted-foreground">
@@ -719,16 +719,16 @@ export function TradeForm({ market }: TradeFormProps) {
                   <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
                     Limit Price ({selectedOutcomeLabel})
                   </label>
-                  <Input
-                    type="number"
-                    step="0.01"
-                    min="0.01"
-                    max="0.99"
-                    placeholder="0.00"
-                    className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
-                    value={price}
-                    onChange={(e) => setPrice(e.target.value)}
-                  />
+            <Input 
+              type="number" 
+              step="0.01"
+              min="0.01" 
+              max="0.99"
+              placeholder="0.00"
+              className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+            />
                 </div>
                 <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
                   <span>Min $0.01</span>
@@ -837,34 +837,34 @@ export function TradeForm({ market }: TradeFormProps) {
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 items-start">
-            <div className="space-y-1.5">
+          <div className="space-y-1.5">
               <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
                 Shares
               </label>
-              <Input
-                type="number"
-                step="1"
-                min="1"
-                placeholder="0"
-                className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
-                value={shares}
-                onChange={(e) => setShares(e.target.value)}
-              />
-            </div>
+            <Input 
+              type="number" 
+              step="1"
+              min="1"
+              placeholder="0"
+              className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
+              value={shares}
+              onChange={(e) => setShares(e.target.value)}
+            />
+          </div>
 
-            <div className="p-3 rounded bg-muted/20 border border-border/50 space-y-2">
+          <div className="p-3 rounded bg-muted/20 border border-border/50 space-y-2">
+            <div className="flex justify-between text-xs font-mono">
+              <span className="text-muted-foreground">Est. Total</span>
+              <span className="text-foreground font-semibold">${totalCost.toFixed(2)}</span>
+            </div>
+            {side === "BUY" && (
               <div className="flex justify-between text-xs font-mono">
-                <span className="text-muted-foreground">Est. Total</span>
-                <span className="text-foreground font-semibold">${totalCost.toFixed(2)}</span>
+                <span className="text-muted-foreground">Potential ROI</span>
+                <span className="text-constructive">
+                  {numericPrice > 0 ? ((1 - numericPrice) / numericPrice * 100).toFixed(0) : 0}%
+                </span>
               </div>
-              {side === "BUY" && (
-                <div className="flex justify-between text-xs font-mono">
-                  <span className="text-muted-foreground">Potential ROI</span>
-                  <span className="text-constructive">
-                    {numericPrice > 0 ? ((1 - numericPrice) / numericPrice * 100).toFixed(0) : 0}%
-                  </span>
-                </div>
-              )}
+            )}
             </div>
           </div>
 
@@ -875,7 +875,7 @@ export function TradeForm({ market }: TradeFormProps) {
               <p className="text-[10px] text-destructive font-mono leading-tight">{error}</p>
             </div>
           )}
-
+          
           {successMsg && (
             <div className="p-2 rounded bg-constructive/10 border border-constructive/20">
               <p className="text-[10px] text-constructive font-mono text-center">{successMsg}</p>
@@ -884,7 +884,7 @@ export function TradeForm({ market }: TradeFormProps) {
 
           <div className="flex flex-col gap-2 sm:flex-row">
             {primaryAction}
-            <Button
+          <Button 
               type="button"
               variant="secondary"
               className="flex-1 font-mono font-bold tracking-wider"
@@ -892,14 +892,14 @@ export function TradeForm({ market }: TradeFormProps) {
               onClick={handleAddToBatch}
             >
               {isAddingToBatch ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
                 <>
                   <ListPlus className="mr-2 h-4 w-4" />
                   Add To Batch
                 </>
-              )}
-            </Button>
+            )}
+          </Button>
           </div>
         </form>
 

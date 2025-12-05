@@ -117,7 +117,7 @@ export const fetchDepthEstimate = async (
   tokenId: string,
   side: "BUY" | "SELL",
   size: number
-): Promise<DepthEstimate> => {
+): Promise<DepthEstimate | null> => {
   if (!conditionId || !tokenId) {
     throw new Error("conditionId and tokenId are required");
   }
@@ -125,18 +125,38 @@ export const fetchDepthEstimate = async (
     throw new Error("size must be greater than zero");
   }
 
-  const { data } = await api.get<DepthEstimate>(
-    `/markets/${encodeURIComponent(conditionId)}/depth`,
-    {
-      params: {
-        tokenId,
-        side,
-        size,
-      },
-    }
-  );
+  try {
+    const response = await api.get<DepthEstimate>(
+      `/markets/${encodeURIComponent(conditionId)}/depth`,
+      {
+        params: {
+          tokenId,
+          side,
+          size,
+        },
+        validateStatus: (status) => status < 500,
+      }
+    );
 
-  return data;
+    if (response.status !== 200) {
+      return null;
+    }
+
+    const depth = response.data;
+    if (
+      typeof depth?.requestedSize !== "number" ||
+      typeof depth?.fillableSize !== "number" ||
+      Number.isNaN(depth.requestedSize) ||
+      Number.isNaN(depth.fillableSize)
+    ) {
+      return null;
+    }
+
+    return depth;
+  } catch (error) {
+    console.error("Failed to fetch depth estimate:", error);
+    return null;
+  }
 };
 
 export const requestMarketStream = async (conditionId: string): Promise<void> => {
