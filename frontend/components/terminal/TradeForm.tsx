@@ -163,6 +163,8 @@ export function TradeForm({ market }: TradeFormProps) {
   const [gtdExpiration, setGtdExpiration] = useState<string>("");
   const [price, setPrice] = useState<string>("");
   const [shares, setShares] = useState<string>("");
+  const [amountMode, setAmountMode] = useState<"shares" | "dollars">("shares");
+  const [dollarAmount, setDollarAmount] = useState<string>("");
   const [isPlacingOrder, setIsPlacingOrder] = useState(false);
   const [isAddingToBatch, setIsAddingToBatch] = useState(false);
   const [isSubmittingBatch, setIsSubmittingBatch] = useState(false);
@@ -272,8 +274,16 @@ export function TradeForm({ market }: TradeFormProps) {
   }, [side, selectedOutcome]);
 
   const numericPrice = parseFloat(price) || 0;
-  const numericShares = parseFloat(shares) || 0;
-  const totalCost = numericPrice * numericShares;
+  const numericShares =
+    amountMode === "shares"
+      ? parseFloat(shares) || 0
+      : numericPrice > 0
+        ? (parseFloat(dollarAmount) || 0) / numericPrice
+        : 0;
+  const totalCost =
+    amountMode === "dollars"
+      ? parseFloat(dollarAmount) || 0
+      : numericPrice * numericShares;
 
   const currentBalance = parseFloat(balanceData?.balance ?? "0") / 1_000_000;
   const vaultAddress = user?.vault_address;
@@ -316,6 +326,9 @@ export function TradeForm({ market }: TradeFormProps) {
   const leadDepthLevel = depthEstimate?.levels?.[0];
 
   // Validation
+  const insufficientBalance =
+    side === "BUY" && totalCost > currentBalance && currentBalance > 0;
+
   const canSubmit = useMemo(() => {
     if (!isAuthenticated || !eoaAddress || !vaultAddress) return false;
     if (!selectedOutcome?.tokenId) return false;
@@ -323,7 +336,8 @@ export function TradeForm({ market }: TradeFormProps) {
     if (numericShares <= 0) return false;
     if (isBusy) return false;
     if (gtdExpirationError) return false;
-    if (side === "BUY" && totalCost > currentBalance) return false;
+    if (side === "BUY" && totalCost > currentBalance && currentBalance > 0)
+      return false;
     return true;
   }, [
     isAuthenticated,
@@ -838,21 +852,53 @@ export function TradeForm({ market }: TradeFormProps) {
 
           <div className="grid gap-3 sm:grid-cols-2 items-start">
           <div className="space-y-1.5">
-              <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
-                Shares
-              </label>
-            <Input 
-              type="number" 
-              step="1"
-              min="1"
-              placeholder="0"
-              className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
-              value={shares}
-              onChange={(e) => setShares(e.target.value)}
-            />
+            <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
+              <span>{amountMode === "shares" ? "Shares" : "Dollars"}</span>
+              <div className="flex gap-1 text-[10px]">
+                <Button
+                  type="button"
+                  variant={amountMode === "shares" ? "default" : "ghost"}
+                  size="xs"
+                  className="h-5 px-2"
+                  onClick={() => setAmountMode("shares")}
+                >
+                  Shares
+                </Button>
+                <Button
+                  type="button"
+                  variant={amountMode === "dollars" ? "default" : "ghost"}
+                  size="xs"
+                  className="h-5 px-2"
+                  onClick={() => setAmountMode("dollars")}
+                >
+                  USD
+                </Button>
+              </div>
+            </div>
+            {amountMode === "shares" ? (
+              <Input
+                type="number"
+                step="1"
+                min="1"
+                placeholder="0"
+                className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
+                value={shares}
+                onChange={(e) => setShares(e.target.value)}
+              />
+            ) : (
+              <Input
+                type="number"
+                step="0.01"
+                min="1"
+                placeholder="0"
+                className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
+                value={dollarAmount}
+                onChange={(e) => setDollarAmount(e.target.value)}
+              />
+            )}
           </div>
 
-          <div className="p-3 rounded bg-muted/20 border border-border/50 space-y-2">
+            <div className="p-3 rounded bg-muted/20 border border-border/50 space-y-2">
             <div className="flex justify-between text-xs font-mono">
               <span className="text-muted-foreground">Est. Total</span>
               <span className="text-foreground font-semibold">${totalCost.toFixed(2)}</span>
@@ -873,6 +919,13 @@ export function TradeForm({ market }: TradeFormProps) {
             <div className="p-2 rounded bg-destructive/10 border border-destructive/20 flex items-start gap-2">
               <AlertCircle className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
               <p className="text-[10px] text-destructive font-mono leading-tight">{error}</p>
+            </div>
+          )}
+          {insufficientBalance && (
+            <div className="p-2 rounded bg-amber-100/10 border border-amber-500/30">
+              <p className="text-[10px] text-amber-400 font-mono text-center">
+                Insufficient USDC balance for this size.
+              </p>
             </div>
           )}
           
