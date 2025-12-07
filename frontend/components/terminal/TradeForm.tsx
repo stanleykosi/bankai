@@ -274,6 +274,18 @@ export function TradeForm({ market }: TradeFormProps) {
   }, [side, selectedOutcome]);
 
   const numericPrice = parseFloat(price) || 0;
+  const roiPrice = useMemo(() => {
+    const last = selectedOutcome?.lastPrice ?? 0;
+    const fallback = numericPrice || last;
+    if (side === "BUY") {
+      return typeof selectedOutcome?.bestAsk === "number" && selectedOutcome.bestAsk > 0
+        ? selectedOutcome.bestAsk
+        : fallback;
+    }
+    return typeof selectedOutcome?.bestBid === "number" && selectedOutcome.bestBid > 0
+      ? selectedOutcome.bestBid
+      : fallback;
+  }, [numericPrice, selectedOutcome?.bestAsk, selectedOutcome?.bestBid, selectedOutcome?.lastPrice, side]);
   const numericShares =
     amountMode === "shares"
       ? parseFloat(shares) || 0
@@ -907,7 +919,7 @@ export function TradeForm({ market }: TradeFormProps) {
               <div className="flex justify-between text-xs font-mono">
                 <span className="text-muted-foreground">Potential ROI</span>
                 <span className="text-constructive">
-                  {numericPrice > 0 ? ((1 - numericPrice) / numericPrice * 100).toFixed(0) : 0}%
+                  {roiPrice > 0 ? (((1 - roiPrice) / roiPrice) * 100).toFixed(0) : 0}%
                 </span>
               </div>
             )}
@@ -1025,4 +1037,3 @@ export function TradeForm({ market }: TradeFormProps) {
     </Card>
   );
 }
-

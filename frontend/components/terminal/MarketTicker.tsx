@@ -141,7 +141,10 @@ const MarketCard = ({ market }: { market: Market }) => {
         <div className="rounded-md border border-border/60 bg-background/50 p-2">
           <div className="flex items-center justify-between text-[10px] uppercase tracking-wide opacity-70">
             <span className="truncate pr-2">{primaryOutcome}</span>
-            <span className="text-[9px] text-muted-foreground/80">Price</span>
+            <span className="inline-flex items-center gap-1 text-[9px] text-muted-foreground/80">
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shadow-[0_0_4px_rgba(251,191,36,0.7)]" />
+              Last trade
+            </span>
           </div>
           <div className="text-sm font-semibold text-constructive">
             {formatCents(market.yes_price)}
@@ -150,7 +153,10 @@ const MarketCard = ({ market }: { market: Market }) => {
         <div className="rounded-md border border-border/60 bg-background/50 p-2">
           <div className="flex items-center justify-between text-[10px] uppercase tracking-wide opacity-70">
             <span className="truncate pr-2">{secondaryOutcome}</span>
-            <span className="text-[9px] text-muted-foreground/80">Price</span>
+            <span className="inline-flex items-center gap-1 text-[9px] text-muted-foreground/80">
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shadow-[0_0_4px_rgba(251,191,36,0.7)]" />
+              Last trade
+            </span>
           </div>
           <div className="text-sm font-semibold text-destructive">
             {formatCents(market.no_price)}
@@ -245,4 +251,3 @@ export const MarketTicker = ({ freshDrops, highVelocity, deepLiquidity }: Market
     </div>
   );
 };
-

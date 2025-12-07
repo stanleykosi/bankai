@@ -239,7 +239,11 @@ export default function MarketsPage() {
                         return entries.slice(0, 4).map((entry) => (
                           <div key={`${market.condition_id}-${entry.label}`} className="flex justify-between gap-2">
                             <span className="truncate">{entry.label}</span>
-                            <span className={`font-mono ${entry.color}`}>{formatCents(entry.price)}</span>
+                            <span className={`font-mono inline-flex items-center gap-1 ${entry.color}`}>
+                              <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shadow-[0_0_4px_rgba(251,191,36,0.7)]" />
+                              {formatCents(entry.price)}
+                              <span className="text-[9px] uppercase text-muted-foreground/70">Last</span>
+                            </span>
                           </div>
                         ));
                       })()}
@@ -289,4 +293,3 @@ export default function MarketsPage() {
     </div>
   );
 }
-
