@@ -38,14 +38,17 @@ func NewTradeService(db *gorm.DB, clobClient *clob.Client) *TradeService {
 	}
 }
 
-// RelayTrade relays a signed order from the user to the Polymarket CLOB
+// RelayTrade derives user API credentials on-demand, relays the order with both user (L2) and builder headers,
 // and persists the order record to the database.
-func (s *TradeService) RelayTrade(ctx context.Context, user *models.User, req *clob.PostOrderRequest) (*clob.PostOrderResponse, error) {
+func (s *TradeService) RelayTrade(ctx context.Context, user *models.User, req *clob.PostOrderRequest, auth *clob.ClobAuthProof) (*clob.PostOrderResponse, error) {
 	if req == nil {
 		return nil, errors.New("post order request is required")
 	}
 	if user == nil {
 		return nil, errors.New("user context is required")
+	}
+	if auth == nil {
+		return nil, errors.New("auth proof is required")
 	}
 	if err := req.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid order payload: %w", err)
@@ -59,8 +62,17 @@ func (s *TradeService) RelayTrade(ctx context.Context, user *models.User, req *c
 		return nil, fmt.Errorf("order maker %s does not match vault %s", req.Order.Maker, user.VaultAddress)
 	}
 
-	// 1. Post to CLOB
-	resp, err := s.Clob.PostOrder(ctx, req)
+	// 1. Derive/obtain the user's API credentials (do not persist).
+	creds, err := s.Clob.DeriveAPIKey(ctx, auth)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive user api key: %w", err)
+	}
+
+	// Inject owner with the user API key as required by CLOB
+	req.Owner = creds.Key
+
+	// 2. Post to CLOB with both user (L2) and builder headers.
+	resp, err := s.Clob.PostOrder(ctx, req, creds)
 	if err != nil {
 		return nil, fmt.Errorf("failed to relay trade: %w", err)
 	}
@@ -323,12 +335,20 @@ func firstNonEmptyString(values ...string) string {
 
 // RelayBatchTrades iterates through the provided PostOrderRequests and relays each one sequentially.
 // Using single-order submission ensures we receive deterministic order IDs for persistence.
-func (s *TradeService) RelayBatchTrades(ctx context.Context, user *models.User, requests []*clob.PostOrderRequest) ([]*clob.PostOrderResponse, error) {
+func (s *TradeService) RelayBatchTrades(ctx context.Context, user *models.User, requests []*clob.PostOrderRequest, auth *clob.ClobAuthProof) ([]*clob.PostOrderResponse, error) {
 	if user == nil {
 		return nil, errors.New("user context is required")
 	}
+	if auth == nil {
+		return nil, errors.New("auth proof is required")
+	}
 	if len(requests) == 0 {
 		return nil, errors.New("at least one order is required")
+	}
+
+	creds, err := s.Clob.DeriveAPIKey(ctx, auth)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive user api key: %w", err)
 	}
 
 	responses := make([]*clob.PostOrderResponse, 0, len(requests))
@@ -336,7 +356,8 @@ func (s *TradeService) RelayBatchTrades(ctx context.Context, user *models.User, 
 		if err := req.Validate(); err != nil {
 			return nil, fmt.Errorf("order %d invalid: %w", idx, err)
 		}
-		resp, err := s.RelayTrade(ctx, user, req)
+		req.Owner = creds.Key
+		resp, err := s.Clob.PostOrder(ctx, req, creds)
 		if err != nil {
 			return nil, fmt.Errorf("batch order %d failed: %w", idx, err)
 		}
@@ -363,7 +384,7 @@ func (s *TradeService) CancelOrder(ctx context.Context, user *models.User, order
 		return nil, fmt.Errorf("order not found or not owned by user: %w", err)
 	}
 
-	resp, err := s.Clob.CancelOrder(ctx, &clob.CancelOrderRequest{OrderID: orderID})
+	resp, err := s.Clob.CancelOrder(ctx, &clob.CancelOrderRequest{OrderID: orderID}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -400,7 +421,7 @@ func (s *TradeService) CancelOrders(ctx context.Context, user *models.User, orde
 		return nil, fmt.Errorf("one or more orders do not belong to the user")
 	}
 
-	resp, err := s.Clob.CancelOrders(ctx, &clob.CancelOrdersRequest{OrderIDs: orderIDs})
+	resp, err := s.Clob.CancelOrders(ctx, &clob.CancelOrdersRequest{OrderIDs: orderIDs}, nil)
 	if err != nil {
 		return nil, err
 	}

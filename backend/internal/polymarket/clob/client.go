@@ -52,31 +52,31 @@ func NewClient(cfg *config.Config) *Client {
 	}
 }
 
-// PostOrder sends a single order to the CLOB
-func (c *Client) PostOrder(ctx context.Context, req *PostOrderRequest) (*PostOrderResponse, error) {
-	return c.sendRequest(ctx, http.MethodPost, "/order", req)
+// PostOrder sends a single order to the CLOB with both builder and user credentials.
+func (c *Client) PostOrder(ctx context.Context, req *PostOrderRequest, userCreds *APIKeyCredentials) (*PostOrderResponse, error) {
+	return c.sendRequest(ctx, http.MethodPost, "/order", req, userCreds)
 }
 
 // PostOrders sends a batch of orders to the CLOB
-func (c *Client) PostOrders(ctx context.Context, req PostOrdersRequest) (*PostOrderResponse, error) {
+func (c *Client) PostOrders(ctx context.Context, req PostOrdersRequest, userCreds *APIKeyCredentials) (*PostOrderResponse, error) {
 	// Note: The response structure for batch orders might differ slightly in practice,
 	// but usually follows standard success/error patterns. We'll map to PostOrderResponse for now.
-	return c.sendRequest(ctx, http.MethodPost, "/orders", req)
+	return c.sendRequest(ctx, http.MethodPost, "/orders", req, userCreds)
 }
 
 // CancelOrder cancels a single order
-func (c *Client) CancelOrder(ctx context.Context, req *CancelOrderRequest) (*CancelResponse, error) {
+func (c *Client) CancelOrder(ctx context.Context, req *CancelOrderRequest, userCreds *APIKeyCredentials) (*CancelResponse, error) {
 	var resp CancelResponse
-	if err := c.sendRequestDecode(ctx, http.MethodDelete, "/order", req, &resp); err != nil {
+	if err := c.sendRequestDecode(ctx, http.MethodDelete, "/order", req, &resp, userCreds); err != nil {
 		return nil, err
 	}
 	return &resp, nil
 }
 
 // CancelOrders cancels multiple orders
-func (c *Client) CancelOrders(ctx context.Context, req *CancelOrdersRequest) (*CancelResponse, error) {
+func (c *Client) CancelOrders(ctx context.Context, req *CancelOrdersRequest, userCreds *APIKeyCredentials) (*CancelResponse, error) {
 	var resp CancelResponse
-	if err := c.sendRequestDecode(ctx, http.MethodDelete, "/orders", req, &resp); err != nil {
+	if err := c.sendRequestDecode(ctx, http.MethodDelete, "/orders", req, &resp, userCreds); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -90,23 +90,81 @@ func (c *Client) GetBook(ctx context.Context, tokenID string) (*BookResponse, er
 	u := fmt.Sprintf("/book?tokenId=%s", tokenID)
 
 	var resp BookResponse
-	if err := c.sendRequestDecode(ctx, http.MethodGet, u, nil, &resp); err != nil {
+	if err := c.sendRequestDecode(ctx, http.MethodGet, u, nil, &resp, nil); err != nil {
 		return nil, err
 	}
 	return &resp, nil
 }
 
+// DeriveAPIKey requests (or creates) the user API credentials using the L1 ClobAuth signature.
+func (c *Client) DeriveAPIKey(ctx context.Context, proof *ClobAuthProof) (*APIKeyCredentials, error) {
+	if proof == nil {
+		return nil, fmt.Errorf("auth proof is required")
+	}
+
+	// Prefer derive endpoint to avoid creating multiples.
+	u := fmt.Sprintf("%s%s", c.BaseURL, "/auth/derive-api-key")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create derive request: %w", err)
+	}
+	if err := setL1Headers(req, proof); err != nil {
+		return nil, err
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("auth request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusBadRequest {
+		// Fallback to create if derive is not available for the address.
+		createURL := fmt.Sprintf("%s%s", c.BaseURL, "/auth/api-key")
+		req, cerr := http.NewRequestWithContext(ctx, http.MethodPost, createURL, nil)
+		if cerr != nil {
+			return nil, fmt.Errorf("failed to create api-key request: %w", cerr)
+		}
+		if err := setL1Headers(req, proof); err != nil {
+			return nil, err
+		}
+		resp, err = c.HTTPClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("api-key request failed: %w", err)
+		}
+		defer resp.Body.Close()
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read auth response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("auth endpoint error (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var creds APIKeyCredentials
+	if err := json.Unmarshal(body, &creds); err != nil {
+		return nil, fmt.Errorf("failed to parse auth response: %w", err)
+	}
+	if creds.Key == "" || creds.Secret == "" || creds.Passphrase == "" {
+		return nil, fmt.Errorf("auth response missing credentials")
+	}
+	return &creds, nil
+}
+
 // sendRequest sends a generic request and expects a PostOrderResponse (common for trades)
-func (c *Client) sendRequest(ctx context.Context, method, path string, payload interface{}) (*PostOrderResponse, error) {
+func (c *Client) sendRequest(ctx context.Context, method, path string, payload interface{}, userCreds *APIKeyCredentials) (*PostOrderResponse, error) {
 	var result PostOrderResponse
-	if err := c.sendRequestDecode(ctx, method, path, payload, &result); err != nil {
+	if err := c.sendRequestDecode(ctx, method, path, payload, &result, userCreds); err != nil {
 		return nil, err
 	}
 	return &result, nil
 }
 
 // sendRequestDecode handles the low-level HTTP construction, signing, and response decoding
-func (c *Client) sendRequestDecode(ctx context.Context, method, path string, payload interface{}, result interface{}) error {
+func (c *Client) sendRequestDecode(ctx context.Context, method, path string, payload interface{}, result interface{}, userCreds *APIKeyCredentials) error {
 	var body []byte
 	var err error
 
@@ -124,7 +182,7 @@ func (c *Client) sendRequestDecode(ctx context.Context, method, path string, pay
 	}
 
 	// Sign the request for Builder Attribution
-	if err := c.setHeaders(req, body); err != nil {
+	if err := c.setHeaders(req, body, userCreds); err != nil {
 		return fmt.Errorf("failed to sign request: %w", err)
 	}
 
@@ -164,7 +222,7 @@ func (c *Client) sendRequestDecode(ctx context.Context, method, path string, pay
 	return nil
 }
 
-func (c *Client) setHeaders(req *http.Request, body []byte) error {
+func (c *Client) setHeaders(req *http.Request, body []byte, userCreds *APIKeyCredentials) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	// Use a browser-like UA to avoid aggressive WAF heuristics.
@@ -181,6 +239,9 @@ func (c *Client) setHeaders(req *http.Request, body []byte) error {
 	if path == "" {
 		path = "/"
 	}
+	if req.URL.RawQuery != "" {
+		path = fmt.Sprintf("%s?%s", path, req.URL.RawQuery)
+	}
 
 	// Docs: POLY_BUILDER_SIGNATURE = base64url( HMAC_SHA256( base64Decode(secret), timestamp + method + path + body ) )
 	method := strings.ToUpper(req.Method)
@@ -196,6 +257,17 @@ func (c *Client) setHeaders(req *http.Request, body []byte) error {
 	req.Header.Set("POLY_BUILDER_SIGNATURE", sig)
 	req.Header.Set("POLY_BUILDER_TIMESTAMP", strconv.FormatInt(timestamp, 10))
 
+	if userCreds != nil {
+		userSig, err := c.buildBuilderSignature(userCreds.Secret, timestamp, method, path, body)
+		if err != nil {
+			return fmt.Errorf("failed to compute user signature: %w", err)
+		}
+		req.Header.Set("POLY_API_KEY", userCreds.Key)
+		req.Header.Set("POLY_PASSPHRASE", userCreds.Passphrase)
+		req.Header.Set("POLY_SIGNATURE", userSig)
+		req.Header.Set("POLY_TIMESTAMP", strconv.FormatInt(timestamp, 10))
+	}
+
 	return nil
 }
 
@@ -210,15 +282,21 @@ func (c *Client) buildBuilderSignature(secret string, timestamp int64, method, r
 	var decodedSecret []byte
 	var err error
 
-	// Try URL-safe base64 decoding first
-	decodedSecret, err = base64.URLEncoding.DecodeString(normalizedSecret)
+	// Try URL-safe base64 decoding first (with and without padding)
+	decodedSecret, err = base64.RawURLEncoding.DecodeString(normalizedSecret)
 	if err != nil {
-		// Fallback to standard base64
-		decodedSecret, err = base64.StdEncoding.DecodeString(normalizedSecret)
+		decodedSecret, err = base64.URLEncoding.DecodeString(normalizedSecret)
+	}
+	if err != nil {
+		// Fallback to standard base64 variants
+		decodedSecret, err = base64.RawStdEncoding.DecodeString(normalizedSecret)
 		if err != nil {
-			// Fallback to treating secret as raw bytes (some environments might inject it raw)
-			decodedSecret = []byte(normalizedSecret)
+			decodedSecret, err = base64.StdEncoding.DecodeString(normalizedSecret)
 		}
+	}
+	if err != nil {
+		// Fallback to treating secret as raw bytes (some environments might inject it raw)
+		decodedSecret = []byte(normalizedSecret)
 	}
 
 	payload := fmt.Sprintf("%d%s%s", timestamp, strings.ToUpper(method), requestPath)

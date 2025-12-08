@@ -22,13 +22,19 @@ func buildBuilderSignature(secret string, timestamp int64, method, requestPath s
 	var err error
 
 	// Builder docs note the secret is base64; the dashboard currently emits URL-safe (+/- replaced).
-	decodedSecret, err = base64.URLEncoding.DecodeString(normalizedSecret)
+	decodedSecret, err = base64.RawURLEncoding.DecodeString(normalizedSecret)
 	if err != nil {
-		decodedSecret, err = base64.StdEncoding.DecodeString(normalizedSecret)
+		decodedSecret, err = base64.URLEncoding.DecodeString(normalizedSecret)
+	}
+	if err != nil {
+		decodedSecret, err = base64.RawStdEncoding.DecodeString(normalizedSecret)
 		if err != nil {
-			// As a last resort, treat it as raw bytes.
-			decodedSecret = []byte(normalizedSecret)
+			decodedSecret, err = base64.StdEncoding.DecodeString(normalizedSecret)
 		}
+	}
+	if err != nil {
+		// As a last resort, treat it as raw bytes.
+		decodedSecret = []byte(normalizedSecret)
 	}
 
 	payload := fmt.Sprintf("%d%s%s", timestamp, strings.ToUpper(method), requestPath)

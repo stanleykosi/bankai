@@ -174,10 +174,13 @@ func (c *Client) setHeaders(req *http.Request, body []byte) error {
 		return fmt.Errorf("builder credentials are not configured")
 	}
 
-	// Ensure we have just the path portion for signing (e.g., /submit)
+	// Ensure we have just the path portion (plus query) for signing (e.g., /submit)
 	path := req.URL.Path
 	if path == "" {
 		path = "/"
+	}
+	if req.URL.RawQuery != "" {
+		path = fmt.Sprintf("%s?%s", path, req.URL.RawQuery)
 	}
 
 	// Relayer docs require uppercase method in the signature payload.

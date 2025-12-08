@@ -110,6 +110,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 
 	// Trade Routes (Protected)
 	trade := v1.Group("/trade", middleware.Protected())
+	trade.Get("/auth/typed-data", tradeHandler.GetAuthTypedData)
 	trade.Post("/", tradeHandler.PostTrade)
 	trade.Post("", tradeHandler.PostTrade)
 	trade.Post("/batch", tradeHandler.PostBatchTrade)

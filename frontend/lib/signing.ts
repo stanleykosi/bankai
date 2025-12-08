@@ -20,6 +20,21 @@ import {
   generateSalt
 } from "./polymarket";
 
+export const CLOB_AUTH_DOMAIN = {
+  name: "ClobAuthDomain",
+  version: "1",
+  chainId: POLYGON_CHAIN_ID,
+} as const;
+
+export const CLOB_AUTH_TYPES = {
+  ClobAuth: [
+    { name: "address", type: "address" },
+    { name: "timestamp", type: "string" },
+    { name: "nonce", type: "uint256" },
+    { name: "message", type: "string" },
+  ],
+} as const;
+
 // Order types for EIP-712
 export const ORDER_TYPES = {
   Order: [
@@ -156,3 +171,26 @@ export function buildOrderTypedData(params: BuildOrderParams) {
   };
 }
 
+export interface BuildClobAuthParams {
+  address: `0x${string}`;
+  timestamp: string; // unix seconds as string
+  nonce?: number;
+  message?: string;
+}
+
+// Builds the typed data for CLOB API key derivation (L1 auth)
+export function buildClobAuthTypedData(params: BuildClobAuthParams) {
+  const { address, timestamp, nonce = 0, message = "This message attests that I control the given wallet" } = params;
+
+  return {
+    domain: CLOB_AUTH_DOMAIN,
+    types: CLOB_AUTH_TYPES,
+    primaryType: "ClobAuth" as const,
+    message: {
+      address,
+      timestamp,
+      nonce,
+      message,
+    },
+  };
+}

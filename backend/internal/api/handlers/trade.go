@@ -52,8 +52,9 @@ func NewTradeHandler(service *services.TradeService, cfg *config.Config, db *gor
 // The frontend sends the signed order and orderType
 // The backend adds the owner (Builder API Key) before relaying to CLOB
 type PostTradeRequest struct {
-	Order     clob.Order     `json:"order"`
-	OrderType clob.OrderType `json:"orderType"`
+	Order     clob.Order         `json:"order"`
+	OrderType clob.OrderType     `json:"orderType"`
+	Auth      clob.ClobAuthProof `json:"auth"`
 }
 
 type BatchTradeRequest struct {
@@ -73,6 +74,44 @@ var validOrderTypes = map[clob.OrderType]struct{}{
 	clob.OrderTypeGTD: {},
 	clob.OrderTypeFOK: {},
 	clob.OrderTypeFAK: {},
+}
+
+// GetAuthTypedData returns the EIP-712 payload users must sign to derive their API key.
+func (h *TradeHandler) GetAuthTypedData(c *fiber.Ctx) error {
+	clerkID, err := middleware.GetUserID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
+	}
+
+	user, err := h.fetchUserRecord(c.Context(), clerkID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load user"})
+	}
+	if strings.TrimSpace(user.EOAAddress) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Connect a wallet before trading"})
+	}
+
+	timestamp, nonce := clob.BuildAuthPayload()
+
+	return c.JSON(fiber.Map{
+		"address":   user.EOAAddress,
+		"timestamp": timestamp,
+		"nonce":     nonce,
+		"message":   "This message attests that I control the given wallet",
+		"domain": fiber.Map{
+			"name":    "ClobAuthDomain",
+			"version": "1",
+			"chainId": 137,
+		},
+		"types": fiber.Map{
+			"ClobAuth": []fiber.Map{
+				{"name": "address", "type": "address"},
+				{"name": "timestamp", "type": "string"},
+				{"name": "nonce", "type": "uint256"},
+				{"name": "message", "type": "string"},
+			},
+		},
+	})
 }
 
 // PostTrade handles POST /api/v1/trade
@@ -107,6 +146,16 @@ func (h *TradeHandler) PostTrade(c *fiber.Ctx) error {
 			"error": "Invalid order: " + err.Error(),
 		})
 	}
+	if err := req.Auth.Validate(); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid auth payload: " + err.Error(),
+		})
+	}
+	if !strings.EqualFold(strings.TrimSpace(req.Auth.Address), strings.TrimSpace(user.EOAAddress)) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "Auth address does not match user wallet",
+		})
+	}
 
 	// 5. Verify ownership: signer must match EOA and maker must match vault
 	if err := h.Verifier.VerifyOrderOwnership(user, &req.Order); err != nil {
@@ -125,12 +174,12 @@ func (h *TradeHandler) PostTrade(c *fiber.Ctx) error {
 	// 7. Construct CLOB Request
 	clobReq := &clob.PostOrderRequest{
 		Order:     req.Order,
-		Owner:     h.Config.Polymarket.BuilderAPIKey, // Builder Attribution
+		Owner:     "", // Filled with user API key after derivation
 		OrderType: normalizedType,
 	}
 
 	// 8. Relay Trade & Persist
-	resp, err := h.Service.RelayTrade(c.Context(), user, clobReq)
+	resp, err := h.Service.RelayTrade(c.Context(), user, clobReq, &req.Auth)
 	if err != nil {
 		logger.Error("Failed to relay trade for user %s: %v", clerkID, err)
 		msg := "Order placement failed: " + err.Error()
@@ -173,6 +222,7 @@ func (h *TradeHandler) PostBatchTrade(c *fiber.Ctx) error {
 	}
 
 	var batch []*clob.PostOrderRequest
+	var auth *clob.ClobAuthProof
 	for idx, entry := range req.Orders {
 		if err := entry.Order.Validate(); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -184,6 +234,20 @@ func (h *TradeHandler) PostBatchTrade(c *fiber.Ctx) error {
 				"error": fmt.Sprintf("Order %d signature verification failed: %s", idx, err.Error()),
 			})
 		}
+		if err := entry.Auth.Validate(); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": fmt.Sprintf("Order %d auth invalid: %s", idx, err.Error()),
+			})
+		}
+		if !strings.EqualFold(strings.TrimSpace(entry.Auth.Address), strings.TrimSpace(user.EOAAddress)) {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"error": fmt.Sprintf("Order %d auth address does not match user wallet", idx),
+			})
+		}
+		// Reuse the first auth payload for all orders in batch.
+		if auth == nil {
+			auth = &entry.Auth
+		}
 		normalizedType, err := normalizeOrderType(entry.OrderType)
 		if err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -192,12 +256,12 @@ func (h *TradeHandler) PostBatchTrade(c *fiber.Ctx) error {
 		}
 		batch = append(batch, &clob.PostOrderRequest{
 			Order:     entry.Order,
-			Owner:     h.Config.Polymarket.BuilderAPIKey,
+			Owner:     "", // Filled after deriving user API key
 			OrderType: normalizedType,
 		})
 	}
 
-	responses, err := h.Service.RelayBatchTrades(c.Context(), user, batch)
+	responses, err := h.Service.RelayBatchTrades(c.Context(), user, batch, auth)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Batch placement failed: " + err.Error()})
 	}
