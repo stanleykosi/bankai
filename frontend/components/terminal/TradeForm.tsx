@@ -468,6 +468,15 @@ export function TradeForm({ market }: TradeFormProps) {
         message: typedData.message,
       });
 
+    // Signature type must match Polymarket expectations:
+    // 1 = Proxy/Magic, 2 = Browser wallet (Safe-backed vault), 0 = raw EOA.
+    const signatureType =
+      user?.wallet_type === "PROXY"
+        ? 1 // Polymarket Proxy/Magic
+        : user?.wallet_type === "SAFE"
+          ? 2 // Browser wallet (Metamask/Rabby) using Safe vault
+          : 0; // EOA
+
     const orderPayload: SerializedOrderPayload = {
         salt: typedData.message.salt.toString(),
         maker: typedData.message.maker,
@@ -480,7 +489,7 @@ export function TradeForm({ market }: TradeFormProps) {
         nonce: typedData.message.nonce.toString(),
         feeRateBps: typedData.message.feeRateBps.toString(),
       side,
-      signatureType: user?.wallet_type === "SAFE" ? 2 : 1,
+      signatureType,
         signature,
       };
 
