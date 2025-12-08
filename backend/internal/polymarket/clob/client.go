@@ -331,45 +331,55 @@ func looksLikeHTML(data []byte) bool {
 
 // parseAPIKeyCredentials attempts to decode various response shapes from /auth/api-key or /auth/derive-api-key.
 // Some deployments return flat fields, others nest under "apiKey" or use camelCase keys.
+// If the response is not valid JSON, we return a parse error to aid debugging.
 func parseAPIKeyCredentials(body []byte) (*APIKeyCredentials, error) {
-	// 1) Flat struct
+	// First attempt: parse into a generic map to catch JSON syntax errors early.
+	var generic map[string]interface{}
+	if err := json.Unmarshal(body, &generic); err != nil {
+		return nil, fmt.Errorf("failed to parse auth response: %w", err)
+	}
+
+	// Helper to extract a string from the generic map.
+	get := func(m map[string]interface{}, keys ...string) string {
+		for _, k := range keys {
+			if v, ok := m[k]; ok {
+				if s, ok := v.(string); ok {
+					return strings.TrimSpace(s)
+				}
+			}
+		}
+		return ""
+	}
+
+	// 1) Direct fields on the root object.
+	rootCreds := APIKeyCredentials{
+		Key:        get(generic, "key", "apiKey", "apikey", "api_key", "key_id", "apiKeyId"),
+		Secret:     get(generic, "secret", "apiSecret", "api_secret"),
+		Passphrase: get(generic, "passphrase", "apiPassphrase", "api_passphrase"),
+	}
+	if rootCreds.Key != "" && rootCreds.Secret != "" && rootCreds.Passphrase != "" {
+		return &rootCreds, nil
+	}
+
+	// 2) Nested "apiKey" object if present.
+	if nestedRaw, ok := generic["apiKey"]; ok {
+		if nestedMap, ok := nestedRaw.(map[string]interface{}); ok {
+			creds := APIKeyCredentials{
+				Key:        get(nestedMap, "key", "apiKey", "apikey", "api_key", "key_id", "apiKeyId"),
+				Secret:     get(nestedMap, "secret", "apiSecret", "api_secret"),
+				Passphrase: get(nestedMap, "passphrase", "apiPassphrase", "api_passphrase"),
+			}
+			if creds.Key != "" && creds.Secret != "" && creds.Passphrase != "" {
+				return &creds, nil
+			}
+		}
+	}
+
+	// 3) As a fallback, attempt strict struct decoding in case types were clearer there.
 	var flat APIKeyCredentials
 	if err := json.Unmarshal(body, &flat); err == nil {
 		if flat.Key != "" && flat.Secret != "" && flat.Passphrase != "" {
 			return &flat, nil
-		}
-	}
-
-	// 2) Nested apiKey object
-	var nested struct {
-		APIKey APIKeyCredentials `json:"apiKey"`
-	}
-	if err := json.Unmarshal(body, &nested); err == nil {
-		if nested.APIKey.Key != "" && nested.APIKey.Secret != "" && nested.APIKey.Passphrase != "" {
-			return &nested.APIKey, nil
-		}
-	}
-
-	// 3) Generic map with varied casing
-	var generic map[string]interface{}
-	if err := json.Unmarshal(body, &generic); err == nil {
-		get := func(keys ...string) string {
-			for _, k := range keys {
-				if v, ok := generic[k]; ok {
-					if s, ok := v.(string); ok {
-						return strings.TrimSpace(s)
-					}
-				}
-			}
-			return ""
-		}
-		creds := APIKeyCredentials{
-			Key:        get("key", "apiKey", "apikey", "api_key", "key_id", "apiKeyId"),
-			Secret:     get("secret", "apiSecret", "api_secret"),
-			Passphrase: get("passphrase", "apiPassphrase", "api_passphrase"),
-		}
-		if creds.Key != "" && creds.Secret != "" && creds.Passphrase != "" {
-			return &creds, nil
 		}
 	}
 
