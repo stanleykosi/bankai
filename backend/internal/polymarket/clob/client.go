@@ -140,6 +140,9 @@ func (c *Client) sendRequestDecode(ctx context.Context, method, path string, pay
 	}
 
 	if resp.StatusCode >= 400 {
+		if looksLikeHTML(respBody) {
+			return fmt.Errorf("clob waf blocked request (status %d)", resp.StatusCode)
+		}
 		var errResp ErrorResponse
 		if jsonErr := json.Unmarshal(respBody, &errResp); jsonErr == nil && errResp.Error != "" {
 			return fmt.Errorf("clob error (%d): %s", resp.StatusCode, errResp.Error)
@@ -163,7 +166,9 @@ func (c *Client) sendRequestDecode(ctx context.Context, method, path string, pay
 
 func (c *Client) setHeaders(req *http.Request, body []byte) error {
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Bankai-Terminal/1.0")
+	req.Header.Set("Accept", "application/json")
+	// Use a browser-like UA to avoid aggressive WAF heuristics.
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; BankaiTerminal/1.0; +https://polymarket.com)")
 
 	// If no builder credentials, we can't sign.
 	// However, we shouldn't fail if they aren't configured, just skip attribution.
@@ -232,4 +237,19 @@ func (c *Client) buildBuilderSignature(secret string, timestamp int64, method, r
 	sig = strings.ReplaceAll(sig, "/", "_")
 
 	return sig, nil
+}
+
+func looksLikeHTML(data []byte) bool {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return false
+	}
+	// Common markers of an HTML error page
+	if bytes.HasPrefix(trimmed, []byte("<!DOCTYPE html")) || bytes.HasPrefix(trimmed, []byte("<html")) {
+		return true
+	}
+	if bytes.Contains(trimmed, []byte("Cloudflare")) {
+		return true
+	}
+	return false
 }

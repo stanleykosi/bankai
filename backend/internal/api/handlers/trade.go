@@ -133,10 +133,12 @@ func (h *TradeHandler) PostTrade(c *fiber.Ctx) error {
 	resp, err := h.Service.RelayTrade(c.Context(), user, clobReq)
 	if err != nil {
 		logger.Error("Failed to relay trade for user %s: %v", clerkID, err)
-		// Distinguish between CLOB rejection (400) and Server error (500) based on error string?
-		// For simplicity, we use 502 Bad Gateway as it failed upstream.
+		msg := "Order placement failed: " + err.Error()
+		if strings.Contains(err.Error(), "waf blocked") || strings.Contains(err.Error(), "Cloudflare") {
+			msg = "Order placement blocked upstream (WAF). Please retry or contact support with time/market."
+		}
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
-			"error": "Order placement failed: " + err.Error(),
+			"error": msg,
 		})
 	}
 
