@@ -144,14 +144,11 @@ func (c *Client) DeriveAPIKey(ctx context.Context, proof *ClobAuthProof) (*APIKe
 		return nil, fmt.Errorf("auth endpoint error (%d): %s", resp.StatusCode, string(body))
 	}
 
-	var creds APIKeyCredentials
-	if err := json.Unmarshal(body, &creds); err != nil {
-		return nil, fmt.Errorf("failed to parse auth response: %w", err)
+	creds, err := parseAPIKeyCredentials(body)
+	if err != nil {
+		return nil, err
 	}
-	if creds.Key == "" || creds.Secret == "" || creds.Passphrase == "" {
-		return nil, fmt.Errorf("auth response missing credentials")
-	}
-	return &creds, nil
+	return creds, nil
 }
 
 // sendRequest sends a generic request and expects a PostOrderResponse (common for trades)
@@ -330,4 +327,51 @@ func looksLikeHTML(data []byte) bool {
 		return true
 	}
 	return false
+}
+
+// parseAPIKeyCredentials attempts to decode various response shapes from /auth/api-key or /auth/derive-api-key.
+// Some deployments return flat fields, others nest under "apiKey" or use camelCase keys.
+func parseAPIKeyCredentials(body []byte) (*APIKeyCredentials, error) {
+	// 1) Flat struct
+	var flat APIKeyCredentials
+	if err := json.Unmarshal(body, &flat); err == nil {
+		if flat.Key != "" && flat.Secret != "" && flat.Passphrase != "" {
+			return &flat, nil
+		}
+	}
+
+	// 2) Nested apiKey object
+	var nested struct {
+		APIKey APIKeyCredentials `json:"apiKey"`
+	}
+	if err := json.Unmarshal(body, &nested); err == nil {
+		if nested.APIKey.Key != "" && nested.APIKey.Secret != "" && nested.APIKey.Passphrase != "" {
+			return &nested.APIKey, nil
+		}
+	}
+
+	// 3) Generic map with varied casing
+	var generic map[string]interface{}
+	if err := json.Unmarshal(body, &generic); err == nil {
+		get := func(keys ...string) string {
+			for _, k := range keys {
+				if v, ok := generic[k]; ok {
+					if s, ok := v.(string); ok {
+						return strings.TrimSpace(s)
+					}
+				}
+			}
+			return ""
+		}
+		creds := APIKeyCredentials{
+			Key:        get("key", "apiKey", "apikey", "api_key", "key_id", "apiKeyId"),
+			Secret:     get("secret", "apiSecret", "api_secret"),
+			Passphrase: get("passphrase", "apiPassphrase", "api_passphrase"),
+		}
+		if creds.Key != "" && creds.Secret != "" && creds.Passphrase != "" {
+			return &creds, nil
+		}
+	}
+
+	return nil, fmt.Errorf("auth response missing credentials")
 }
