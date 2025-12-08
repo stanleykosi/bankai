@@ -50,10 +50,6 @@ func (s *TradeService) RelayTrade(ctx context.Context, user *models.User, req *c
 	if auth == nil {
 		return nil, errors.New("auth proof is required")
 	}
-	if err := req.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid order payload: %w", err)
-	}
-
 	if strings.TrimSpace(user.VaultAddress) == "" {
 		return nil, fmt.Errorf("user has no deployed vault on file")
 	}
@@ -70,6 +66,11 @@ func (s *TradeService) RelayTrade(ctx context.Context, user *models.User, req *c
 
 	// Inject owner with the user API key as required by CLOB
 	req.Owner = creds.Key
+
+	// Validate after owner is injected
+	if err := req.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid order payload: %w", err)
+	}
 
 	// 2. Post to CLOB with both user (L2) and builder headers.
 	resp, err := s.Clob.PostOrder(ctx, req, creds)
@@ -353,10 +354,10 @@ func (s *TradeService) RelayBatchTrades(ctx context.Context, user *models.User, 
 
 	responses := make([]*clob.PostOrderResponse, 0, len(requests))
 	for idx, req := range requests {
+		req.Owner = creds.Key
 		if err := req.Validate(); err != nil {
 			return nil, fmt.Errorf("order %d invalid: %w", idx, err)
 		}
-		req.Owner = creds.Key
 		resp, err := s.Clob.PostOrder(ctx, req, creds)
 		if err != nil {
 			return nil, fmt.Errorf("batch order %d failed: %w", idx, err)
