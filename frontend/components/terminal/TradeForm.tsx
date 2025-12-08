@@ -18,7 +18,7 @@
 
 "use client";
 
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import { useSignTypedData, useAccount, useSwitchChain } from "wagmi";
@@ -125,6 +125,14 @@ type PreparedBatchOrder = {
     price: number;
     shares: number;
   };
+  auth: AuthProof;
+};
+
+type AuthProof = {
+  address: string;
+  timestamp: string;
+  nonce: number;
+  signature: string;
 };
 
 const formatPriceLabel = (value?: number) => {
@@ -234,6 +242,44 @@ export function TradeForm({ market }: TradeFormProps) {
     }
     return null;
   }, [orderType, gtdExpiration, gtdExpirationSeconds]);
+
+  const fetchClobAuthProof = useCallback(
+    async (): Promise<AuthProof> => {
+      const token = await getToken();
+      if (!token) throw new Error("Wallet authentication required.");
+
+      const { data } = await api.get("/trade/auth/typed-data", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      const authTypedData = {
+        domain: data.domain,
+        types: data.types,
+        primaryType: "ClobAuth" as const,
+        message: {
+          address: data.address as `0x${string}`,
+          timestamp: data.timestamp as string,
+          nonce: data.nonce as number,
+          message: data.message as string,
+        },
+      };
+
+      const signature = await signTypedDataAsync({
+        domain: authTypedData.domain,
+        types: authTypedData.types,
+        primaryType: authTypedData.primaryType,
+        message: authTypedData.message,
+      });
+
+      return {
+        address: data.address,
+        timestamp: data.timestamp,
+        nonce: data.nonce,
+        signature,
+      };
+    },
+    [getToken, signTypedDataAsync]
+  );
 
   useEffect(() => {
     if (orderType !== "GTD") {
@@ -449,6 +495,7 @@ export function TradeForm({ market }: TradeFormProps) {
 
     try {
       const prepared = await prepareOrderPayload();
+      const auth = await fetchClobAuthProof();
       const token = await getToken();
       if (!token) throw new Error("Wallet authentication required.");
 
@@ -457,6 +504,7 @@ export function TradeForm({ market }: TradeFormProps) {
         {
           order: prepared.order,
           orderType: prepared.orderType,
+          auth,
         },
         {
           headers: { Authorization: `Bearer ${token}` },
@@ -492,6 +540,7 @@ export function TradeForm({ market }: TradeFormProps) {
     setIsAddingToBatch(true);
     try {
       const prepared = await prepareOrderPayload();
+      const auth = await fetchClobAuthProof();
       const batchId =
         typeof crypto !== "undefined" && "randomUUID" in crypto
           ? crypto.randomUUID()
@@ -503,6 +552,7 @@ export function TradeForm({ market }: TradeFormProps) {
           order: prepared.order,
           orderType: prepared.orderType,
           summary: prepared.summary,
+          auth,
         },
       ]);
       setShares("");
@@ -535,6 +585,7 @@ export function TradeForm({ market }: TradeFormProps) {
           orders: batchOrders.map((entry) => ({
             order: entry.order,
             orderType: entry.orderType,
+            auth: entry.auth,
           })),
         },
         { headers: { Authorization: `Bearer ${token}` } }
