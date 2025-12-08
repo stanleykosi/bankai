@@ -28,6 +28,7 @@ type APIKeyCredentials struct {
 	Key        string `json:"key"`
 	Secret     string `json:"secret"`
 	Passphrase string `json:"passphrase"`
+	Address    string `json:"address,omitempty"` // convenience for signing headers
 }
 
 // BuildAuthPayload constructs a timestamp + nonce for the frontend to sign.

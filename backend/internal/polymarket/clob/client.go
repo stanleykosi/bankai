@@ -148,6 +148,7 @@ func (c *Client) DeriveAPIKey(ctx context.Context, proof *ClobAuthProof) (*APIKe
 	if err != nil {
 		return nil, err
 	}
+	creds.Address = proof.Address
 	return creds, nil
 }
 
@@ -258,6 +259,9 @@ func (c *Client) setHeaders(req *http.Request, body []byte, userCreds *APIKeyCre
 		userSig, err := c.buildBuilderSignature(userCreds.Secret, timestamp, method, path, body)
 		if err != nil {
 			return fmt.Errorf("failed to compute user signature: %w", err)
+		}
+		if userCreds.Address != "" {
+			req.Header.Set("POLY_ADDRESS", userCreds.Address)
 		}
 		req.Header.Set("POLY_API_KEY", userCreds.Key)
 		req.Header.Set("POLY_PASSPHRASE", userCreds.Passphrase)
