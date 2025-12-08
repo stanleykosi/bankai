@@ -143,6 +143,18 @@ type PostOrderResponse struct {
 	Status      string   `json:"status,omitempty"`
 }
 
+// BookResponse represents the simplified order book snapshot returned by the CLOB API.
+type BookResponse struct {
+	Bids []struct {
+		Price string `json:"price"`
+		Size  string `json:"size"`
+	} `json:"bids"`
+	Asks []struct {
+		Price string `json:"price"`
+		Size  string `json:"size"`
+	} `json:"asks"`
+}
+
 // PostOrdersRequest represents the payload for batch orders (POST /orders)
 type PostOrdersRequest []PostOrderRequest
 

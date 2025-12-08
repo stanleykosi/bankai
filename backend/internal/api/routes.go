@@ -44,7 +44,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	clobClient := clob.NewClient(cfg)
 
 	// 3. Initialize Services
-	marketService := services.NewMarketService(db, rdb, gammaClient)
+	marketService := services.NewMarketService(db, rdb, gammaClient, clobClient)
 	walletManager := services.NewWalletManager(db, relayerClient, gammaClient)
 	tradeService := services.NewTradeService(db, clobClient)
 

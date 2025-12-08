@@ -34,7 +34,7 @@ func main() {
 
 	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	gammaClient := gamma.NewClient(cfg)
-	service := services.NewMarketService(pgDB, redisClient, gammaClient)
+	service := services.NewMarketService(pgDB, redisClient, gammaClient, nil)
 
 	ctx := context.Background()
 

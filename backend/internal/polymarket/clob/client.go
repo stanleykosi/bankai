@@ -82,6 +82,20 @@ func (c *Client) CancelOrders(ctx context.Context, req *CancelOrdersRequest) (*C
 	return &resp, nil
 }
 
+// GetBook fetches the current order book for a token (asset) from the CLOB API.
+func (c *Client) GetBook(ctx context.Context, tokenID string) (*BookResponse, error) {
+	if strings.TrimSpace(tokenID) == "" {
+		return nil, fmt.Errorf("tokenID is required")
+	}
+	u := fmt.Sprintf("/book?tokenId=%s", tokenID)
+
+	var resp BookResponse
+	if err := c.sendRequestDecode(ctx, http.MethodGet, u, nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // sendRequest sends a generic request and expects a PostOrderResponse (common for trades)
 func (c *Client) sendRequest(ctx context.Context, method, path string, payload interface{}) (*PostOrderResponse, error) {
 	var result PostOrderResponse

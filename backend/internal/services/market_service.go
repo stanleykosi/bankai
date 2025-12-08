@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/bankai-project/backend/internal/models"
+	"github.com/bankai-project/backend/internal/polymarket/clob"
 	"github.com/bankai-project/backend/internal/polymarket/gamma"
 	"github.com/jackc/pgconn"
 	"github.com/redis/go-redis/v9"
@@ -60,6 +61,7 @@ type MarketService struct {
 	DB          *gorm.DB
 	Redis       *redis.Client
 	GammaClient *gamma.Client
+	ClobClient  *clob.Client
 	streamHub   *PriceStreamHub
 }
 
@@ -73,8 +75,10 @@ type depthOrderSummary struct {
 }
 
 type orderBookSnapshot struct {
-	Bids []orderBookLevel `json:"bids"`
-	Asks []orderBookLevel `json:"asks"`
+	AssetID string           `json:"asset_id,omitempty"`
+	Market  string           `json:"market,omitempty"`
+	Bids    []orderBookLevel `json:"bids"`
+	Asks    []orderBookLevel `json:"asks"`
 }
 
 type orderBookLevel struct {
@@ -133,11 +137,12 @@ type MarketLaneParams struct {
 	PoolSort string
 }
 
-func NewMarketService(db *gorm.DB, redis *redis.Client, gammaClient *gamma.Client) *MarketService {
+func NewMarketService(db *gorm.DB, redis *redis.Client, gammaClient *gamma.Client, clobClient *clob.Client) *MarketService {
 	return &MarketService{
 		DB:          db,
 		Redis:       redis,
 		GammaClient: gammaClient,
+		ClobClient:  clobClient,
 		streamHub:   NewPriceStreamHub(redis, PriceUpdateChannel),
 	}
 }
@@ -492,7 +497,14 @@ func (s *MarketService) GetDepthEstimate(ctx context.Context, marketID, tokenID,
 	key := fmt.Sprintf("book:%s:%s", marketID, tokenID)
 	raw, err := s.Redis.Get(ctx, key).Result()
 	if errors.Is(err, redis.Nil) {
-		return nil, ErrOrderBookUnavailable
+		// Ask RTDS worker to (re)subscribe in case the book never landed.
+		s.publishStreamRequest(ctx, []string{tokenID})
+		// Try a synchronous fetch from CLOB as a fallback.
+		if fetched, fetchErr := s.fetchAndCacheOrderBook(ctx, marketID, tokenID); fetchErr == nil {
+			raw = fetched
+		} else {
+			return nil, ErrOrderBookUnavailable
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to read order book snapshot: %w", err)
@@ -586,6 +598,50 @@ func (s *MarketService) GetDepthEstimate(ctx context.Context, marketID, tokenID,
 	}
 
 	return estimate, nil
+}
+
+// fetchAndCacheOrderBook pulls a book snapshot from the CLOB API when RTDS hasn't provided one yet.
+func (s *MarketService) fetchAndCacheOrderBook(ctx context.Context, marketID, tokenID string) (string, error) {
+	if s.ClobClient == nil {
+		return "", errors.New("clob client not configured")
+	}
+
+	book, err := s.ClobClient.GetBook(ctx, tokenID)
+	if err != nil {
+		return "", err
+	}
+
+	snapshot := orderBookSnapshot{
+		AssetID: tokenID,
+		Market:  marketID,
+		Bids:    nil,
+		Asks:    nil,
+	}
+
+	for _, bid := range book.Bids {
+		snapshot.Bids = append(snapshot.Bids, orderBookLevel{
+			Price: bid.Price,
+			Size:  bid.Size,
+		})
+	}
+	for _, ask := range book.Asks {
+		snapshot.Asks = append(snapshot.Asks, orderBookLevel{
+			Price: ask.Price,
+			Size:  ask.Size,
+		})
+	}
+
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return "", err
+	}
+
+	key := fmt.Sprintf("book:%s:%s", marketID, tokenID)
+	if err := s.Redis.Set(ctx, key, data, 15*time.Minute).Err(); err != nil {
+		return "", err
+	}
+
+	return string(data), nil
 }
 
 func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []models.Market) {
@@ -1164,6 +1220,7 @@ func (s *MarketService) RequestMarketStream(ctx context.Context, conditionID str
 	}
 
 	if len(tokenValues) == 0 {
+		log.Printf("RequestMarketStream: market %s has no token IDs; cannot subscribe", conditionID)
 		return ErrMarketHasNoTokens
 	}
 

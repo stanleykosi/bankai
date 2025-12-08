@@ -57,7 +57,7 @@ func main() {
 
 	// 3. Initialize Services
 	gammaClient := gamma.NewClient(cfg)
-	marketService := services.NewMarketService(pgDB, redisClient, gammaClient)
+	marketService := services.NewMarketService(pgDB, redisClient, gammaClient, nil)
 	msgHandler := rtds.NewMessageHandler(pgDB, redisClient)
 	wsClient := rtds.NewClient(cfg, msgHandler)
 
