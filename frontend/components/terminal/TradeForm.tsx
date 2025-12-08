@@ -318,6 +318,8 @@ export function TradeForm({ market }: TradeFormProps) {
   }, [side, selectedOutcome]);
 
   const numericPrice = parseFloat(price) || 0;
+  const isLimitOrderType = orderType === "GTC" || orderType === "GTD";
+  const isImmediateOrderType = orderType === "FOK" || orderType === "FAK";
   const roiPrice = useMemo(() => {
     const last = selectedOutcome?.lastPrice ?? 0;
     if (isLimitOrderType) {
@@ -388,8 +390,6 @@ export function TradeForm({ market }: TradeFormProps) {
         100
       )
     : 0;
-  const isLimitOrderType = orderType === "GTC" || orderType === "GTD";
-  const isImmediateOrderType = orderType === "FOK" || orderType === "FAK";
   const leadDepthLevel = depthEstimate?.levels?.[0];
 
   // Validation
