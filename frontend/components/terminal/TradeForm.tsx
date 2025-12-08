@@ -18,7 +18,7 @@
 
 "use client";
 
-import React, { useState, useMemo, useEffect, useCallback } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import { useSignTypedData, useAccount, useSwitchChain } from "wagmi";
@@ -125,14 +125,6 @@ type PreparedBatchOrder = {
     price: number;
     shares: number;
   };
-  auth: AuthProof;
-};
-
-type AuthProof = {
-  address: string;
-  timestamp: string;
-  nonce: number;
-  signature: string;
 };
 
 const formatPriceLabel = (value?: number) => {
@@ -243,44 +235,6 @@ export function TradeForm({ market }: TradeFormProps) {
     return null;
   }, [orderType, gtdExpiration, gtdExpirationSeconds]);
 
-  const fetchClobAuthProof = useCallback(
-    async (): Promise<AuthProof> => {
-      const token = await getToken();
-      if (!token) throw new Error("Wallet authentication required.");
-
-      const { data } = await api.get("/trade/auth/typed-data", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      const authTypedData = {
-        domain: data.domain,
-        types: data.types,
-        primaryType: "ClobAuth" as const,
-        message: {
-          address: data.address as `0x${string}`,
-          timestamp: data.timestamp as string,
-          nonce: data.nonce as number,
-          message: data.message as string,
-        },
-      };
-
-      const signature = await signTypedDataAsync({
-        domain: authTypedData.domain,
-        types: authTypedData.types,
-        primaryType: authTypedData.primaryType,
-        message: authTypedData.message,
-      });
-
-      return {
-        address: data.address,
-        timestamp: data.timestamp,
-        nonce: data.nonce,
-        signature,
-      };
-    },
-    [getToken, signTypedDataAsync]
-  );
-
   useEffect(() => {
     if (orderType !== "GTD") {
       setGtdExpiration("");
@@ -320,18 +274,6 @@ export function TradeForm({ market }: TradeFormProps) {
   }, [side, selectedOutcome]);
 
   const numericPrice = parseFloat(price) || 0;
-  const roiPrice = useMemo(() => {
-    const last = selectedOutcome?.lastPrice ?? 0;
-    const fallback = numericPrice || last;
-    if (side === "BUY") {
-      return typeof selectedOutcome?.bestAsk === "number" && selectedOutcome.bestAsk > 0
-        ? selectedOutcome.bestAsk
-        : fallback;
-    }
-    return typeof selectedOutcome?.bestBid === "number" && selectedOutcome.bestBid > 0
-      ? selectedOutcome.bestBid
-      : fallback;
-  }, [numericPrice, selectedOutcome?.bestAsk, selectedOutcome?.bestBid, selectedOutcome?.lastPrice, side]);
   const numericShares =
     amountMode === "shares"
       ? parseFloat(shares) || 0
@@ -375,9 +317,9 @@ export function TradeForm({ market }: TradeFormProps) {
     side === "BUY" ? "Estimated Cost" : "Estimated Proceeds";
   const depthFillPercent = depthEstimate?.requestedSize
     ? Math.min(
-        (depthEstimate.fillableSize / depthEstimate.requestedSize) * 100,
-        100
-      )
+      (depthEstimate.fillableSize / depthEstimate.requestedSize) * 100,
+      100
+    )
     : 0;
   const isLimitOrderType = orderType === "GTC" || orderType === "GTD";
   const isImmediateOrderType = orderType === "FOK" || orderType === "FAK";
@@ -412,9 +354,9 @@ export function TradeForm({ market }: TradeFormProps) {
   ]);
 
   const prepareOrderPayload = async () => {
-      if (!eoaAddress || !vaultAddress) {
-        throw new Error("Wallet not connected or vault not deployed.");
-      }
+    if (!eoaAddress || !vaultAddress) {
+      throw new Error("Wallet not connected or vault not deployed.");
+    }
 
     if (chainId !== polygon.id) {
       if (switchChainAsync) {
@@ -438,42 +380,42 @@ export function TradeForm({ market }: TradeFormProps) {
     ) {
       throw new Error(
         gtdExpirationError ??
-          "Invalid expiration provided for GTD order. Choose a timestamp at least 90 seconds from now."
+        "Invalid expiration provided for GTD order. Choose a timestamp at least 90 seconds from now."
       );
     }
 
-      const typedData = buildOrderTypedData({
+    const typedData = buildOrderTypedData({
       maker: vaultAddress as `0x${string}`,
       signer: eoaAddress as `0x${string}`,
-        tokenId,
-        price: numericPrice,
-        size: numericShares,
-        side,
+      tokenId,
+      price: numericPrice,
+      size: numericShares,
+      side,
       expiration: expirationSeconds,
-      });
+    });
 
-      const signature = await signTypedDataAsync({
-        domain: typedData.domain,
-        types: typedData.types,
-        primaryType: typedData.primaryType,
-        message: typedData.message,
-      });
+    const signature = await signTypedDataAsync({
+      domain: typedData.domain,
+      types: typedData.types,
+      primaryType: typedData.primaryType,
+      message: typedData.message,
+    });
 
     const orderPayload: SerializedOrderPayload = {
-        salt: typedData.message.salt.toString(),
-        maker: typedData.message.maker,
-        signer: typedData.message.signer,
-        taker: typedData.message.taker,
-        tokenId: typedData.message.tokenId.toString(),
-        makerAmount: typedData.message.makerAmount.toString(),
-        takerAmount: typedData.message.takerAmount.toString(),
-        expiration: typedData.message.expiration.toString(),
-        nonce: typedData.message.nonce.toString(),
-        feeRateBps: typedData.message.feeRateBps.toString(),
+      salt: typedData.message.salt.toString(),
+      maker: typedData.message.maker,
+      signer: typedData.message.signer,
+      taker: typedData.message.taker,
+      tokenId: typedData.message.tokenId.toString(),
+      makerAmount: typedData.message.makerAmount.toString(),
+      takerAmount: typedData.message.takerAmount.toString(),
+      expiration: typedData.message.expiration.toString(),
+      nonce: typedData.message.nonce.toString(),
+      feeRateBps: typedData.message.feeRateBps.toString(),
       side,
       signatureType: user?.wallet_type === "SAFE" ? 2 : 1,
-        signature,
-      };
+      signature,
+    };
 
     return {
       order: orderPayload,
@@ -495,7 +437,6 @@ export function TradeForm({ market }: TradeFormProps) {
 
     try {
       const prepared = await prepareOrderPayload();
-      const auth = await fetchClobAuthProof();
       const token = await getToken();
       if (!token) throw new Error("Wallet authentication required.");
 
@@ -504,7 +445,6 @@ export function TradeForm({ market }: TradeFormProps) {
         {
           order: prepared.order,
           orderType: prepared.orderType,
-          auth,
         },
         {
           headers: { Authorization: `Bearer ${token}` },
@@ -521,8 +461,8 @@ export function TradeForm({ market }: TradeFormProps) {
       console.error("Trade failed:", err);
       setError(
         err?.response?.data?.error ||
-          err.message ||
-          "Failed to place order"
+        err.message ||
+        "Failed to place order"
       );
     } finally {
       setIsPlacingOrder(false);
@@ -540,7 +480,6 @@ export function TradeForm({ market }: TradeFormProps) {
     setIsAddingToBatch(true);
     try {
       const prepared = await prepareOrderPayload();
-      const auth = await fetchClobAuthProof();
       const batchId =
         typeof crypto !== "undefined" && "randomUUID" in crypto
           ? crypto.randomUUID()
@@ -552,7 +491,6 @@ export function TradeForm({ market }: TradeFormProps) {
           order: prepared.order,
           orderType: prepared.orderType,
           summary: prepared.summary,
-          auth,
         },
       ]);
       setShares("");
@@ -563,8 +501,8 @@ export function TradeForm({ market }: TradeFormProps) {
       console.error("Add to batch failed:", err);
       setError(
         err?.response?.data?.error ||
-          err.message ||
-          "Failed to add order to batch"
+        err.message ||
+        "Failed to add order to batch"
       );
     } finally {
       setIsAddingToBatch(false);
@@ -585,7 +523,6 @@ export function TradeForm({ market }: TradeFormProps) {
           orders: batchOrders.map((entry) => ({
             order: entry.order,
             orderType: entry.orderType,
-            auth: entry.auth,
           })),
         },
         { headers: { Authorization: `Bearer ${token}` } }
@@ -598,8 +535,8 @@ export function TradeForm({ market }: TradeFormProps) {
       console.error("Batch submit failed:", err);
       setError(
         err?.response?.data?.error ||
-          err.message ||
-          "Failed to submit batched orders"
+        err.message ||
+        "Failed to submit batched orders"
       );
     } finally {
       setIsSubmittingBatch(false);
@@ -682,22 +619,22 @@ export function TradeForm({ market }: TradeFormProps) {
         <CardTitle className="text-sm font-mono uppercase tracking-widest flex justify-between items-center">
           <span>Execution</span>
           <div className="flex gap-2">
-             <span className={cn(
-               "px-2 py-0.5 rounded-sm text-[10px] cursor-pointer transition-colors",
-               side === "BUY" ? "bg-constructive text-black font-bold" : "bg-muted text-muted-foreground hover:text-foreground"
-             )} onClick={() => setSide("BUY")}>
-               BUY
-             </span>
-             <span className={cn(
-               "px-2 py-0.5 rounded-sm text-[10px] cursor-pointer transition-colors",
-               side === "SELL" ? "bg-destructive text-white font-bold" : "bg-muted text-muted-foreground hover:text-foreground"
-             )} onClick={() => setSide("SELL")}>
-               SELL
-             </span>
+            <span className={cn(
+              "px-2 py-0.5 rounded-sm text-[10px] cursor-pointer transition-colors",
+              side === "BUY" ? "bg-constructive text-black font-bold" : "bg-muted text-muted-foreground hover:text-foreground"
+            )} onClick={() => setSide("BUY")}>
+              BUY
+            </span>
+            <span className={cn(
+              "px-2 py-0.5 rounded-sm text-[10px] cursor-pointer transition-colors",
+              side === "SELL" ? "bg-destructive text-white font-bold" : "bg-muted text-muted-foreground hover:text-foreground"
+            )} onClick={() => setSide("SELL")}>
+              SELL
+            </span>
           </div>
         </CardTitle>
       </CardHeader>
-      
+
       <CardContent className="pt-4 space-y-4">
         {/* Balance Row */}
         <div className="flex justify-between text-xs font-mono text-muted-foreground">
@@ -796,16 +733,16 @@ export function TradeForm({ market }: TradeFormProps) {
                   <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
                     Limit Price ({selectedOutcomeLabel})
                   </label>
-            <Input 
-              type="number" 
-              step="0.01"
-              min="0.01" 
-              max="0.99"
-              placeholder="0.00"
-              className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
-              value={price}
-              onChange={(e) => setPrice(e.target.value)}
-            />
+                  <Input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    max="0.99"
+                    placeholder="0.00"
+                    className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
+                    value={price}
+                    onChange={(e) => setPrice(e.target.value)}
+                  />
                 </div>
                 <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
                   <span>Min $0.01</span>
@@ -914,66 +851,66 @@ export function TradeForm({ market }: TradeFormProps) {
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 items-start">
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
-              <span>{amountMode === "shares" ? "Shares" : "Dollars"}</span>
-              <div className="flex gap-1 text-[10px]">
-                <Button
-                  type="button"
-                  variant={amountMode === "shares" ? "default" : "ghost"}
-                  size="sm"
-                  className="h-5 px-2 text-[10px]"
-                  onClick={() => setAmountMode("shares")}
-                >
-                  Shares
-                </Button>
-                <Button
-                  type="button"
-                  variant={amountMode === "dollars" ? "default" : "ghost"}
-                  size="sm"
-                  className="h-5 px-2 text-[10px]"
-                  onClick={() => setAmountMode("dollars")}
-                >
-                  USD
-                </Button>
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
+                <span>{amountMode === "shares" ? "Shares" : "Dollars"}</span>
+                <div className="flex gap-1 text-[10px]">
+                  <Button
+                    type="button"
+                    variant={amountMode === "shares" ? "default" : "ghost"}
+                    size="sm"
+                    className="h-5 px-2"
+                    onClick={() => setAmountMode("shares")}
+                  >
+                    Shares
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={amountMode === "dollars" ? "default" : "ghost"}
+                    size="sm"
+                    className="h-5 px-2"
+                    onClick={() => setAmountMode("dollars")}
+                  >
+                    USD
+                  </Button>
+                </div>
               </div>
+              {amountMode === "shares" ? (
+                <Input
+                  type="number"
+                  step="1"
+                  min="1"
+                  placeholder="0"
+                  className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
+                  value={shares}
+                  onChange={(e) => setShares(e.target.value)}
+                />
+              ) : (
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="1"
+                  placeholder="0"
+                  className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
+                  value={dollarAmount}
+                  onChange={(e) => setDollarAmount(e.target.value)}
+                />
+              )}
             </div>
-            {amountMode === "shares" ? (
-              <Input
-                type="number"
-                step="1"
-                min="1"
-                placeholder="0"
-                className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
-                value={shares}
-                onChange={(e) => setShares(e.target.value)}
-              />
-            ) : (
-              <Input
-                type="number"
-                step="0.01"
-                min="1"
-                placeholder="0"
-                className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
-                value={dollarAmount}
-                onChange={(e) => setDollarAmount(e.target.value)}
-              />
-            )}
-          </div>
 
             <div className="p-3 rounded bg-muted/20 border border-border/50 space-y-2">
-            <div className="flex justify-between text-xs font-mono">
-              <span className="text-muted-foreground">Est. Total</span>
-              <span className="text-foreground font-semibold">${totalCost.toFixed(2)}</span>
-            </div>
-            {side === "BUY" && (
               <div className="flex justify-between text-xs font-mono">
-                <span className="text-muted-foreground">Potential ROI</span>
-                <span className="text-constructive">
-                  {roiPrice > 0 ? (((1 - roiPrice) / roiPrice) * 100).toFixed(0) : 0}%
-                </span>
+                <span className="text-muted-foreground">Est. Total</span>
+                <span className="text-foreground font-semibold">${totalCost.toFixed(2)}</span>
               </div>
-            )}
+              {side === "BUY" && (
+                <div className="flex justify-between text-xs font-mono">
+                  <span className="text-muted-foreground">Potential ROI</span>
+                  <span className="text-constructive">
+                    {numericPrice > 0 ? ((1 - numericPrice) / numericPrice * 100).toFixed(0) : 0}%
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -991,7 +928,7 @@ export function TradeForm({ market }: TradeFormProps) {
               </p>
             </div>
           )}
-          
+
           {successMsg && (
             <div className="p-2 rounded bg-constructive/10 border border-constructive/20">
               <p className="text-[10px] text-constructive font-mono text-center">{successMsg}</p>
@@ -1000,7 +937,7 @@ export function TradeForm({ market }: TradeFormProps) {
 
           <div className="flex flex-col gap-2 sm:flex-row">
             {primaryAction}
-          <Button 
+            <Button
               type="button"
               variant="secondary"
               className="flex-1 font-mono font-bold tracking-wider"
@@ -1008,14 +945,14 @@ export function TradeForm({ market }: TradeFormProps) {
               onClick={handleAddToBatch}
             >
               {isAddingToBatch ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
                 <>
                   <ListPlus className="mr-2 h-4 w-4" />
                   Add To Batch
                 </>
-            )}
-          </Button>
+              )}
+            </Button>
           </div>
         </form>
 
