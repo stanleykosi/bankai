@@ -149,7 +149,7 @@ func (c *Client) DeriveAPIKey(ctx context.Context, proof *ClobAuthProof) (*APIKe
 		return nil, err
 	}
 	creds.Address = proof.Address
-	fmt.Printf("Derived user API creds for %s (key prefix: %s...)\n", proof.Address, short(creds.Key))
+	fmt.Printf("Derived user API creds for %s (key prefix: %s...)\n", proof.Address, shortKey(creds.Key))
 	return creds, nil
 }
 
@@ -332,6 +332,14 @@ func looksLikeHTML(data []byte) bool {
 		return true
 	}
 	return false
+}
+
+// shortKey returns a truncated version of a key for safe logging.
+func shortKey(key string) string {
+	if len(key) <= 6 {
+		return key
+	}
+	return key[:6]
 }
 
 // parseAPIKeyCredentials attempts to decode various response shapes from /auth/api-key or /auth/derive-api-key.
