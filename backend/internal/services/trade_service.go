@@ -69,7 +69,12 @@ func (s *TradeService) RelayTrade(ctx context.Context, user *models.User, req *c
 
 	// Validate after owner is injected
 	if err := req.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid order payload: %w", err)
+		return nil, fmt.Errorf("invalid order payload (client): %w", err)
+	}
+
+	// Log the outbound payload for debugging against the TS client
+	if b, merr := json.Marshal(req); merr == nil {
+		logger.Info("Posting order payload: %s", string(b))
 	}
 
 	// 2. Post to CLOB with both user (L2) and builder headers.

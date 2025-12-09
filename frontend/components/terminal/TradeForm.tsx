@@ -478,10 +478,10 @@ export function TradeForm({ market }: TradeFormProps) {
           ? 2 // Safe vault (EIP-1271)
           : 0; // EOA
 
-    // Safe EIP-1271 signatures expect the owner signature plus the 0x00 suffix.
-    const safeAdjustedSignature =
-      user?.wallet_type === "SAFE"
-        ? (signature.endsWith("00") ? signature : `${signature}00`)
+    // Safe EIP-1271 signatures typically include a suffix byte; append 00 if missing.
+    const adjustedSignature =
+      user?.wallet_type === "SAFE" && !signature.endsWith("00")
+        ? `${signature}00`
         : signature;
 
     const orderPayload: SerializedOrderPayload = {
@@ -494,10 +494,10 @@ export function TradeForm({ market }: TradeFormProps) {
         takerAmount: typedData.message.takerAmount.toString(),
         expiration: typedData.message.expiration.toString(),
         nonce: typedData.message.nonce.toString(),
-        feeRateBps: typedData.message.feeRateBps.toString(),
+      feeRateBps: typedData.message.feeRateBps.toString(),
       side,
       signatureType,
-      signature: safeAdjustedSignature,
+      signature: adjustedSignature,
       };
 
     return {

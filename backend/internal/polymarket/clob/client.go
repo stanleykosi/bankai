@@ -149,6 +149,7 @@ func (c *Client) DeriveAPIKey(ctx context.Context, proof *ClobAuthProof) (*APIKe
 		return nil, err
 	}
 	creds.Address = proof.Address
+	fmt.Printf("Derived user API creds for %s (key prefix: %s...)\n", proof.Address, short(creds.Key))
 	return creds, nil
 }
 
