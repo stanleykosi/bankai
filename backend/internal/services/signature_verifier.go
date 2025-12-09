@@ -67,6 +67,28 @@ func (v *SignatureVerifier) VerifyOrderOwnership(user *models.User, order *clob.
 		return fmt.Errorf("maker mismatch: order targets %s but your vault is %s", order.Maker, user.VaultAddress)
 	}
 
+	// Enforce signature type alignment with wallet type to prevent invalid CLOB payloads.
+	if user.WalletType != nil {
+		var expectedSigType int
+		switch *user.WalletType {
+		case models.WalletTypeProxy:
+			expectedSigType = 1
+		case models.WalletTypeSafe:
+			expectedSigType = 2
+		default:
+			expectedSigType = 0
+		}
+
+		if order.SignatureType != expectedSigType {
+			return fmt.Errorf(
+				"signature type %d is not valid for wallet type %s (expected %d)",
+				order.SignatureType,
+				*user.WalletType,
+				expectedSigType,
+			)
+		}
+	}
+
 	// TODO: For strict cryptographic verification, we would:
 	// 1. Reconstruct the EIP-712 typed data hash from the Order struct fields
 	// 2. ecrecover(hash, order.Signature)

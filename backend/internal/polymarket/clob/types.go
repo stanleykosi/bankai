@@ -45,6 +45,11 @@ var (
 		BUY:  {},
 		SELL: {},
 	}
+	validSignatureTypes = map[int]struct{}{
+		0: {}, // EOA
+		1: {}, // PolyProxy / Magic
+		2: {}, // Gnosis Safe
+	}
 )
 
 // Order represents the signed EIP-712 order structure
@@ -96,7 +101,7 @@ func (o *Order) Validate() error {
 	}
 	o.Side = normalizedSide
 
-	if o.SignatureType < 0 {
+	if _, ok := validSignatureTypes[o.SignatureType]; !ok {
 		return fmt.Errorf("order.signatureType %d is invalid", o.SignatureType)
 	}
 
