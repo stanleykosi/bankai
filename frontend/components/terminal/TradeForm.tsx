@@ -468,12 +468,14 @@ export function TradeForm({ market }: TradeFormProps) {
         message: typedData.message,
       });
 
-    // Signature type must match what we actually sign client-side (EOA signTypedData):
-    // 1 = Proxy/Magic, 0 = EOA signature (used for both Safe owners and raw EOAs).
+    // Signature type must match Polymarket expectations:
+    // 1 = Proxy/Magic, 2 = Browser wallet (Safe-backed vault), 0 = raw EOA.
     const signatureType =
       user?.wallet_type === "PROXY"
         ? 1 // Polymarket Proxy/Magic
-        : 0; // EOA signature (including Safe owners signing directly)
+        : user?.wallet_type === "SAFE"
+          ? 2 // Browser wallet (Metamask/Rabby) using Safe vault
+          : 0; // EOA
 
     const orderPayload: SerializedOrderPayload = {
         salt: typedData.message.salt.toString(),

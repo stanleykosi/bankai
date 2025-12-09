@@ -201,12 +201,12 @@ func (c *Client) sendRequestDecode(ctx context.Context, method, path string, pay
 		}
 		var errResp ErrorResponse
 		if jsonErr := json.Unmarshal(respBody, &errResp); jsonErr == nil && errResp.Error != "" {
-			return fmt.Errorf("clob error (%d): %s", resp.StatusCode, errResp.Error)
+			return fmt.Errorf("clob error (%d): %s | body: %s", resp.StatusCode, errResp.Error, string(respBody))
 		}
 		// Try parsing as PostOrderResponse errorMsg
 		var poResp PostOrderResponse
 		if jsonErr := json.Unmarshal(respBody, &poResp); jsonErr == nil && !poResp.Success {
-			return fmt.Errorf("clob error (%d): %s", resp.StatusCode, poResp.ErrorMsg)
+			return fmt.Errorf("clob error (%d): %s | body: %s", resp.StatusCode, poResp.ErrorMsg, string(respBody))
 		}
 		return fmt.Errorf("clob error (%d): %s", resp.StatusCode, string(respBody))
 	}
