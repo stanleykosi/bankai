@@ -67,24 +67,23 @@ func (v *SignatureVerifier) VerifyOrderOwnership(user *models.User, order *clob.
 		return fmt.Errorf("maker mismatch: order targets %s but your vault is %s", order.Maker, user.VaultAddress)
 	}
 
-	// Enforce signature type alignment with wallet type to prevent invalid CLOB payloads.
+	// Validate signature type loosely against wallet type.
+	// Polymarket accepts raw EOA signatures (type 0) even when the maker is a Proxy or Safe vault.
 	if user.WalletType != nil {
-		var expectedSigType int
+		allowed := map[int]struct{}{0: {}} // always allow raw EOA signature
 		switch *user.WalletType {
 		case models.WalletTypeProxy:
-			expectedSigType = 1
+			allowed[1] = struct{}{}
 		case models.WalletTypeSafe:
-			expectedSigType = 2
-		default:
-			expectedSigType = 0
+			allowed[2] = struct{}{}
 		}
 
-		if order.SignatureType != expectedSigType {
+		if _, ok := allowed[order.SignatureType]; !ok {
 			return fmt.Errorf(
-				"signature type %d is not valid for wallet type %s (expected %d)",
+				"signature type %d is not valid for wallet type %s (allowed: %v)",
 				order.SignatureType,
 				*user.WalletType,
-				expectedSigType,
+				keys(allowed),
 			)
 		}
 	}
@@ -100,4 +99,13 @@ func (v *SignatureVerifier) VerifyOrderOwnership(user *models.User, order *clob.
 	// caller's vault.
 
 	return nil
+}
+
+// keys returns the keys of the map as a slice for logging.
+func keys(m map[int]struct{}) []int {
+	out := make([]int, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

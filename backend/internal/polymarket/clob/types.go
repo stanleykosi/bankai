@@ -45,10 +45,14 @@ var (
 		BUY:  {},
 		SELL: {},
 	}
+	// Signature types (per Polymarket clob-client):
+	// 0 = raw EOA signature (works for most wallets, including Safe owners),
+	// 1 = Magic/Proxy,
+	// 2 = Browser wallets (Metamask/Coinbase) / Safe.
 	validSignatureTypes = map[int]struct{}{
-		0: {}, // EOA
-		1: {}, // PolyProxy / Magic
-		2: {}, // Gnosis Safe
+		0: {},
+		1: {},
+		2: {},
 	}
 )
 
