@@ -451,7 +451,8 @@ export function TradeForm({ market }: TradeFormProps) {
       );
     }
 
-      const typedData = buildOrderTypedData({
+    // Maker is always the vault; signer is the EOA
+    const typedData = buildOrderTypedData({
       maker: vaultAddress as `0x${string}`,
       signer: eoaAddress as `0x${string}`,
         tokenId,
@@ -474,8 +475,14 @@ export function TradeForm({ market }: TradeFormProps) {
       user?.wallet_type === "PROXY"
         ? 1 // Polymarket Proxy/Magic
         : user?.wallet_type === "SAFE"
-          ? 2 // Browser wallet (Metamask/Rabby) using Safe vault
+          ? 2 // Safe vault (EIP-1271)
           : 0; // EOA
+
+    // Safe EIP-1271 signatures expect the owner signature plus the 0x00 suffix.
+    const safeAdjustedSignature =
+      user?.wallet_type === "SAFE"
+        ? (signature.endsWith("00") ? signature : `${signature}00`)
+        : signature;
 
     const orderPayload: SerializedOrderPayload = {
         salt: typedData.message.salt.toString(),
@@ -490,7 +497,7 @@ export function TradeForm({ market }: TradeFormProps) {
         feeRateBps: typedData.message.feeRateBps.toString(),
       side,
       signatureType,
-        signature,
+      signature: safeAdjustedSignature,
       };
 
     return {
