@@ -66,6 +66,8 @@ func (s *TradeService) RelayTrade(ctx context.Context, user *models.User, req *c
 
 	// Inject owner with the user API key as required by CLOB
 	req.Owner = creds.Key
+	// Explicitly ensure deferExec is set (default immediate execution path)
+	req.DeferExec = false
 
 	// Validate after owner is injected
 	if err := req.Validate(); err != nil {

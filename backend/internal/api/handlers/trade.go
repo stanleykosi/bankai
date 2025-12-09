@@ -173,6 +173,7 @@ func (h *TradeHandler) PostTrade(c *fiber.Ctx) error {
 
 	// 7. Construct CLOB Request
 	clobReq := &clob.PostOrderRequest{
+		DeferExec: false,
 		Order:     req.Order,
 		Owner:     "", // Filled with user API key after derivation
 		OrderType: normalizedType,
@@ -255,6 +256,7 @@ func (h *TradeHandler) PostBatchTrade(c *fiber.Ctx) error {
 			})
 		}
 		batch = append(batch, &clob.PostOrderRequest{
+			DeferExec: false,
 			Order:     entry.Order,
 			Owner:     "", // Filled after deriving user API key
 			OrderType: normalizedType,
