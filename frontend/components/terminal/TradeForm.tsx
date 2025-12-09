@@ -471,18 +471,16 @@ export function TradeForm({ market }: TradeFormProps) {
 
     // Signature type must match Polymarket expectations:
     // 1 = Proxy/Magic, 2 = Browser wallet (Safe-backed vault), 0 = raw EOA.
+    // Signature type:
+    // - Proxy/Magic => 1
+    // - Safe => 1 (use owner EOA signature; Polymarket TS example uses 1 for browser wallets)
+    // - EOA => 0
     const signatureType =
       user?.wallet_type === "PROXY"
-        ? 1 // Polymarket Proxy/Magic
+        ? 1
         : user?.wallet_type === "SAFE"
-          ? 2 // Safe vault (EIP-1271)
-          : 0; // EOA
-
-    // Safe EIP-1271 signatures typically include a suffix byte; append 00 if missing.
-    const adjustedSignature =
-      user?.wallet_type === "SAFE" && !signature.endsWith("00")
-        ? `${signature}00`
-        : signature;
+          ? 1
+          : 0;
 
     const orderPayload: SerializedOrderPayload = {
         salt: typedData.message.salt.toString(),
@@ -497,7 +495,7 @@ export function TradeForm({ market }: TradeFormProps) {
       feeRateBps: typedData.message.feeRateBps.toString(),
       side,
       signatureType,
-      signature: adjustedSignature,
+      signature,
       };
 
     return {
