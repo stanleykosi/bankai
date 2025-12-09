@@ -469,14 +469,8 @@ export function TradeForm({ market }: TradeFormProps) {
         message: typedData.message,
       });
 
-    // Signature type must match wallet backing the vault:
-    // 0 = EOA, 1 = Proxy/Magic, 2 = Safe/Browser wallet.
-    const signatureType =
-      user?.wallet_type === "PROXY"
-        ? 1
-        : user?.wallet_type === "SAFE"
-          ? 2
-          : 0;
+    // Use plain EOA signature type (0) for all wallets; Polymarket accepts this for proxy/safe-backed vaults and it matches the EIP-712 signature we produce.
+    const signatureType = 0;
 
     const orderPayload: SerializedOrderPayload = {
         salt: typedData.message.salt.toString(),
