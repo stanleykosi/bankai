@@ -439,8 +439,17 @@ export function TradeForm({ market }: TradeFormProps) {
       throw new Error("Selected outcome does not have a tradable token.");
     }
 
-    const expirationSeconds =
+    // Expiration rules:
+    // - GTC: 0
+    // - GTD: user-provided
+    // - FOK/FAK: Polymarket rejects zero; use a short-dated timestamp to satisfy validation.
+    let expirationSeconds =
       orderType === "GTD" ? gtdExpirationSeconds ?? 0 : 0;
+
+    if ((orderType === "FOK" || orderType === "FAK") && expirationSeconds === 0) {
+      // Give a 5 minute window to appease upstream validation while remaining effectively immediate.
+      expirationSeconds = Math.floor(Date.now() / 1000) + 300;
+    }
 
     if (
       orderType === "GTD" &&
