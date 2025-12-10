@@ -14,6 +14,9 @@ export const POLYGON_CHAIN_ID = 137;
 // Source: https://docs.polymarket.com/#deployment-and-additional-information
 export const CTF_EXCHANGE_ADDR = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
 
+// Neg-Risk Exchange used for negatively correlated markets
+export const NEG_RISK_CTF_EXCHANGE_ADDR = "0xC5d563A36AE78145C45a50134d48A1215220f80a";
+
 // The Conditional Tokens Framework (CTF) contract
 export const CTF_CONTRACT_ADDR = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
 
@@ -61,4 +64,3 @@ export function generateSalt(): bigint {
   const random = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
   return (BigInt(Date.now()) << BigInt(64)) ^ random;
 }
-

@@ -40,6 +40,7 @@ import { Input } from "@/components/ui/input";
 import { useWallet } from "@/hooks/useWallet";
 import { useBalance } from "@/hooks/useBalance";
 import { buildOrderTypedData } from "@/lib/signing";
+import { CTF_EXCHANGE_ADDR, NEG_RISK_CTF_EXCHANGE_ADDR } from "@/lib/polymarket";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { fetchDepthEstimate } from "@/lib/market-data";
@@ -452,25 +453,36 @@ export function TradeForm({ market }: TradeFormProps) {
     }
 
     // Maker is always the vault; signer is the EOA
+    const verifyingContract = market?.neg_risk
+      ? NEG_RISK_CTF_EXCHANGE_ADDR
+      : CTF_EXCHANGE_ADDR;
+
     const typedData = buildOrderTypedData({
       maker: vaultAddress as `0x${string}`,
       signer: eoaAddress as `0x${string}`,
-        tokenId,
-        price: numericPrice,
-        size: numericShares,
-        side,
+      tokenId,
+      price: numericPrice,
+      size: numericShares,
+      side,
       expiration: expirationSeconds,
-      });
+      verifyingContract: verifyingContract as `0x${string}`,
+    });
 
-      const signature = await signTypedDataAsync({
-        domain: typedData.domain,
-        types: typedData.types,
-        primaryType: typedData.primaryType,
-        message: typedData.message,
-      });
+    const signature = await signTypedDataAsync({
+      domain: typedData.domain,
+      types: typedData.types,
+      primaryType: typedData.primaryType,
+      message: typedData.message,
+    });
 
-    // Use plain EOA signature type (0) for all wallets; Polymarket accepts this for proxy/safe-backed vaults and it matches the EIP-712 signature we produce.
-    const signatureType = 0;
+    // Signature type must align with wallet backing the vault so CLOB validates it correctly.
+    // 0 = EOA, 1 = Proxy/Magic, 2 = Safe/Browser wallet.
+    const signatureType =
+      user?.wallet_type === "PROXY"
+        ? 1
+        : user?.wallet_type === "SAFE"
+          ? 2
+          : 0;
 
     const orderPayload: SerializedOrderPayload = {
         salt: typedData.message.salt.toString(),

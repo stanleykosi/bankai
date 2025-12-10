@@ -69,11 +69,11 @@ export type OrderStruct = {
 /**
  * Constructs the EIP-712 domain separator.
  */
-export const getDomain = () => ({
+export const getDomain = (verifyingContract: `0x${string}` = CTF_EXCHANGE_ADDR as `0x${string}`) => ({
   name: EIP712_DOMAIN_NAME,
   version: EIP712_DOMAIN_VERSION,
   chainId: POLYGON_CHAIN_ID,
-  verifyingContract: CTF_EXCHANGE_ADDR as `0x${string}`,
+  verifyingContract,
 });
 
 /**
@@ -89,6 +89,7 @@ export interface BuildOrderParams {
   expiration?: number; // 0 for GTC
   feeRateBps?: number; // Usually 0 for maker
   nonce?: number;      // Exchange nonce (optional, random/0 used if stateless)
+  verifyingContract?: `0x${string}`; // Exchange address (use neg-risk exchange when applicable)
 }
 
 /**
@@ -118,6 +119,7 @@ export function buildOrderTypedData(params: BuildOrderParams) {
     expiration = 0,
     feeRateBps = 0,
     nonce = 0,
+    verifyingContract = CTF_EXCHANGE_ADDR as `0x${string}`,
   } = params;
 
   // Polymarket Tokens (and USDC on Polygon) use 6 decimals
@@ -164,7 +166,7 @@ export function buildOrderTypedData(params: BuildOrderParams) {
   };
 
   return {
-    domain: getDomain(),
+    domain: getDomain(verifyingContract),
     types: ORDER_TYPES,
     primaryType: "Order" as const,
     message,
