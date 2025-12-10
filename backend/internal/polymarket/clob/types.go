@@ -44,6 +44,8 @@ var (
 	validOrderSides = map[OrderSide]struct{}{
 		BUY:  {},
 		SELL: {},
+		OrderSide("0"): {},
+		OrderSide("1"): {},
 	}
 	// Signature types (per Polymarket clob-client):
 	// 0 = raw EOA signature (works for most wallets, including Safe owners),
@@ -99,11 +101,19 @@ func (o *Order) Validate() error {
 		}
 	}
 
-	normalizedSide := OrderSide(strings.ToUpper(string(o.Side)))
-	if _, ok := validOrderSides[normalizedSide]; !ok {
-		return fmt.Errorf("order.side %q is invalid", o.Side)
+	sideTrim := strings.TrimSpace(string(o.Side))
+	switch sideTrim {
+	case "0":
+		o.Side = OrderSide("0")
+	case "1":
+		o.Side = OrderSide("1")
+	default:
+		normalizedSide := OrderSide(strings.ToUpper(sideTrim))
+		if _, ok := validOrderSides[normalizedSide]; !ok {
+			return fmt.Errorf("order.side %q is invalid", o.Side)
+		}
+		o.Side = normalizedSide
 	}
-	o.Side = normalizedSide
 
 	if _, ok := validSignatureTypes[o.SignatureType]; !ok {
 		return fmt.Errorf("order.signatureType %d is invalid", o.SignatureType)
