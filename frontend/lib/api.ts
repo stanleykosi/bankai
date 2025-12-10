@@ -20,13 +20,4 @@ export const api = axios.create({
   },
 });
 
-// Add request interceptor to inject auth token if available
-api.interceptors.request.use(async (config) => {
-  // We will handle Clerk token injection here in future steps if needed,
-  // usually passed via function arguments or retrieved from window/storage if appropriate,
-  // but typical Clerk usage involves getting the token via hook and passing it in headers explicitly.
-  return config;
-});
-
 export default api;
-

@@ -53,7 +53,7 @@ export function DepositWithdrawModal({
 
   const fetchDepositInfo = useCallback(async () => {
     try {
-      const token = await getToken();
+      const token = await getToken({ skipCache: true });
       if (!token) return;
 
       const { data } = await api.get("/wallet/deposit", {
@@ -350,4 +350,3 @@ export function DepositWithdrawModal({
     </Dialog>
   );
 }
-

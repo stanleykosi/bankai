@@ -97,7 +97,7 @@ export function useWallet(): UseWalletReturn {
     try {
       syncInFlightRef.current = true;
       setIsSyncing(true);
-      const token = await getToken();
+      const token = await getToken({ skipCache: true });
 
       if (!token) {
         return;
@@ -220,4 +220,3 @@ export function useWallet(): UseWalletReturn {
     refreshUser: syncUser,
   };
 }
-

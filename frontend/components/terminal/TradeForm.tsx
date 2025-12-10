@@ -520,7 +520,7 @@ export function TradeForm({ market }: TradeFormProps) {
 
     try {
       const prepared = await prepareOrderPayload();
-      const token = await getToken();
+      const token = await getToken({ skipCache: true });
       if (!token) throw new Error("Wallet authentication required.");
       const auth = await fetchClobAuthProof(token);
 
@@ -600,7 +600,7 @@ export function TradeForm({ market }: TradeFormProps) {
     setSuccessMsg(null);
     setIsSubmittingBatch(true);
     try {
-      const token = await getToken();
+      const token = await getToken({ skipCache: true });
       if (!token) throw new Error("Wallet authentication required.");
       const auth = await fetchClobAuthProof(token);
       await api.post(
