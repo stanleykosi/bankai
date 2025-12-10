@@ -111,7 +111,7 @@ type SerializedOrderPayload = {
   expiration: string;
   nonce: string;
   feeRateBps: string;
-  side: number; // 0 = BUY, 1 = SELL
+  side: string; // "0" = BUY, "1" = SELL
   signatureType: number;
   signature: string;
 };
@@ -499,7 +499,7 @@ export function TradeForm({ market }: TradeFormProps) {
       expiration: typedData.message.expiration.toString(),
       nonce: typedData.message.nonce.toString(),
       feeRateBps: typedData.message.feeRateBps.toString(),
-      side: typedData.message.side,
+      side: typedData.message.side.toString(),
       signatureType,
       signature,
     };
