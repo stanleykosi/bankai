@@ -111,7 +111,7 @@ type SerializedOrderPayload = {
   expiration: string;
   nonce: string;
   feeRateBps: string;
-  side: string; // "0" = BUY, "1" = SELL
+  side: OrderSide; // "BUY" | "SELL"
   signatureType: number;
   signature: string;
 };
@@ -440,15 +440,10 @@ export function TradeForm({ market }: TradeFormProps) {
     }
 
     // Expiration rules:
-    // - GTC: 0
+    // - GTC/FOK/FAK: 0 (immediate)
     // - GTD: user-provided
-    // - FOK/FAK: always short-dated to satisfy CLOB validation (avoid 0 and avoid far-future).
     let expirationSeconds =
       orderType === "GTD" ? gtdExpirationSeconds ?? 0 : 0;
-
-    if (orderType === "FOK" || orderType === "FAK") {
-      expirationSeconds = Math.floor(Date.now() / 1000) + 300; // ~5 minutes
-    }
 
     if (
       orderType === "GTD" &&
@@ -485,8 +480,8 @@ export function TradeForm({ market }: TradeFormProps) {
       message: typedData.message,
     });
 
-    // Align signature type with wallet backing the vault so CLOB validation matches.
-    // 0 = EOA, 1 = Proxy/Magic, 2 = Safe/Browser wallet.
+    // Signature type must match vault backing:
+    // 0 = EOA, 1 = Proxy, 2 = Safe.
     const signatureType =
       user?.wallet_type === "PROXY"
         ? 1
@@ -505,7 +500,7 @@ export function TradeForm({ market }: TradeFormProps) {
       expiration: typedData.message.expiration.toString(),
       nonce: typedData.message.nonce.toString(),
       feeRateBps: typedData.message.feeRateBps.toString(),
-      side: typedData.message.side.toString(),
+      side,
       signatureType,
       signature,
     };

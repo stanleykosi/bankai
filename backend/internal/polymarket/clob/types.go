@@ -44,8 +44,6 @@ var (
 	validOrderSides = map[OrderSide]struct{}{
 		BUY:  {},
 		SELL: {},
-		OrderSide("0"): {},
-		OrderSide("1"): {},
 	}
 	// Signature types (per Polymarket clob-client):
 	// 0 = raw EOA signature (works for most wallets, including Safe owners),

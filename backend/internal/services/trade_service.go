@@ -77,6 +77,7 @@ func (s *TradeService) RelayTrade(ctx context.Context, user *models.User, req *c
 	// Log the outbound payload for debugging against the TS client
 	if b, merr := json.Marshal(req); merr == nil {
 		logger.Info("Posting order payload: %s", string(b))
+		logger.Info("Order debug: signatureType=%d side=%s expiration=%s tokenId=%s owner=%s", req.Order.SignatureType, req.Order.Side, req.Order.Expiration, req.Order.TokenID, req.Owner)
 	}
 
 	// 2. Post to CLOB with both user (L2) and builder headers.
