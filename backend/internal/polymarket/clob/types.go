@@ -122,10 +122,10 @@ func (o *Order) Validate() error {
 
 // PostOrderRequest represents the payload for POST /order
 type PostOrderRequest struct {
-	DeferExec bool      `json:"deferExec"` // Whether to defer execution (default false for immediate validity)
+	DeferExec bool      `json:"defer_exec"` // Whether to defer execution (default false for immediate validity)
 	Order     Order     `json:"order"`
 	Owner     string    `json:"owner"` // The API Key of the order owner (User)
-	OrderType OrderType `json:"orderType"`
+	OrderType OrderType `json:"order_type"`
 }
 
 // Validate ensures the request conforms to the CLOB `POST /order` schema.
