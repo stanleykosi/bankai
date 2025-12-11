@@ -62,14 +62,14 @@ type Order struct {
 	Maker         string    `json:"maker"`
 	Signer        string    `json:"signer"`
 	Taker         string    `json:"taker"`
-	TokenID       string    `json:"tokenId"`
-	MakerAmount   string    `json:"makerAmount"`
-	TakerAmount   string    `json:"takerAmount"`
+	TokenID       string    `json:"token_id"`
+	MakerAmount   string    `json:"maker_amount"`
+	TakerAmount   string    `json:"taker_amount"`
 	Expiration    string    `json:"expiration"`
 	Nonce         string    `json:"nonce"`
-	FeeRateBps    string    `json:"feeRateBps"`
+	FeeRateBps    string    `json:"fee_rate_bps"`
 	Side          OrderSide `json:"side"`
-	SignatureType int       `json:"signatureType"` // 0=EOA, 1=PolyProxy, 2=GnosisSafe
+	SignatureType int       `json:"signature_type"` // 0=EOA, 1=PolyProxy, 2=GnosisSafe
 	Signature     string    `json:"signature"`
 }
 
@@ -80,17 +80,17 @@ func (o *Order) Validate() error {
 	}
 
 	requiredFields := map[string]string{
-		"salt":        o.Salt,
-		"maker":       o.Maker,
-		"signer":      o.Signer,
-		"taker":       o.Taker,
-		"tokenId":     o.TokenID,
-		"makerAmount": o.MakerAmount,
-		"takerAmount": o.TakerAmount,
-		"expiration":  o.Expiration,
-		"nonce":       o.Nonce,
-		"feeRateBps":  o.FeeRateBps,
-		"signature":   o.Signature,
+		"salt":          o.Salt,
+		"maker":         o.Maker,
+		"signer":        o.Signer,
+		"taker":         o.Taker,
+		"token_id":      o.TokenID,
+		"maker_amount":  o.MakerAmount,
+		"taker_amount":  o.TakerAmount,
+		"expiration":    o.Expiration,
+		"nonce":         o.Nonce,
+		"fee_rate_bps":  o.FeeRateBps,
+		"signature":     o.Signature,
 	}
 
 	for field, value := range requiredFields {
