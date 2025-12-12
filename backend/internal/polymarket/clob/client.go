@@ -201,10 +201,6 @@ func (c *Client) sendRequestDecode(ctx context.Context, method, path string, pay
 	// Debug: surface request context when a 400 occurs to diagnose payload issues.
 	if resp.StatusCode >= 400 {
 		// Build a safe request descriptor
-		uCopy := ""
-		if req != nil && req.URL != nil {
-			uCopy = req.URL.String()
-		}
 		method := ""
 		if req != nil {
 			method = req.Method
