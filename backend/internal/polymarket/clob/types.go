@@ -11,6 +11,7 @@
 package clob
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -57,19 +58,20 @@ var (
 )
 
 // Order represents the signed EIP-712 order structure
+// JSON tags use camelCase for unmarshaling from frontend
 type Order struct {
 	Salt          string    `json:"salt"`
 	Maker         string    `json:"maker"`
 	Signer        string    `json:"signer"`
 	Taker         string    `json:"taker"`
-	TokenID       string    `json:"token_id"`
-	MakerAmount   string    `json:"maker_amount"`
-	TakerAmount   string    `json:"taker_amount"`
+	TokenID       string    `json:"tokenId"`       // camelCase for frontend
+	MakerAmount   string    `json:"makerAmount"`   // camelCase for frontend
+	TakerAmount   string    `json:"takerAmount"`   // camelCase for frontend
 	Expiration    string    `json:"expiration"`
 	Nonce         string    `json:"nonce"`
-	FeeRateBps    string    `json:"fee_rate_bps"`
+	FeeRateBps    string    `json:"feeRateBps"`   // camelCase for frontend
 	Side          OrderSide `json:"side"`
-	SignatureType int       `json:"signature_type"` // 0=EOA, 1=PolyProxy, 2=GnosisSafe
+	SignatureType int       `json:"signatureType"` // camelCase for frontend
 	Signature     string    `json:"signature"`
 }
 
@@ -80,17 +82,17 @@ func (o *Order) Validate() error {
 	}
 
 	requiredFields := map[string]string{
-		"salt":          o.Salt,
-		"maker":         o.Maker,
-		"signer":        o.Signer,
-		"taker":         o.Taker,
-		"token_id":      o.TokenID,
-		"maker_amount":  o.MakerAmount,
-		"taker_amount":  o.TakerAmount,
-		"expiration":    o.Expiration,
-		"nonce":         o.Nonce,
-		"fee_rate_bps":  o.FeeRateBps,
-		"signature":     o.Signature,
+		"salt":        o.Salt,
+		"maker":       o.Maker,
+		"signer":      o.Signer,
+		"taker":       o.Taker,
+		"tokenId":     o.TokenID,
+		"makerAmount": o.MakerAmount,
+		"takerAmount": o.TakerAmount,
+		"expiration":  o.Expiration,
+		"nonce":       o.Nonce,
+		"feeRateBps":  o.FeeRateBps,
+		"signature":   o.Signature,
 	}
 
 	for field, value := range requiredFields {
@@ -121,11 +123,48 @@ func (o *Order) Validate() error {
 }
 
 // PostOrderRequest represents the payload for POST /order
+// Custom MarshalJSON converts to snake_case for CLOB API
 type PostOrderRequest struct {
-	DeferExec bool      `json:"defer_exec"` // Whether to defer execution (default false for immediate validity)
-	Order     Order     `json:"order"`
-	Owner     string    `json:"owner"` // The API Key of the order owner (User)
-	OrderType OrderType `json:"order_type"`
+	DeferExec bool      `json:"-"` // Excluded from default JSON, handled in MarshalJSON
+	Order     Order     `json:"-"` // Excluded from default JSON, handled in MarshalJSON
+	Owner     string    `json:"-"` // Excluded from default JSON, handled in MarshalJSON
+	OrderType OrderType `json:"-"` // Excluded from default JSON, handled in MarshalJSON
+}
+
+// MarshalJSON converts the request to snake_case format for CLOB API
+func (r *PostOrderRequest) MarshalJSON() ([]byte, error) {
+	type Alias struct {
+		DeferExec bool                   `json:"defer_exec"`
+		Order     map[string]interface{} `json:"order"`
+		Owner     string                 `json:"owner"`
+		OrderType string                 `json:"order_type"`
+	}
+
+	// Convert Order to map with snake_case keys
+	orderMap := map[string]interface{}{
+		"salt":           r.Order.Salt,
+		"maker":          r.Order.Maker,
+		"signer":         r.Order.Signer,
+		"taker":          r.Order.Taker,
+		"token_id":       r.Order.TokenID,
+		"maker_amount":   r.Order.MakerAmount,
+		"taker_amount":   r.Order.TakerAmount,
+		"expiration":     r.Order.Expiration,
+		"nonce":          r.Order.Nonce,
+		"fee_rate_bps":   r.Order.FeeRateBps,
+		"side":           r.Order.Side,
+		"signature_type": r.Order.SignatureType,
+		"signature":      r.Order.Signature,
+	}
+
+	alias := Alias{
+		DeferExec: r.DeferExec,
+		Order:     orderMap,
+		Owner:     r.Owner,
+		OrderType: string(r.OrderType),
+	}
+
+	return json.Marshal(alias)
 }
 
 // Validate ensures the request conforms to the CLOB `POST /order` schema.
