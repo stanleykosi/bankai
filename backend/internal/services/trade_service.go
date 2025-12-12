@@ -13,16 +13,20 @@ package services
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
 
 	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/models"
 	"github.com/bankai-project/backend/internal/polymarket/clob"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -68,6 +72,13 @@ func (s *TradeService) RelayTrade(ctx context.Context, user *models.User, req *c
 	creds, err := s.Clob.DeriveAPIKey(ctx, auth)
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive user api key: %w", err)
+	}
+
+	// Recover signer locally to pinpoint signature mismatches before hitting CLOB
+	if recov, digest, err := recoverOrderSigner(&req.Order); err != nil {
+		logger.Warn("Order signature recovery failed: %v", err)
+	} else {
+		logger.Info("Order signature recovery: signer=%s recovered=%s digest=%s", req.Order.Signer, recov.Hex(), digest.Hex())
 	}
 
 	// Inject owner with the user API key as required by CLOB
@@ -256,6 +267,109 @@ func isOnTick(val, tick float64) bool {
 	steps := val / tick
 	nearest := math.Round(steps)
 	return math.Abs(steps-nearest) < 1e-6
+}
+
+// recoverOrderSigner computes the EIP-712 order digest and recovers the signer address.
+// This helps pinpoint signature mismatches before posting to CLOB (which only returns a generic 400).
+func recoverOrderSigner(order *clob.Order) (common.Address, common.Hash, error) {
+	if order == nil {
+		return common.Address{}, common.Hash{}, errors.New("order is nil")
+	}
+
+	// Constants aligned with frontend signing (Polymarket CTF Exchange on Polygon mainnet).
+	const domainName = "Polymarket CTF Exchange"
+	const domainVersion = "1"
+	const chainID = 137
+	const verifyingContract = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+
+	// Type hashes
+	typeHashDomain := crypto.Keccak256Hash([]byte("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"))
+	typeHashOrder := crypto.Keccak256Hash([]byte("Order(uint256 salt,address maker,address signer,address taker,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint256 expiration,uint256 nonce,uint256 feeRateBps,uint8 side)"))
+
+	// Domain separator
+	domainSeparator := crypto.Keccak256Hash(
+		typeHashDomain.Bytes(),
+		crypto.Keccak256Hash([]byte(domainName)).Bytes(),
+		crypto.Keccak256Hash([]byte(domainVersion)).Bytes(),
+		padUint256(chainID),
+		padAddress(common.HexToAddress(verifyingContract)),
+	)
+
+	// Side as uint8
+	side := uint8(0)
+	switch strings.ToUpper(strings.TrimSpace(string(order.Side))) {
+	case "SELL", "1":
+		side = 1
+	}
+
+	structHash := crypto.Keccak256Hash(
+		typeHashOrder.Bytes(),
+		padBig(order.Salt),
+		padAddress(common.HexToAddress(order.Maker)),
+		padAddress(common.HexToAddress(order.Signer)),
+		padAddress(common.HexToAddress(order.Taker)),
+		padBig(order.TokenID),
+		padBig(order.MakerAmount),
+		padBig(order.TakerAmount),
+		padBig(order.Expiration),
+		padBig(order.Nonce),
+		padBig(order.FeeRateBps),
+		padUint8(side),
+	)
+
+	digest := crypto.Keccak256Hash(
+		[]byte{0x19, 0x01},
+		domainSeparator.Bytes(),
+		structHash.Bytes(),
+	)
+
+	sigBytes, err := hexToBytes(order.Signature)
+	if err != nil {
+		return common.Address{}, digest, fmt.Errorf("invalid signature hex: %w", err)
+	}
+	if len(sigBytes) != 65 {
+		return common.Address{}, digest, fmt.Errorf("invalid signature length: %d", len(sigBytes))
+	}
+	// go-ethereum expects V as 27/28
+	if sigBytes[64] < 27 {
+		sigBytes[64] += 27
+	}
+
+	pubKey, err := crypto.SigToPub(digest.Bytes(), sigBytes)
+	if err != nil {
+		return common.Address{}, digest, fmt.Errorf("recover failed: %w", err)
+	}
+	return crypto.PubkeyToAddress(*pubKey), digest, nil
+}
+
+func padBig(val string) []byte {
+	bi := new(big.Int)
+	bi.SetString(strings.TrimSpace(val), 10)
+	return padUint256Big(bi)
+}
+
+func padUint256(v int) []byte {
+	return padUint256Big(big.NewInt(int64(v)))
+}
+
+func padUint8(v uint8) []byte {
+	return padUint256Big(big.NewInt(int64(v)))
+}
+
+func padUint256Big(bi *big.Int) []byte {
+	if bi == nil {
+		bi = big.NewInt(0)
+	}
+	return common.LeftPadBytes(bi.Bytes(), 32)
+}
+
+func padAddress(addr common.Address) []byte {
+	return common.LeftPadBytes(addr.Bytes(), 32)
+}
+
+func hexToBytes(sig string) ([]byte, error) {
+	s := strings.TrimPrefix(sig, "0x")
+	return hex.DecodeString(s)
 }
 
 func mapClobStatus(resp *clob.PostOrderResponse, orderType clob.OrderType) models.OrderStatus {
