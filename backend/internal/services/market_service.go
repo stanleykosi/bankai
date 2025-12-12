@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"math/big"
 	"math/rand"
 	"sort"
 	"strconv"
