@@ -330,12 +330,26 @@ func recoverOrderSigner(order *clob.Order) (common.Address, common.Hash, error) 
 	if len(sigBytes) != 65 {
 		return common.Address{}, digest, fmt.Errorf("invalid signature length: %d (expected 65)", len(sigBytes))
 	}
-	// go-ethereum expects V as 27/28; frontend typically emits 0/1
+	vRaw := sigBytes[64]
+	// go-ethereum SigToPub expects V as 27/28; ethers often returns 0/1
 	if sigBytes[64] == 0 || sigBytes[64] == 1 {
 		sigBytes[64] += 27
 	}
-	if sigBytes[64] != 27 && sigBytes[64] != 28 {
-		return common.Address{}, digest, fmt.Errorf("invalid recovery id (v): %d", sigBytes[64])
+	vNorm := sigBytes[64]
+	if vNorm != 27 && vNorm != 28 {
+		return common.Address{}, digest, fmt.Errorf("invalid recovery id (v): %d (raw=%d)", vNorm, vRaw)
+	}
+
+	// Extra diagnostics: check r/s and v against validation rules
+	r := new(big.Int).SetBytes(sigBytes[0:32])
+	s := new(big.Int).SetBytes(sigBytes[32:64])
+	vCheck := byte(0)
+	if vNorm >= 27 {
+		vCheck = vNorm - 27 // ValidateSignatureValues expects 0/1
+	}
+	valid := crypto.ValidateSignatureValues(vCheck, r, s, true)
+	if !valid {
+		return common.Address{}, digest, fmt.Errorf("signature components invalid: v(raw=%d norm=%d check=%d) r=%s s=%s", vRaw, vNorm, vCheck, r.Text(16), s.Text(16))
 	}
 
 	pubKey, err := crypto.SigToPub(digest.Bytes(), sigBytes)
