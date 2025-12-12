@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"math/big"
 	"math/rand"
 	"sort"
 	"strconv"
@@ -606,13 +607,14 @@ func (s *MarketService) fetchAndCacheOrderBook(ctx context.Context, marketID, to
 		return "", errors.New("clob client not configured")
 	}
 
-	book, err := s.ClobClient.GetBook(ctx, tokenID)
+	normalizedToken := normalizeTokenIDToHex(tokenID)
+	book, err := s.ClobClient.GetBook(ctx, normalizedToken)
 	if err != nil {
 		return "", err
 	}
 
 	snapshot := orderBookSnapshot{
-		AssetID: tokenID,
+		AssetID: normalizedToken,
 		Market:  marketID,
 		Bids:    nil,
 		Asks:    nil,
@@ -636,12 +638,25 @@ func (s *MarketService) fetchAndCacheOrderBook(ctx context.Context, marketID, to
 		return "", err
 	}
 
-	key := fmt.Sprintf("book:%s:%s", marketID, tokenID)
+	key := fmt.Sprintf("book:%s:%s", marketID, normalizedToken)
 	if err := s.Redis.Set(ctx, key, data, 15*time.Minute).Err(); err != nil {
 		return "", err
 	}
 
 	return string(data), nil
+}
+
+func normalizeTokenIDToHex(tokenID string) string {
+	if tokenID == "" {
+		return tokenID
+	}
+	if strings.HasPrefix(tokenID, "0x") || strings.HasPrefix(tokenID, "0X") {
+		return strings.ToLower(tokenID)
+	}
+	if bi, ok := new(big.Int).SetString(tokenID, 10); ok {
+		return fmt.Sprintf("0x%s", strings.ToLower(bi.Text(16)))
+	}
+	return tokenID
 }
 
 func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []models.Market) {

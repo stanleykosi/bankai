@@ -475,6 +475,10 @@ export function TradeForm({ market }: TradeFormProps) {
     if (!tokenId) {
       throw new Error("Selected outcome does not have a tradable token.");
     }
+    // Normalize tokenId to hex (CLOB expects 0x-prefixed hex asset ids)
+    const tokenIdHex = tokenId.startsWith("0x")
+      ? tokenId
+      : `0x${BigInt(tokenId).toString(16)}`;
 
     // Expiration rules:
     // - GTC/FOK/FAK: 0 (immediate)
@@ -502,7 +506,7 @@ export function TradeForm({ market }: TradeFormProps) {
     const typedData = buildOrderTypedData({
       maker: vaultAddress as `0x${string}`,
       signer: eoaAddress as `0x${string}`,
-      tokenId,
+      tokenId: tokenIdHex,
       price: numericPrice,
       size: numericShares,
       side,
