@@ -354,7 +354,10 @@ func recoverOrderSigner(order *clob.Order) (common.Address, common.Hash, error) 
 
 	pubKey, err := crypto.SigToPub(digest.Bytes(), sigBytes)
 	if err != nil {
-		return common.Address{}, digest, fmt.Errorf("recover failed: %w", err)
+		return common.Address{}, digest, fmt.Errorf(
+			"recover failed: %w (len=%d vRaw=%d vNorm=%d r=%s s=%s digest=%s)",
+			err, len(sigBytes), vRaw, vNorm, r.Text(16), s.Text(16), digest.Hex(),
+		)
 	}
 	return crypto.PubkeyToAddress(*pubKey), digest, nil
 }
