@@ -447,9 +447,16 @@ export function TradeForm({ market }: TradeFormProps) {
     gtdExpirationError,
   ]);
 
-  // Per Polymarket order-utils, raw EOA signatures (type 0) work for most
-  // wallets, including Safe owners; we currently produce raw EOA sigs.
-  const signatureType = 0;
+  const signatureType = useMemo(() => {
+    switch (user?.wallet_type) {
+      case "SAFE":
+        return 2;
+      case "PROXY":
+        return 1;
+      default:
+        return 0;
+    }
+  }, [user?.wallet_type]);
 
   const prepareOrderPayload = async () => {
     if (!eoaAddress || !vaultAddress) {
@@ -470,10 +477,12 @@ export function TradeForm({ market }: TradeFormProps) {
     }
 
     // Expiration rules:
-    // - GTC/FOK/FAK: 0 (immediate)
-    // - GTD: user-provided
+    // - GTD: user-provided (validated above)
+    // - GTC/FOK/FAK: default to now + 1 hour to avoid zero-expiration rejection
     let expirationSeconds =
-      orderType === "GTD" ? gtdExpirationSeconds ?? 0 : 0;
+      orderType === "GTD"
+        ? gtdExpirationSeconds ?? 0
+        : Math.floor(Date.now() / 1000) + 60 * 60;
 
     if (
       orderType === "GTD" &&
