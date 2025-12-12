@@ -21,11 +21,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bankai-project/backend/internal/config"
+	"github.com/bankai-project/backend/internal/logger"
 )
 
 const (
@@ -194,6 +196,41 @@ func (c *Client) sendRequestDecode(ctx context.Context, method, path string, pay
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Debug: surface request context when a 400 occurs to diagnose payload issues.
+	if resp.StatusCode >= 400 {
+		// Build a safe request descriptor
+		uCopy := ""
+		if req != nil && req.URL != nil {
+			uCopy = req.URL.String()
+		}
+		method := ""
+		if req != nil {
+			method = req.Method
+		}
+
+		// Avoid logging secrets; only include owner key for correlation when present.
+		var ownerKey string
+		if payload != nil {
+			if po, ok := payload.(*PostOrderRequest); ok {
+				ownerKey = po.Owner
+			}
+		}
+
+		// For URL clarity, decode path+query only.
+		path := req.URL.Path
+		if req.URL.RawQuery != "" {
+			path = fmt.Sprintf("%s?%s", path, req.URL.RawQuery)
+		}
+		if decoded, derr := url.QueryUnescape(path); derr == nil {
+			path = decoded
+		}
+
+		logger.Error(
+			"CLOB 4xx: status=%d method=%s path=%s owner=%s body=%s",
+			resp.StatusCode, method, path, shortKey(ownerKey), string(respBody),
+		)
 	}
 
 	if resp.StatusCode >= 400 {

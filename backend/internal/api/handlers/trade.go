@@ -407,11 +407,6 @@ func normalizeOrderType(raw clob.OrderType) (clob.OrderType, error) {
 	return normalized, nil
 }
 
-// normalizeSignatureType aligns the signature type with the user's wallet model
-// to match the official Polymarket builder examples:
-// - SAFE vaults use signatureType = 2
-// - PROXY vaults use signatureType = 1
-// - EOAs fall back to the provided value (commonly 0)
 func normalizeSignatureType(user *models.User, order *clob.Order) {
 	if user == nil || order == nil || user.WalletType == nil {
 		return
@@ -422,5 +417,7 @@ func normalizeSignatureType(user *models.User, order *clob.Order) {
 		order.SignatureType = 2
 	case models.WalletTypeProxy:
 		order.SignatureType = 1
+	default:
+		// leave as-is (usually 0 for plain EOA)
 	}
 }
