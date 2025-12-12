@@ -76,7 +76,7 @@ func (s *TradeService) RelayTrade(ctx context.Context, user *models.User, req *c
 
 	// Recover signer locally to pinpoint signature mismatches before hitting CLOB
 	if recov, digest, err := recoverOrderSigner(&req.Order); err != nil {
-		logger.Warn("Order signature recovery failed: %v", err)
+		logger.Info("Order signature recovery failed: %v", err)
 	} else {
 		logger.Info("Order signature recovery: signer=%s recovered=%s digest=%s", req.Order.Signer, recov.Hex(), digest.Hex())
 	}
