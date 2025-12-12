@@ -89,7 +89,8 @@ func (c *Client) GetBook(ctx context.Context, tokenID string) (*BookResponse, er
 	if strings.TrimSpace(tokenID) == "" {
 		return nil, fmt.Errorf("tokenID is required")
 	}
-	u := fmt.Sprintf("/book?tokenId=%s", tokenID)
+	// CLOB expects snake_case token_id for the book endpoint
+	u := fmt.Sprintf("/book?token_id=%s", tokenID)
 
 	var resp BookResponse
 	if err := c.sendRequestDecode(ctx, http.MethodGet, u, nil, &resp, nil); err != nil {
