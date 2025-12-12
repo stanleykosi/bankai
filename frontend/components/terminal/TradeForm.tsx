@@ -447,16 +447,9 @@ export function TradeForm({ market }: TradeFormProps) {
     gtdExpirationError,
   ]);
 
-  const signatureType = useMemo(() => {
-    switch (user?.wallet_type) {
-      case "SAFE":
-        return 2;
-      case "PROXY":
-        return 1;
-      default:
-        return 0;
-    }
-  }, [user?.wallet_type]);
+  // Per Polymarket order-utils, raw EOA signatures (type 0) work for most
+  // wallets, including Safe owners; we currently produce raw EOA sigs.
+  const signatureType = 0;
 
   const prepareOrderPayload = async () => {
     if (!eoaAddress || !vaultAddress) {

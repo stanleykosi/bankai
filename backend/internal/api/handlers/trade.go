@@ -408,16 +408,10 @@ func normalizeOrderType(raw clob.OrderType) (clob.OrderType, error) {
 }
 
 func normalizeSignatureType(user *models.User, order *clob.Order) {
-	if user == nil || order == nil || user.WalletType == nil {
+	if order == nil {
 		return
 	}
-
-	switch *user.WalletType {
-	case models.WalletTypeSafe:
-		order.SignatureType = 2
-	case models.WalletTypeProxy:
-		order.SignatureType = 1
-	default:
-		// leave as-is (usually 0 for plain EOA)
-	}
+	// Use raw EOA-style signatures for all orders (per order-utils: type 0 works
+	// for most wallets, including Safe owners; we are producing raw EOA sigs).
+	order.SignatureType = 0
 }
