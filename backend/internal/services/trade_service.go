@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -56,6 +57,11 @@ func (s *TradeService) RelayTrade(ctx context.Context, user *models.User, req *c
 
 	if !strings.EqualFold(strings.TrimSpace(req.Order.Maker), strings.TrimSpace(user.VaultAddress)) {
 		return nil, fmt.Errorf("order maker %s does not match vault %s", req.Order.Maker, user.VaultAddress)
+	}
+
+	// 0. Basic numeric validations against market metadata (tick size, min size).
+	if err := s.validateOrderAmounts(ctx, &req.Order); err != nil {
+		return nil, fmt.Errorf("invalid order payload (amounts): %w", err)
 	}
 
 	// 1. Derive/obtain the user's API credentials (do not persist).
@@ -169,6 +175,87 @@ func (s *TradeService) persistOrder(ctx context.Context, user *models.User, req 
 	}
 
 	return s.DB.WithContext(ctx).Create(&order).Error
+}
+
+// validateOrderAmounts checks price/size alignment to market tick & min-size rules to catch payload issues pre-flight.
+func (s *TradeService) validateOrderAmounts(ctx context.Context, order *clob.Order) error {
+	if order == nil {
+		return errors.New("order is nil")
+	}
+
+	// Fetch minimal market metadata for tick/min size and neg-risk context.
+	var market models.Market
+	var hasMarket bool
+	if err := s.DB.WithContext(ctx).
+		Where("token_id_yes = ? OR token_id_no = ?", order.TokenID, order.TokenID).
+		First(&market).Error; err == nil {
+		hasMarket = true
+	}
+
+	// Parse amounts (all are integer strings representing 1e6 base units).
+	makerAmt, err := strconv.ParseFloat(order.MakerAmount, 64)
+	if err != nil {
+		return fmt.Errorf("makerAmount parse: %w", err)
+	}
+	takerAmt, err := strconv.ParseFloat(order.TakerAmount, 64)
+	if err != nil {
+		return fmt.Errorf("takerAmount parse: %w", err)
+	}
+	if makerAmt <= 0 || takerAmt <= 0 {
+		return fmt.Errorf("maker/taker amounts must be > 0")
+	}
+
+	// Compute price from amounts (shares priced in USDC, 1e6 decimals).
+	var price float64
+	switch order.Side {
+	case clob.BUY:
+		price = makerAmt / takerAmt
+	case clob.SELL:
+		price = takerAmt / makerAmt
+	default:
+		return fmt.Errorf("unsupported side %s", order.Side)
+	}
+
+	// Default tick sizes and min-size if we lack metadata.
+	tickSize := 0.01
+	minSize := 1.0
+	if hasMarket {
+		if market.OrderPriceMinTickSize > 0 {
+			tickSize = market.OrderPriceMinTickSize
+		}
+		if market.OrderMinSize > 0 {
+			minSize = market.OrderMinSize
+		}
+	}
+
+	// Validate min size (shares are taker for BUY, maker for SELL, measured in full units not atomic).
+	shares := takerAmt / 1e6
+	if order.Side == clob.SELL {
+		shares = makerAmt / 1e6
+	}
+	if shares < minSize {
+		return fmt.Errorf("size %.4f below min size %.4f", shares, minSize)
+	}
+
+	// Validate price range and tick.
+	if price <= 0 || price >= 1 {
+		return fmt.Errorf("price %.6f out of bounds (0,1)", price)
+	}
+	if !isOnTick(price, tickSize) {
+		return fmt.Errorf("price %.6f not aligned to tick %.4f", price, tickSize)
+	}
+
+	return nil
+}
+
+// isOnTick returns true if value is within a tiny epsilon of tick grid.
+func isOnTick(val, tick float64) bool {
+	if tick <= 0 {
+		return true
+	}
+	steps := val / tick
+	nearest := math.Round(steps)
+	return math.Abs(steps-nearest) < 1e-6
 }
 
 func mapClobStatus(resp *clob.PostOrderResponse, orderType clob.OrderType) models.OrderStatus {

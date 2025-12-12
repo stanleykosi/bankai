@@ -225,6 +225,19 @@ export function TradeForm({ market }: TradeFormProps) {
   const selectedOutcomeLabel = selectedOutcome?.label ?? "Outcome";
   const hasBatchOrders = batchOrders.length > 0;
 
+  // Market rule metadata
+  const tickSize = useMemo(() => {
+    const raw = market?.order_price_min_tick;
+    if (typeof raw === "number" && raw > 0) return raw;
+    return 0.01; // Polymarket default tick if not provided
+  }, [market?.order_price_min_tick]);
+
+  const minSize = useMemo(() => {
+    const raw = market?.order_min_size;
+    if (typeof raw === "number" && raw > 0) return raw;
+    return 1; // 1 share fallback
+  }, [market?.order_min_size]);
+
   const gtdExpirationSeconds = useMemo(() => {
     if (orderType !== "GTD" || !gtdExpiration) return null;
     const parsed = Date.parse(gtdExpiration);
@@ -397,11 +410,22 @@ export function TradeForm({ market }: TradeFormProps) {
   const insufficientBalance =
     side === "BUY" && totalCost > currentBalance && currentBalance > 0;
 
+  const onTick = useMemo(() => {
+    if (!numericPrice || tickSize <= 0) return true;
+    const steps = numericPrice / tickSize;
+    return Math.abs(steps - Math.round(steps)) < 1e-6;
+  }, [numericPrice, tickSize]);
+
+  const sizeTooSmall = useMemo(() => {
+    return numericShares > 0 && numericShares < minSize;
+  }, [numericShares, minSize]);
+
   const canSubmit = useMemo(() => {
     if (!isAuthenticated || !eoaAddress || !vaultAddress) return false;
     if (!selectedOutcome?.tokenId) return false;
     if (numericPrice <= 0 || numericPrice >= 1) return false;
-    if (numericShares <= 0) return false;
+    if (!onTick) return false;
+    if (numericShares <= 0 || sizeTooSmall) return false;
     if (isBusy) return false;
     if (gtdExpirationError) return false;
     if (side === "BUY" && totalCost > currentBalance && currentBalance > 0)
@@ -412,7 +436,9 @@ export function TradeForm({ market }: TradeFormProps) {
     eoaAddress,
     vaultAddress,
     numericPrice,
+    onTick,
     numericShares,
+    sizeTooSmall,
     isBusy,
     side,
     totalCost,
@@ -420,6 +446,17 @@ export function TradeForm({ market }: TradeFormProps) {
     selectedOutcome?.tokenId,
     gtdExpirationError,
   ]);
+
+  const signatureType = useMemo(() => {
+    switch (user?.wallet_type) {
+      case "SAFE":
+        return 2;
+      case "PROXY":
+        return 1;
+      default:
+        return 0;
+    }
+  }, [user?.wallet_type]);
 
   const prepareOrderPayload = async () => {
     if (!eoaAddress || !vaultAddress) {
@@ -479,10 +516,6 @@ export function TradeForm({ market }: TradeFormProps) {
       primaryType: typedData.primaryType,
       message: typedData.message,
     });
-
-    // Use raw EOA signature type (0); Polymarket accepts this even for proxy/safe-backed vaults
-    // when the EIP-712 signature is produced by the EOA.
-    const signatureType = 0;
 
     const orderPayload: SerializedOrderPayload = {
       salt: typedData.message.salt.toString(),

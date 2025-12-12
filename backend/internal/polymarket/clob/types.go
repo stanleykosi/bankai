@@ -11,7 +11,6 @@
 package clob
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"

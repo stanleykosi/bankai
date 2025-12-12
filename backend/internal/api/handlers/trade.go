@@ -140,6 +140,9 @@ func (h *TradeHandler) PostTrade(c *fiber.Ctx) error {
 		})
 	}
 
+	// 3a. Normalize signature type based on wallet type (Safe/Proxy need explicit signatureType)
+	normalizeSignatureType(user, &req.Order)
+
 	// 4. Validate Order Structure
 	if err := req.Order.Validate(); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -225,6 +228,7 @@ func (h *TradeHandler) PostBatchTrade(c *fiber.Ctx) error {
 	var batch []*clob.PostOrderRequest
 	var auth *clob.ClobAuthProof
 	for idx, entry := range req.Orders {
+		normalizeSignatureType(user, &entry.Order)
 		if err := entry.Order.Validate(); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": fmt.Sprintf("Order %d invalid: %s", idx, err.Error()),
@@ -401,4 +405,22 @@ func normalizeOrderType(raw clob.OrderType) (clob.OrderType, error) {
 		return "", fmt.Errorf("invalid orderType: %s", raw)
 	}
 	return normalized, nil
+}
+
+// normalizeSignatureType aligns the signature type with the user's wallet model
+// to match the official Polymarket builder examples:
+// - SAFE vaults use signatureType = 2
+// - PROXY vaults use signatureType = 1
+// - EOAs fall back to the provided value (commonly 0)
+func normalizeSignatureType(user *models.User, order *clob.Order) {
+	if user == nil || order == nil || user.WalletType == nil {
+		return
+	}
+
+	switch *user.WalletType {
+	case models.WalletTypeSafe:
+		order.SignatureType = 2
+	case models.WalletTypeProxy:
+		order.SignatureType = 1
+	}
 }
