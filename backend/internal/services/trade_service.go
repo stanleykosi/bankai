@@ -328,11 +328,14 @@ func recoverOrderSigner(order *clob.Order) (common.Address, common.Hash, error) 
 		return common.Address{}, digest, fmt.Errorf("invalid signature hex: %w", err)
 	}
 	if len(sigBytes) != 65 {
-		return common.Address{}, digest, fmt.Errorf("invalid signature length: %d", len(sigBytes))
+		return common.Address{}, digest, fmt.Errorf("invalid signature length: %d (expected 65)", len(sigBytes))
 	}
-	// go-ethereum expects V as 27/28
-	if sigBytes[64] < 27 {
+	// go-ethereum expects V as 27/28; frontend typically emits 0/1
+	if sigBytes[64] == 0 || sigBytes[64] == 1 {
 		sigBytes[64] += 27
+	}
+	if sigBytes[64] != 27 && sigBytes[64] != 28 {
+		return common.Address{}, digest, fmt.Errorf("invalid recovery id (v): %d", sigBytes[64])
 	}
 
 	pubKey, err := crypto.SigToPub(digest.Bytes(), sigBytes)
@@ -369,6 +372,9 @@ func padAddress(addr common.Address) []byte {
 
 func hexToBytes(sig string) ([]byte, error) {
 	s := strings.TrimPrefix(sig, "0x")
+	if len(s)%2 == 1 {
+		s = "0" + s
+	}
 	return hex.DecodeString(s)
 }
 
