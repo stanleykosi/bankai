@@ -304,7 +304,7 @@ func recoverOrderSigner(order *clob.Order) (common.Address, common.Hash, error) 
 
 	structHash := crypto.Keccak256Hash(
 		typeHashOrder.Bytes(),
-		padBig(order.Salt),
+		padBig(order.Salt.String()),
 		padAddress(common.HexToAddress(order.Maker)),
 		padAddress(common.HexToAddress(order.Signer)),
 		padAddress(common.HexToAddress(order.Taker)),

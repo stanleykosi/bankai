@@ -11,8 +11,10 @@
 package clob
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -56,22 +58,63 @@ var (
 	}
 )
 
+// SaltNumber represents a salt value that must be sent as a JSON number (not string) to match Polymarket CLOB API.
+// It unmarshals from JSON number and marshals to JSON number.
+type SaltNumber struct {
+	value string // stored as string for precision, but marshaled as number
+}
+
+// UnmarshalJSON implements json.Unmarshaler to accept both JSON number and JSON string
+func (s *SaltNumber) UnmarshalJSON(data []byte) error {
+	// Try to unmarshal as number first
+	var num json.Number
+	if err := json.Unmarshal(data, &num); err == nil {
+		s.value = string(num)
+		return nil
+	}
+	// Fallback to string for backward compatibility
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return fmt.Errorf("salt must be a number or string: %w", err)
+	}
+	s.value = str
+	return nil
+}
+
+// MarshalJSON implements json.Marshaler to always output as JSON number
+func (s SaltNumber) MarshalJSON() ([]byte, error) {
+	// Try int64 first for better precision with large integers
+	if intNum, err := strconv.ParseInt(s.value, 10, 64); err == nil {
+		return json.Marshal(intNum)
+	}
+	// Fallback to float64 for very large numbers (may lose precision, but matches official client behavior)
+	if floatNum, err := strconv.ParseFloat(s.value, 64); err == nil {
+		return json.Marshal(floatNum)
+	}
+	return nil, fmt.Errorf("invalid salt value: %s", s.value)
+}
+
+// String returns the string representation of the salt
+func (s SaltNumber) String() string {
+	return s.value
+}
+
 // Order represents the signed EIP-712 order structure
 // JSON tags use camelCase for unmarshaling from frontend
 type Order struct {
-	Salt          string    `json:"salt"`
-	Maker         string    `json:"maker"`
-	Signer        string    `json:"signer"`
-	Taker         string    `json:"taker"`
-	TokenID       string    `json:"tokenId"`       // camelCase for frontend
-	MakerAmount   string    `json:"makerAmount"`   // camelCase for frontend
-	TakerAmount   string    `json:"takerAmount"`   // camelCase for frontend
-	Expiration    string    `json:"expiration"`
-	Nonce         string    `json:"nonce"`
-	FeeRateBps    string    `json:"feeRateBps"`   // camelCase for frontend
-	Side          OrderSide `json:"side"`
-	SignatureType int       `json:"signatureType"` // camelCase for frontend
-	Signature     string    `json:"signature"`
+	Salt          SaltNumber `json:"salt"`
+	Maker         string     `json:"maker"`
+	Signer        string     `json:"signer"`
+	Taker         string     `json:"taker"`
+	TokenID       string     `json:"tokenId"`     // camelCase for frontend
+	MakerAmount   string     `json:"makerAmount"` // camelCase for frontend
+	TakerAmount   string     `json:"takerAmount"` // camelCase for frontend
+	Expiration    string     `json:"expiration"`
+	Nonce         string     `json:"nonce"`
+	FeeRateBps    string     `json:"feeRateBps"` // camelCase for frontend
+	Side          OrderSide  `json:"side"`
+	SignatureType int        `json:"signatureType"` // camelCase for frontend
+	Signature     string     `json:"signature"`
 }
 
 // Validate ensures the Order struct contains the properties required by the CLOB API.
@@ -81,7 +124,7 @@ func (o *Order) Validate() error {
 	}
 
 	requiredFields := map[string]string{
-		"salt":        o.Salt,
+		"salt":        o.Salt.String(),
 		"maker":       o.Maker,
 		"signer":      o.Signer,
 		"taker":       o.Taker,

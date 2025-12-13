@@ -101,7 +101,7 @@ const toDateTimeLocalValue = (date: Date) => {
 };
 
 type SerializedOrderPayload = {
-  salt: string;
+  salt: number; // Must be number (not string) to match Polymarket CLOB API
   maker: `0x${string}`;
   signer: `0x${string}`;
   taker: `0x${string}`;
@@ -519,8 +519,12 @@ export function TradeForm({ market }: TradeFormProps) {
       message: typedData.message,
     });
 
+    // Convert bigint salt to number (matching official Polymarket client's parseInt)
+    // Note: May lose precision for very large salts, but matches official client behavior
+    const saltNumber = Number(typedData.message.salt);
+
     const orderPayload: SerializedOrderPayload = {
-      salt: typedData.message.salt.toString(),
+      salt: saltNumber,
       maker: typedData.message.maker,
       signer: typedData.message.signer,
       taker: typedData.message.taker,
