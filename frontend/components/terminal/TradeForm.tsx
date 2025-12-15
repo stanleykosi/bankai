@@ -589,6 +589,14 @@ export function TradeForm({ market }: TradeFormProps) {
         );
       }
 
+      const responseError =
+        (response as any)?.error ||
+        (response as any)?.data?.error ||
+        (response as any)?.message;
+      if (responseError) {
+        throw new Error(responseError);
+      }
+
       if (response.orderID) {
         setSuccessMsg(
           `Order placed for ${side} ${selectedOutcomeLabel}!`
@@ -612,7 +620,9 @@ export function TradeForm({ market }: TradeFormProps) {
         });
         setTimeout(() => refreshUser(), 1500);
       } else {
-        throw new Error("Order submission failed - no order ID returned");
+        throw new Error(
+          responseError || "Order submission failed - no order ID returned"
+        );
       }
     } catch (err: any) {
       console.error("Trade failed:", err);

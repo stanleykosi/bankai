@@ -17,7 +17,7 @@ const walletConnectProjectId =
 
 // Use a reliable public RPC endpoint for Polygon
 // This ensures Phantom Wallet and other wallets can properly switch chains
-const polygonRpcUrl = process.env.NEXT_PUBLIC_POLYGON_RPC_URL || 
+const polygonRpcUrl = process.env.NEXT_PUBLIC_POLYGON_RPC_URL ||
   "https://polygon-rpc.com";
 
 export const config = createConfig({
@@ -29,11 +29,11 @@ export const config = createConfig({
     injected({ shimDisconnect: true }),
     ...(walletConnectProjectId
       ? [
-          walletConnect({
-            projectId: walletConnectProjectId,
-            showQrModal: true,
-          }),
-        ]
+        walletConnect({
+          projectId: walletConnectProjectId,
+          showQrModal: true,
+        }),
+      ]
       : []),
   ],
   ssr: true,

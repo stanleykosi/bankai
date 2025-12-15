@@ -9,7 +9,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WagmiProvider } from "wagmi";
 import { config } from "@/lib/web3";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { installLogRedaction } from "@/lib/logRedaction";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   // Create QueryClient instance with default options
@@ -25,6 +26,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
       })
   );
 
+  // Install once on client to avoid leaking credentials in console logs
+  useEffect(() => {
+    installLogRedaction();
+  }, []);
+
   return (
     <WagmiProvider config={config}>
       <QueryClientProvider client={queryClient}>
@@ -33,4 +39,3 @@ export function Providers({ children }: { children: React.ReactNode }) {
     </WagmiProvider>
   );
 }
-
