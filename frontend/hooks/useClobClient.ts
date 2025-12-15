@@ -17,7 +17,31 @@ import { POLYGON_CHAIN_ID } from "@/lib/polymarket";
 import type { UserApiCredentials } from "./useUserApiCredentials";
 
 const CLOB_API_URL = "https://clob.polymarket.com";
-const REMOTE_SIGNING_URL = "/api/polymarket/sign";
+
+// Builder signing SDK requires an absolute remote URL (must start with http/https)
+// Derive it from window location when available, or fall back to deployment hints during SSR.
+const getRemoteSigningUrl = () => {
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return `${window.location.origin}/api/polymarket/sign`;
+  }
+
+  const envUrl =
+    process.env.NEXT_PUBLIC_VERCEL_URL ||
+    process.env.VERCEL_URL ||
+    process.env.RAILWAY_PUBLIC_DOMAIN ||
+    process.env.RAILWAY_STATIC_URL;
+
+  if (envUrl) {
+    const trimmed = envUrl.replace(/\/+$/, "");
+    const base = trimmed.startsWith("http")
+      ? trimmed
+      : `https://${trimmed.replace(/^\/+/, "")}`;
+    return `${base}/api/polymarket/sign`;
+  }
+
+  // Sensible local fallback for SSR (useful in dev or static export)
+  return "http://localhost:3000/api/polymarket/sign";
+};
 
 export interface UseClobClientParams {
   credentials: UserApiCredentials | null;
@@ -47,10 +71,16 @@ export function useClobClient({
       // Convert wagmi signer to ethers signer for SDK
       const ethersSigner = walletClientToEthersSigner(walletClient);
 
+      const remoteSigningUrl = getRemoteSigningUrl();
+      if (!remoteSigningUrl) {
+        console.error("Remote builder signing URL unavailable");
+        return null;
+      }
+
       // Builder config with remote server signing for order attribution
       const builderConfig = new BuilderConfig({
         remoteBuilderConfig: {
-          url: REMOTE_SIGNING_URL,
+          url: remoteSigningUrl,
         },
       });
 
@@ -91,4 +121,3 @@ export function useClobClient({
 
   return { clobClient };
 }
-

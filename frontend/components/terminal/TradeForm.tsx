@@ -42,7 +42,7 @@ import { useBalance } from "@/hooks/useBalance";
 import { useUserApiCredentials } from "@/hooks/useUserApiCredentials";
 import { useClobClient } from "@/hooks/useClobClient";
 import { Side, OrderType } from "@polymarket/clob-client";
-import type { UserOrder } from "@polymarket/clob-client";
+import type { UserOrder, UserMarketOrder } from "@polymarket/clob-client";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { fetchDepthEstimate } from "@/lib/market-data";
@@ -549,22 +549,45 @@ export function TradeForm({ market }: TradeFormProps) {
       // Check if neg risk market
       const isNegRisk = market?.neg_risk || market?.neg_risk_other;
 
-      // Create order using SDK (handles signing and submission)
-      const limitOrder: UserOrder = {
-        tokenID: tokenId,
-        price: numericPrice,
-        size: numericShares,
-        side: sdkSide,
-        feeRateBps: 0,
-        expiration,
-        taker: "0x0000000000000000000000000000000000000000",
-      };
+      // Handle limit orders (GTC/GTD) vs market orders (FOK/FAK)
+      const isLimitOrder = orderType === "GTC" || orderType === "GTD";
+      let response;
 
-      const response = await currentClient.createAndPostOrder(
-        limitOrder,
-        { negRisk: isNegRisk },
-        sdkOrderType
-      );
+      if (isLimitOrder) {
+        // Create limit order using SDK (handles signing and submission)
+        const limitOrder: UserOrder = {
+          tokenID: tokenId,
+          price: numericPrice,
+          size: numericShares,
+          side: sdkSide,
+          feeRateBps: 0,
+          expiration,
+          taker: "0x0000000000000000000000000000000000000000",
+        };
+
+        response = await currentClient.createAndPostOrder(
+          limitOrder,
+          { negRisk: isNegRisk },
+          sdkOrderType as OrderType.GTC | OrderType.GTD
+        );
+      } else {
+        // Create market order using SDK (handles signing and submission)
+        // For BUY orders: amount is in $$$, for SELL orders: amount is in shares
+        const marketOrder: UserMarketOrder = {
+          tokenID: tokenId,
+          price: numericPrice > 0 ? numericPrice : undefined, // Optional for market orders
+          amount: side === "BUY" ? numericPrice * numericShares : numericShares,
+          side: sdkSide,
+          feeRateBps: 0,
+          taker: "0x0000000000000000000000000000000000000000",
+        };
+
+        response = await currentClient.createAndPostMarketOrder(
+          marketOrder,
+          { negRisk: isNegRisk },
+          sdkOrderType as OrderType.FOK | OrderType.FAK
+        );
+      }
 
       if (response.orderID) {
         setSuccessMsg(
@@ -645,7 +668,7 @@ export function TradeForm({ market }: TradeFormProps) {
             side: sdkSide,
             expiration,
             orderType: sdkOrderType,
-            isNegRisk: market?.neg_risk || market?.neg_risk_other,
+            isNegRisk: !!(market?.neg_risk || market?.neg_risk_other),
           },
           summary: {
             outcomeLabel: selectedOutcomeLabel,
@@ -697,20 +720,41 @@ export function TradeForm({ market }: TradeFormProps) {
       // Submit each order in the batch using SDK
       const results = await Promise.allSettled(
         batchOrders.map((entry) => {
-          const limitOrder: UserOrder = {
-            tokenID: entry.orderParams.tokenId,
-            price: entry.orderParams.price,
-            size: entry.orderParams.size,
-            side: entry.orderParams.side,
-            feeRateBps: 0,
-            expiration: entry.orderParams.expiration,
-            taker: "0x0000000000000000000000000000000000000000",
-          };
-          return currentClient.createAndPostOrder(
-            limitOrder,
-            { negRisk: entry.orderParams.isNegRisk },
-            entry.orderParams.orderType
-          );
+          const isLimitOrder = entry.orderParams.orderType === OrderType.GTC || entry.orderParams.orderType === OrderType.GTD;
+          
+          if (isLimitOrder) {
+            const limitOrder: UserOrder = {
+              tokenID: entry.orderParams.tokenId,
+              price: entry.orderParams.price,
+              size: entry.orderParams.size,
+              side: entry.orderParams.side,
+              feeRateBps: 0,
+              expiration: entry.orderParams.expiration,
+              taker: "0x0000000000000000000000000000000000000000",
+            };
+            return currentClient.createAndPostOrder(
+              limitOrder,
+              { negRisk: entry.orderParams.isNegRisk },
+              entry.orderParams.orderType as OrderType.GTC | OrderType.GTD
+            );
+          } else {
+            // For market orders: BUY uses $$$ amount, SELL uses shares
+            const marketOrder: UserMarketOrder = {
+              tokenID: entry.orderParams.tokenId,
+              price: entry.orderParams.price > 0 ? entry.orderParams.price : undefined,
+              amount: entry.orderParams.side === Side.BUY 
+                ? entry.orderParams.price * entry.orderParams.size 
+                : entry.orderParams.size,
+              side: entry.orderParams.side,
+              feeRateBps: 0,
+              taker: "0x0000000000000000000000000000000000000000",
+            };
+            return currentClient.createAndPostMarketOrder(
+              marketOrder,
+              { negRisk: entry.orderParams.isNegRisk },
+              entry.orderParams.orderType as OrderType.FOK | OrderType.FAK
+            );
+          }
         })
       );
 
@@ -1201,7 +1245,7 @@ export function TradeForm({ market }: TradeFormProps) {
                     </span>
                     <span className="text-[10px] text-muted-foreground">
                       {entry.summary.shares} @{" "}
-                      {(entry.summary.price || 0).toFixed(2)} • {entry.orderType}
+                      {(entry.summary.price || 0).toFixed(2)} • {entry.orderParams.orderType}
                     </span>
                   </div>
                   <Button

@@ -27,12 +27,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { method, path, body } = await request.json();
-    const sigTimestamp = Date.now().toString();
+    const { method, path, body, timestamp } = await request.json();
+    
+    // Timestamp should be in seconds (Unix timestamp), not milliseconds
+    // If provided, use it; otherwise generate current time in seconds
+    const sigTimestamp = timestamp !== undefined 
+      ? Math.floor(timestamp) 
+      : Math.floor(Date.now() / 1000);
 
     const signature = buildHmacSignature(
       BUILDER_CREDENTIALS.secret,
-      parseInt(sigTimestamp),
+      sigTimestamp,
       method,
       path,
       body
@@ -40,7 +45,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       POLY_BUILDER_SIGNATURE: signature,
-      POLY_BUILDER_TIMESTAMP: sigTimestamp,
+      POLY_BUILDER_TIMESTAMP: `${sigTimestamp}`,
       POLY_BUILDER_API_KEY: BUILDER_CREDENTIALS.key,
       POLY_BUILDER_PASSPHRASE: BUILDER_CREDENTIALS.passphrase,
     });

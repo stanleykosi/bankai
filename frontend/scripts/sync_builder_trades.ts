@@ -12,7 +12,7 @@
  *   bun run scripts/sync_builder_trades.ts
  */
 
-import { ClobClient, OrderType, Side, Trade } from "@polymarket/clob-client";
+import { ClobClient, OrderType, Side, BuilderTrade } from "@polymarket/clob-client";
 import { BuilderApiKeyCreds, BuilderConfig } from "@polymarket/builder-signing-sdk";
 import axios from "axios";
 
@@ -33,26 +33,26 @@ if (!BUILDER_CREDENTIALS.key || !BUILDER_CREDENTIALS.secret || !BUILDER_CREDENTI
   throw new Error("POLY_BUILDER_API_KEY/SECRET/PASSPHRASE are required");
 }
 
-function mapTradeToPayload(trade: Trade) {
-  const toDate = (val?: string) =>
+function mapTradeToPayload(trade: BuilderTrade) {
+  const toDate = (val?: string | null) =>
     val && !Number.isNaN(Date.parse(val)) ? new Date(val).toISOString() : new Date().toISOString();
 
   return {
     orderId: trade.id,
     marketId: trade.market || "",
-    outcome: trade.outcome || trade.asset_id || "",
-    outcomeTokenId: trade.asset_id || "",
-    makerAddress: trade.maker_address || trade.owner || "",
-    side: trade.side === Side.SELL ? "SELL" : "BUY",
+    outcome: trade.outcome || trade.assetId || "",
+    outcomeTokenId: trade.assetId || "",
+    makerAddress: trade.maker || trade.owner || "",
+    side: trade.side === "SELL" || trade.side === Side.SELL ? "SELL" : "BUY",
     price: Number(trade.price || 0),
     size: Number(trade.size || 0),
     orderType: OrderType.FOK,
     status: trade.status || "FILLED",
     statusDetail: trade.status || "",
-    orderHashes: trade.associate_trades || [],
+    orderHashes: trade.takerOrderHash ? [trade.takerOrderHash] : [],
     source: "BANKAI",
-    createdAt: toDate(trade.match_time),
-    updatedAt: toDate(trade.last_update),
+    createdAt: toDate(trade.createdAt || trade.matchTime),
+    updatedAt: toDate(trade.updatedAt || trade.matchTime),
   };
 }
 
@@ -73,8 +73,10 @@ async function main() {
     builderConfig
   );
 
-  const trades = await client.getBuilderTrades();
-  if (!trades || trades.length === 0) {
+  const raw = await client.getBuilderTrades();
+  // Some SDK versions return { trades, next_cursor, ... }
+  const trades = Array.isArray(raw) ? raw : raw?.trades || [];
+  if (!Array.isArray(trades) || trades.length === 0) {
     console.log("No builder trades found");
     return;
   }
