@@ -5,12 +5,12 @@ FROM oven/bun:1.3 as base
 
 WORKDIR /app/frontend
 
-# Install deps (only frontend needed for SDKs)
-COPY frontend/package.json frontend/bun.lock ./ 
+# Install deps (frontend holds the Polymarket SDK deps)
+COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
 # Copy frontend code (includes scripts/)
-COPY frontend ./ 
+COPY . .
 
 # Default command runs the sync job once; Railway cron can invoke this image on a schedule
 CMD ["bun", "run", "scripts/sync_builder_trades.ts"]
