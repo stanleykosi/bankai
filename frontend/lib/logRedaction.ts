@@ -4,6 +4,8 @@
  * serialize headers). Only string arguments are processed.
  */
 let installed = false;
+let originalError: typeof console.error | null = null;
+let originalWarn: typeof console.warn | null = null;
 
 const redactString = (input: string) => {
   // Redact POLY_* headers and similar credential-looking values
@@ -37,15 +39,23 @@ const redactArg = (arg: any) => {
 export const installLogRedaction = () => {
   if (installed || typeof console === "undefined") return;
 
+  // Capture originals once to avoid recursive calls
+  originalError = console.error.bind(console);
+  originalWarn = console.warn.bind(console);
+
   const wrap =
-    (method: "error" | "warn") =>
+    (orig: (...a: any[]) => void) =>
     (...args: any[]) => {
-      const orig = (console as any)[method] as (...a: any[]) => void;
-      orig(...args.map(redactArg));
+      try {
+        orig(...args.map(redactArg));
+      } catch {
+        // In case redaction itself fails, fall back to the original log
+        orig(...args);
+      }
     };
 
-  console.error = wrap("error") as typeof console.error;
-  console.warn = wrap("warn") as typeof console.warn;
+  console.error = wrap(originalError) as typeof console.error;
+  console.warn = wrap(originalWarn) as typeof console.warn;
 
   installed = true;
 };
