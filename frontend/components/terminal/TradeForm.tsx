@@ -46,6 +46,7 @@ import type { UserOrder, UserMarketOrder } from "@polymarket/clob-client";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { fetchDepthEstimate } from "@/lib/market-data";
+import { ensurePolygonChain } from "@/lib/chain-utils";
 import type { DepthEstimate, Market } from "@/types";
 
 interface TradeFormProps {
@@ -500,13 +501,12 @@ export function TradeForm({ market }: TradeFormProps) {
         throw new Error("Wallet not connected or vault not deployed.");
       }
 
-      if (chainId !== polygon.id) {
-        if (switchChainAsync) {
-          await switchChainAsync({ chainId: polygon.id });
-        } else {
-          throw new Error("Switch wallet to Polygon (137) before trading.");
-        }
-      }
+      // Ensure we're on Polygon network before proceeding
+      // This is critical for Phantom Wallet which validates chainId in EIP-712 signatures
+      await ensurePolygonChain(
+        () => chainId,
+        switchChainAsync
+      );
 
       const tokenId = selectedOutcome?.tokenId;
       if (!tokenId) {

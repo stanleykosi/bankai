@@ -19,6 +19,7 @@ import { polygon } from "viem/chains";
 import { useAccount, useSignTypedData, useSwitchChain } from "wagmi";
 
 import { api } from "@/lib/api";
+import { ensurePolygonChain } from "@/lib/chain-utils";
 import type { SafeCreateTypedData, VaultDeploymentResult } from "@/types/vault";
 
 interface UseVaultDeploymentArgs {
@@ -116,15 +117,27 @@ export function useVaultDeployment({
       }
 
       setDeploymentStep("checkingNetwork");
+      // Ensure we're on Polygon network before proceeding
+      // This is critical for Phantom Wallet which validates chainId in EIP-712 signatures
       if (walletChainId !== polygon.id) {
         setDeploymentStep("switchingNetwork");
-        if (switchChainAsync) {
-          await switchChainAsync({ chainId: polygon.id });
+        try {
+          await ensurePolygonChain(
+            () => walletChainId,
+            switchChainAsync
+          );
+          // Chain switch completed, but we need to wait for React state to update
+          // Return and let the user retry (or we could auto-retry)
           autoTriggeredRef.current = false;
           setIsDeploying(false);
           return;
+        } catch (error: any) {
+          // If chain switch failed, stop deployment
+          autoTriggeredRef.current = false;
+          setIsDeploying(false);
+          setDeployError(error.message || "Failed to switch to Polygon network");
+          return;
         }
-        throw new Error("Switch wallet to Polygon before deploying");
       }
 
       setDeploymentStep("awaitingSignature");
