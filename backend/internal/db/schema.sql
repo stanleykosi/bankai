@@ -179,6 +179,7 @@ CREATE TABLE IF NOT EXISTS orders (
     status VARCHAR(20) DEFAULT 'PENDING', -- PENDING, OPEN, FILLED, CANCELED, FAILED
     
     tx_hash VARCHAR(66), -- If executed on-chain (for redemption/etc, though matching is off-chain)
+    source VARCHAR(16) DEFAULT 'UNKNOWN',
     
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -186,6 +187,7 @@ CREATE TABLE IF NOT EXISTS orders (
 
 CREATE INDEX idx_orders_user ON orders(user_id);
 CREATE INDEX idx_orders_status ON orders(status);
+CREATE INDEX idx_orders_source ON orders(source);
 
 -- 5. AI Analysis Cache (Optional/Advanced)
 -- Stores RAG results to avoid re-querying expensive LLMs for same market
@@ -195,4 +197,3 @@ CREATE TABLE IF NOT EXISTS market_analysis (
     sentiment_score DECIMAL, -- -1.0 to 1.0
     last_updated TIMESTAMPTZ DEFAULT NOW()
 );
-

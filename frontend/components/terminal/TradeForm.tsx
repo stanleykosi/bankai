@@ -18,10 +18,10 @@
 
 "use client";
 
-import React, { useState, useMemo, useEffect, useCallback } from "react";
+import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
-import { useSignTypedData, useAccount, useSwitchChain } from "wagmi";
+import { useAccount, useSwitchChain } from "wagmi";
 import { polygon } from "viem/chains";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -39,8 +39,10 @@ import { WalletConnectButton } from "@/components/wallet/WalletConnectButton";
 import { Input } from "@/components/ui/input";
 import { useWallet } from "@/hooks/useWallet";
 import { useBalance } from "@/hooks/useBalance";
-import { buildOrderTypedData } from "@/lib/signing";
-import { CTF_EXCHANGE_ADDR, NEG_RISK_CTF_EXCHANGE_ADDR } from "@/lib/polymarket";
+import { useUserApiCredentials } from "@/hooks/useUserApiCredentials";
+import { useClobClient } from "@/hooks/useClobClient";
+import { Side, OrderType } from "@polymarket/clob-client";
+import type { UserOrder } from "@polymarket/clob-client";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { fetchDepthEstimate } from "@/lib/market-data";
@@ -100,26 +102,17 @@ const toDateTimeLocalValue = (date: Date) => {
   return local.toISOString().slice(0, 16);
 };
 
-type SerializedOrderPayload = {
-  salt: number; // Must be number (not string) to match Polymarket CLOB API
-  maker: `0x${string}`;
-  signer: `0x${string}`;
-  taker: `0x${string}`;
-  tokenId: string;
-  makerAmount: string;
-  takerAmount: string;
-  expiration: string;
-  nonce: string;
-  feeRateBps: string;
-  side: OrderSide; // "BUY" | "SELL"
-  signatureType: number;
-  signature: string;
-};
-
 type PreparedBatchOrder = {
   id: string;
-  order: SerializedOrderPayload;
-  orderType: OrderTypeValue;
+  orderParams: {
+    tokenId: string;
+    price: number;
+    size: number;
+    side: Side;
+    expiration: number;
+    orderType: OrderType;
+    isNegRisk: boolean;
+  };
   summary: {
     outcomeLabel: string;
     side: OrderSide;
@@ -128,12 +121,6 @@ type PreparedBatchOrder = {
   };
 };
 
-type AuthProof = {
-  address: string;
-  timestamp: string;
-  nonce: number;
-  signature: string;
-};
 
 const formatPriceLabel = (value?: number) => {
   if (typeof value !== "number" || Number.isNaN(value)) {
@@ -161,10 +148,80 @@ export function TradeForm({ market }: TradeFormProps) {
   const { getToken } = useAuth();
   const { user, eoaAddress, isAuthenticated, refreshUser } = useWallet();
   const { data: balanceData, isLoading: isBalanceLoading } = useBalance();
-  const { signTypedDataAsync } = useSignTypedData();
   const { chainId } = useAccount();
   const { switchChainAsync } = useSwitchChain();
   const queryClient = useQueryClient();
+
+  // Get user API credentials for CLOB authentication
+  const {
+    credentials,
+    getCredentials,
+    isLoading: isCredentialsLoading,
+    error: credentialsError,
+  } = useUserApiCredentials();
+
+  // Initialize ClobClient with credentials and builder config
+  const { clobClient } = useClobClient({
+    credentials,
+    vaultAddress: user?.vault_address ?? null,
+    walletType: user?.wallet_type ?? null,
+  });
+
+  const syncOrderToBackend = useCallback(
+    async (order: {
+      orderId: string;
+      marketId: string;
+      outcome: string;
+      outcomeTokenId: string;
+      side: OrderSide;
+      price: number;
+      size: number;
+      orderType: OrderTypeValue;
+      status: string;
+      orderHashes: string[];
+      source: "BANKAI" | "EXTERNAL" | "UNKNOWN";
+      makerAddress?: string | null;
+    }) => {
+      try {
+        const token = await getToken();
+        if (!token) return;
+        await api.post(
+          "/trade/sync",
+          {
+            orders: [
+              {
+                orderId: order.orderId,
+                marketId: order.marketId,
+                outcome: order.outcome,
+                outcomeTokenId: order.outcomeTokenId,
+                side: order.side,
+                price: order.price,
+                size: order.size,
+                orderType: order.orderType,
+                status: order.status,
+                statusDetail: order.status,
+                orderHashes: order.orderHashes,
+                source: order.source,
+                makerAddress: order.makerAddress ?? "",
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              },
+            ],
+          },
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+      } catch (err) {
+        console.error("Failed to sync order to backend", err);
+      }
+    },
+    [getToken]
+  );
+
+  // Use ref to track latest clobClient (avoids stale closure issues)
+  const clobClientRef = useRef(clobClient);
+  useEffect(() => {
+    clobClientRef.current = clobClient;
+  }, [clobClient]);
 
   const [side, setSide] = useState<OrderSide>("BUY");
   const [orderType, setOrderType] = useState<OrderTypeValue>("GTC");
@@ -256,42 +313,6 @@ export function TradeForm({ market }: TradeFormProps) {
     return null;
   }, [orderType, gtdExpiration, gtdExpirationSeconds]);
 
-  const fetchClobAuthProof = useCallback(
-    async (token: string): Promise<AuthProof> => {
-      if (!token) throw new Error("Wallet authentication required.");
-
-      const { data } = await api.get("/trade/auth/typed-data", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      const authTypedData = {
-        domain: data.domain,
-        types: data.types,
-        primaryType: "ClobAuth" as const,
-        message: {
-          address: data.address as `0x${string}`,
-          timestamp: data.timestamp as string,
-          nonce: data.nonce as number,
-          message: data.message as string,
-        },
-      };
-
-      const signature = await signTypedDataAsync({
-        domain: authTypedData.domain,
-        types: authTypedData.types,
-        primaryType: authTypedData.primaryType,
-        message: authTypedData.message,
-      });
-
-      return {
-        address: data.address,
-        timestamp: data.timestamp,
-        nonce: data.nonce,
-        signature,
-      };
-    },
-    [signTypedDataAsync]
-  );
 
   useEffect(() => {
     if (orderType !== "GTD") {
@@ -447,109 +468,26 @@ export function TradeForm({ market }: TradeFormProps) {
     gtdExpirationError,
   ]);
 
-  const signatureType = useMemo(() => {
-    switch (user?.wallet_type) {
-      case "SAFE":
-        return 2;
-      case "PROXY":
-        return 1;
+  // Map our order type to SDK OrderType enum
+  const sdkOrderType = useMemo(() => {
+    switch (orderType) {
+      case "GTC":
+        return OrderType.GTC;
+      case "GTD":
+        return OrderType.GTD;
+      case "FOK":
+        return OrderType.FOK;
+      case "FAK":
+        return OrderType.FAK;
       default:
-        return 0;
+        return OrderType.GTC;
     }
-  }, [user?.wallet_type]);
+  }, [orderType]);
 
-  const prepareOrderPayload = async () => {
-    if (!eoaAddress || !vaultAddress) {
-      throw new Error("Wallet not connected or vault not deployed.");
-    }
-
-    if (chainId !== polygon.id) {
-      if (switchChainAsync) {
-        await switchChainAsync({ chainId: polygon.id });
-      } else {
-        throw new Error("Switch wallet to Polygon (137) before trading.");
-      }
-    }
-
-    const tokenId = selectedOutcome?.tokenId;
-    if (!tokenId) {
-      throw new Error("Selected outcome does not have a tradable token.");
-    }
-
-    // Expiration rules:
-    // - GTD: user-provided (validated above)
-    // - GTC/FOK/FAK: default to now + 1 hour to avoid zero-expiration rejection
-    let expirationSeconds =
-      orderType === "GTD"
-        ? gtdExpirationSeconds ?? 0
-        : Math.floor(Date.now() / 1000) + 60 * 60;
-
-    if (
-      orderType === "GTD" &&
-      (!gtdExpirationSeconds || gtdExpirationSeconds <= 0)
-    ) {
-      throw new Error(
-        gtdExpirationError ??
-        "Invalid expiration provided for GTD order. Choose a timestamp at least 90 seconds from now."
-      );
-    }
-
-    // Maker is always the vault; signer is the EOA
-    const isNegRisk = market?.neg_risk || market?.neg_risk_other;
-
-    const verifyingContract = isNegRisk
-      ? NEG_RISK_CTF_EXCHANGE_ADDR
-      : CTF_EXCHANGE_ADDR;
-
-    const typedData = buildOrderTypedData({
-      maker: vaultAddress as `0x${string}`,
-      signer: eoaAddress as `0x${string}`,
-      tokenId,
-      price: numericPrice,
-      size: numericShares,
-      side,
-      expiration: expirationSeconds,
-      verifyingContract: verifyingContract as `0x${string}`,
-    });
-
-    const signature = await signTypedDataAsync({
-      domain: typedData.domain,
-      types: typedData.types,
-      primaryType: typedData.primaryType,
-      message: typedData.message,
-    });
-
-    // Convert bigint salt to number (matching official Polymarket client's parseInt)
-    // Note: May lose precision for very large salts, but matches official client behavior
-    const saltNumber = Number(typedData.message.salt);
-
-    const orderPayload: SerializedOrderPayload = {
-      salt: saltNumber,
-      maker: typedData.message.maker,
-      signer: typedData.message.signer,
-      taker: typedData.message.taker,
-      tokenId: typedData.message.tokenId.toString(),
-      makerAmount: typedData.message.makerAmount.toString(),
-      takerAmount: typedData.message.takerAmount.toString(),
-      expiration: typedData.message.expiration.toString(),
-      nonce: typedData.message.nonce.toString(),
-      feeRateBps: typedData.message.feeRateBps.toString(),
-      side,
-      signatureType,
-      signature,
-    };
-
-    return {
-      order: orderPayload,
-      orderType,
-      summary: {
-        outcomeLabel: selectedOutcomeLabel,
-        side,
-        price: numericPrice,
-        shares: numericShares,
-      },
-    };
-  };
+  // Map our side to SDK Side enum
+  const sdkSide = useMemo(() => {
+    return side === "BUY" ? Side.BUY : Side.SELL;
+  }, [side]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -558,34 +496,106 @@ export function TradeForm({ market }: TradeFormProps) {
     setIsPlacingOrder(true);
 
     try {
-      const prepared = await prepareOrderPayload();
-      const token = await getToken({ skipCache: true });
-      if (!token) throw new Error("Wallet authentication required.");
-      const auth = await fetchClobAuthProof(token);
+      if (!eoaAddress || !vaultAddress) {
+        throw new Error("Wallet not connected or vault not deployed.");
+      }
 
-      await api.post(
-        "/trade",
-        {
-          order: prepared.order,
-          orderType: prepared.orderType,
-          auth,
-        },
-        {
-          headers: { Authorization: `Bearer ${token}` },
+      if (chainId !== polygon.id) {
+        if (switchChainAsync) {
+          await switchChainAsync({ chainId: polygon.id });
+        } else {
+          throw new Error("Switch wallet to Polygon (137) before trading.");
         }
+      }
+
+      const tokenId = selectedOutcome?.tokenId;
+      if (!tokenId) {
+        throw new Error("Selected outcome does not have a tradable token.");
+      }
+
+      // Ensure we have API credentials before proceeding
+      if (!credentials) {
+        await getCredentials();
+        // Wait for React state update and useClobClient hook to recreate client
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+
+      // Use ref to get latest clobClient (handles state update timing)
+      let currentClient = clobClientRef.current;
+      if (!currentClient && credentials) {
+        // If we have credentials but no client yet, wait a bit more
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        currentClient = clobClientRef.current;
+      }
+
+      if (!currentClient) {
+        throw new Error("Trading client not ready. Please ensure your wallet is connected and try again.");
+      }
+
+      // Calculate expiration
+      // - GTD: user-provided timestamp
+      // - GTC/FOK/FAK: 0 (SDK handles this correctly)
+      let expiration = 0;
+      if (orderType === "GTD") {
+        if (!gtdExpirationSeconds || gtdExpirationSeconds <= 0) {
+          throw new Error(
+            gtdExpirationError ??
+            "Invalid expiration provided for GTD order. Choose a timestamp at least 90 seconds from now."
+          );
+        }
+        expiration = gtdExpirationSeconds;
+      }
+
+      // Check if neg risk market
+      const isNegRisk = market?.neg_risk || market?.neg_risk_other;
+
+      // Create order using SDK (handles signing and submission)
+      const limitOrder: UserOrder = {
+        tokenID: tokenId,
+        price: numericPrice,
+        size: numericShares,
+        side: sdkSide,
+        feeRateBps: 0,
+        expiration,
+        taker: "0x0000000000000000000000000000000000000000",
+      };
+
+      const response = await currentClient.createAndPostOrder(
+        limitOrder,
+        { negRisk: isNegRisk },
+        sdkOrderType
       );
 
-      setSuccessMsg(
-        `Order placed for ${prepared.summary.side} ${prepared.summary.outcomeLabel}!`
-      );
-      setShares("");
-      await queryClient.invalidateQueries({ queryKey: ["orders"] });
-      setTimeout(() => refreshUser(), 1500);
+      if (response.orderID) {
+        setSuccessMsg(
+          `Order placed for ${side} ${selectedOutcomeLabel}!`
+        );
+        setShares("");
+        await queryClient.invalidateQueries({ queryKey: ["orders"] });
+        // Async persist to backend for audit/history
+        void syncOrderToBackend({
+          orderId: response.orderID,
+          marketId: market?.condition_id ?? "",
+          outcome: selectedOutcomeLabel,
+          outcomeTokenId: tokenId,
+          side,
+          price: numericPrice,
+          size: numericShares,
+          orderType,
+          status: response.status ?? "OPEN",
+          orderHashes: response.orderHashes ?? [],
+          source: "BANKAI",
+          makerAddress: vaultAddress,
+        });
+        setTimeout(() => refreshUser(), 1500);
+      } else {
+        throw new Error("Order submission failed - no order ID returned");
+      }
     } catch (err: any) {
       console.error("Trade failed:", err);
       setError(
         err?.response?.data?.error ||
-        err.message ||
+        err?.message ||
         "Failed to place order"
       );
     } finally {
@@ -603,7 +613,23 @@ export function TradeForm({ market }: TradeFormProps) {
     setSuccessMsg(null);
     setIsAddingToBatch(true);
     try {
-      const prepared = await prepareOrderPayload();
+      const tokenId = selectedOutcome?.tokenId;
+      if (!tokenId) {
+        throw new Error("Selected outcome does not have a tradable token.");
+      }
+
+      let expiration = 0;
+      if (orderType === "GTD") {
+        if (!gtdExpirationSeconds || gtdExpirationSeconds <= 0) {
+          throw new Error(
+            gtdExpirationError ??
+            "Invalid expiration provided for GTD order."
+          );
+        }
+        expiration = gtdExpirationSeconds;
+      }
+
+      // Store order params for batch submission (will use SDK when submitting)
       const batchId =
         typeof crypto !== "undefined" && "randomUUID" in crypto
           ? crypto.randomUUID()
@@ -612,14 +638,26 @@ export function TradeForm({ market }: TradeFormProps) {
         ...prev,
         {
           id: batchId,
-          order: prepared.order,
-          orderType: prepared.orderType,
-          summary: prepared.summary,
+          orderParams: {
+            tokenId,
+            price: numericPrice,
+            size: numericShares,
+            side: sdkSide,
+            expiration,
+            orderType: sdkOrderType,
+            isNegRisk: market?.neg_risk || market?.neg_risk_other,
+          },
+          summary: {
+            outcomeLabel: selectedOutcomeLabel,
+            side,
+            price: numericPrice,
+            shares: numericShares,
+          },
         },
       ]);
       setShares("");
       setSuccessMsg(
-        `Added ${prepared.summary.side} ${prepared.summary.outcomeLabel} to batch queue.`
+        `Added ${side} ${selectedOutcomeLabel} to batch queue.`
       );
     } catch (err: any) {
       console.error("Add to batch failed:", err);
@@ -635,28 +673,60 @@ export function TradeForm({ market }: TradeFormProps) {
 
   const handleSubmitBatch = async () => {
     if (!hasBatchOrders) return;
+    
+    // Ensure credentials are available
+    if (!credentials) {
+      try {
+        await getCredentials();
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      } catch (err: any) {
+        setError("Failed to get trading credentials. Please try again.");
+        return;
+      }
+    }
+
+    const currentClient = clobClientRef.current;
+    if (!currentClient) {
+      setError("Trading client not ready. Please try again.");
+      return;
+    }
     setError(null);
     setSuccessMsg(null);
     setIsSubmittingBatch(true);
     try {
-      const token = await getToken({ skipCache: true });
-      if (!token) throw new Error("Wallet authentication required.");
-      const auth = await fetchClobAuthProof(token);
-      await api.post(
-        "/trade/batch",
-        {
-          orders: batchOrders.map((entry) => ({
-            order: entry.order,
-            orderType: entry.orderType,
-            auth,
-          })),
-        },
-        { headers: { Authorization: `Bearer ${token}` } }
+      // Submit each order in the batch using SDK
+      const results = await Promise.allSettled(
+        batchOrders.map((entry) => {
+          const limitOrder: UserOrder = {
+            tokenID: entry.orderParams.tokenId,
+            price: entry.orderParams.price,
+            size: entry.orderParams.size,
+            side: entry.orderParams.side,
+            feeRateBps: 0,
+            expiration: entry.orderParams.expiration,
+            taker: "0x0000000000000000000000000000000000000000",
+          };
+          return currentClient.createAndPostOrder(
+            limitOrder,
+            { negRisk: entry.orderParams.isNegRisk },
+            entry.orderParams.orderType
+          );
+        })
       );
-      setSuccessMsg(`Submitted ${batchOrders.length} batched orders.`);
-      setBatchOrders([]);
-      await queryClient.invalidateQueries({ queryKey: ["orders"] });
-      setTimeout(() => refreshUser(), 1500);
+
+      const successful = results.filter((r) => r.status === "fulfilled").length;
+      const failed = results.filter((r) => r.status === "rejected").length;
+
+      if (successful > 0) {
+        setSuccessMsg(
+          `Submitted ${successful} order${successful > 1 ? "s" : ""}${failed > 0 ? ` (${failed} failed)` : ""}.`
+        );
+        setBatchOrders([]);
+        await queryClient.invalidateQueries({ queryKey: ["orders"] });
+        setTimeout(() => refreshUser(), 1500);
+      } else {
+        throw new Error("All orders in batch failed");
+      }
     } catch (err: any) {
       console.error("Batch submit failed:", err);
       setError(

@@ -35,7 +35,10 @@
     "viem": "^2.0.0",
     "wagmi": "^2.0.0",
     "zustand": "^4.4.0",
-    "pino-pretty": "^10.2.0"
+    "pino-pretty": "^10.2.0",
+    "@polymarket/clob-client": "^4.22.8",
+    "@polymarket/builder-signing-sdk": "^0.0.8",
+    "ethers": "^5.8.0"
   },
   "devDependencies": {
     "@types/node": "^20",

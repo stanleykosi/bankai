@@ -37,6 +37,15 @@ const (
 	OrderSideSell OrderSide = "SELL"
 )
 
+// OrderSource tracks where an order originated (Bankai vs external)
+type OrderSource string
+
+const (
+	OrderSourceBankai  OrderSource = "BANKAI"
+	OrderSourceExternal OrderSource = "EXTERNAL"
+	OrderSourceUnknown  OrderSource = "UNKNOWN"
+)
+
 // Order represents a trade order placed through the system
 type Order struct {
 	ID             uuid.UUID   `gorm:"type:uuid;primary_key;default:uuid_generate_v4()" json:"id"`
@@ -54,6 +63,7 @@ type Order struct {
 	OrderHashes    StringArray `gorm:"column:order_hashes;type:text[]" json:"order_hashes"`
 	ErrorMessage   string      `gorm:"column:error_msg" json:"error_msg"`
 	TxHash         string      `gorm:"column:tx_hash;type:varchar(66)" json:"tx_hash"` // Optional, if executed on-chain
+	Source         OrderSource `gorm:"column:source;type:varchar(16);default:'UNKNOWN'" json:"source"`
 
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updated_at"`

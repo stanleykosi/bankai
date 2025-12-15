@@ -13,22 +13,20 @@ package services
 
 import (
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
-	"math/big"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/models"
 	"github.com/bankai-project/backend/internal/polymarket/clob"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type TradeService struct {
@@ -43,74 +41,130 @@ func NewTradeService(db *gorm.DB, clobClient *clob.Client) *TradeService {
 	}
 }
 
-// RelayTrade derives user API credentials on-demand, relays the order with both user (L2) and builder headers,
-// and persists the order record to the database.
-func (s *TradeService) RelayTrade(ctx context.Context, user *models.User, req *clob.PostOrderRequest, auth *clob.ClobAuthProof) (*clob.PostOrderResponse, error) {
-	if req == nil {
-		return nil, errors.New("post order request is required")
-	}
+// RelayTrade function has been removed.
+// The frontend now uses the official Polymarket SDK directly for order creation, signing, and submission.
+// This eliminates the need for backend order relaying.
+
+// SyncOrdersFromSDK upserts orders fetched via the JS SDK into Postgres for history/audit.
+func (s *TradeService) SyncOrdersFromSDK(ctx context.Context, user *models.User, synced []SyncedOrder) error {
 	if user == nil {
-		return nil, errors.New("user context is required")
+		return errors.New("user context is required")
 	}
-	if auth == nil {
-		return nil, errors.New("auth proof is required")
-	}
-	if strings.TrimSpace(user.VaultAddress) == "" {
-		return nil, fmt.Errorf("user has no deployed vault on file")
+	if len(synced) == 0 {
+		return nil
 	}
 
-	if !strings.EqualFold(strings.TrimSpace(req.Order.Maker), strings.TrimSpace(user.VaultAddress)) {
-		return nil, fmt.Errorf("order maker %s does not match vault %s", req.Order.Maker, user.VaultAddress)
+	orders := make([]models.Order, 0, len(synced))
+	for _, src := range synced {
+		status := mapSDKStatus(src.Status)
+		if status == "" {
+			status = models.OrderStatusPending
+		}
+		side := models.OrderSideBuy
+		if strings.ToUpper(src.Side) == "SELL" {
+			side = models.OrderSideSell
+		}
+		source := src.Source
+		if source == "" {
+			source = models.OrderSourceUnknown
+		}
+
+		o := models.Order{
+			UserID:         user.ID,
+			CLOBOrderID:    src.OrderID,
+			MarketID:       src.MarketID,
+			Side:           side,
+			Outcome:        src.Outcome,
+			OutcomeTokenID: src.OutcomeTokenID,
+			Price:          src.Price,
+			Size:           src.Size,
+			OrderType:      strings.ToUpper(strings.TrimSpace(src.OrderType)),
+			Status:         status,
+			StatusDetail:   src.StatusDetail,
+			OrderHashes:    models.StringArray(src.OrderHashes),
+			Source:         source,
+		}
+		// Preserve client timestamps if provided
+		if !src.CreatedAt.IsZero() {
+			o.CreatedAt = src.CreatedAt
+		}
+		if !src.UpdatedAt.IsZero() {
+			o.UpdatedAt = src.UpdatedAt
+		}
+		orders = append(orders, o)
 	}
 
-	// 0. Basic numeric validations against market metadata (tick size, min size).
-	if err := s.validateOrderAmounts(ctx, &req.Order); err != nil {
-		return nil, fmt.Errorf("invalid order payload (amounts): %w", err)
+	// Upsert on (user_id, clob_order_id)
+	return s.DB.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "user_id"}, {Name: "clob_order_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"status", "status_detail", "price", "size", "order_type", "outcome", "outcome_token_id", "order_hashes", "market_id", "updated_at", "source"}),
+	}).Create(&orders).Error
+}
+
+// SyncOrdersByAddress upserts orders and associates them to users by makerAddress (vault or EOA).
+func (s *TradeService) SyncOrdersByAddress(ctx context.Context, synced []SyncedOrder) error {
+	if len(synced) == 0 {
+		return nil
 	}
 
-	// 1. Derive/obtain the user's API credentials (do not persist).
-	creds, err := s.Clob.DeriveAPIKey(ctx, auth)
-	if err != nil {
-		return nil, fmt.Errorf("failed to derive user api key: %w", err)
+	for _, src := range synced {
+		addr := strings.ToLower(strings.TrimSpace(src.MakerAddress))
+		if addr == "" {
+			continue
+		}
+
+		var user models.User
+		if err := s.DB.WithContext(ctx).
+			Where("LOWER(vault_address) = ? OR LOWER(eoa_address) = ?", addr, addr).
+			First(&user).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			}
+			return err
+		}
+
+		if err := s.SyncOrdersFromSDK(ctx, &user, []SyncedOrder{src}); err != nil {
+			return err
+		}
 	}
 
-	// Recover signer locally to pinpoint signature mismatches before hitting CLOB
-	if recov, digest, err := recoverOrderSigner(&req.Order); err != nil {
-		logger.Info("Order signature recovery failed: %v", err)
-	} else {
-		logger.Info("Order signature recovery: signer=%s recovered=%s digest=%s", req.Order.Signer, recov.Hex(), digest.Hex())
-	}
+	return nil
+}
 
-	// Inject owner with the user API key as required by CLOB
-	req.Owner = creds.Key
-	// Explicitly ensure deferExec is set (default immediate execution path)
-	req.DeferExec = false
-
-	// Validate after owner is injected
-	if err := req.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid order payload (client): %w", err)
+func mapSDKStatus(raw string) models.OrderStatus {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "open", "live", "unmatched":
+		return models.OrderStatusOpen
+	case "pending", "delayed":
+		return models.OrderStatusPending
+	case "matched", "filled":
+		return models.OrderStatusFilled
+	case "canceled", "cancelled":
+		return models.OrderStatusCanceled
+	case "failed", "error":
+		return models.OrderStatusFailed
+	default:
+		return ""
 	}
+}
 
-	// Log the outbound payload for debugging against the TS client
-	if b, merr := json.Marshal(req); merr == nil {
-		logger.Info("Posting order payload: %s", string(b))
-		logger.Info("Order debug: signatureType=%d side=%s expiration=%s tokenId=%s owner=%s", req.Order.SignatureType, req.Order.Side, req.Order.Expiration, req.Order.TokenID, req.Owner)
-	}
-
-	// 2. Post to CLOB with both user (L2) and builder headers.
-	resp, err := s.Clob.PostOrder(ctx, req, creds)
-	if err != nil {
-		return nil, fmt.Errorf("failed to relay trade: %w", err)
-	}
-
-	if err := s.persistOrder(ctx, user, req, resp); err != nil {
-		logger.Error("Failed to persist order for user %s: %v", user.ID, err)
-	}
-
-	if !resp.Success {
-		return resp, fmt.Errorf("clob rejected order: %s", resp.ErrorMsg)
-	}
-	return resp, nil
+// SyncedOrder represents the payload used to persist SDK-fetched orders.
+type SyncedOrder struct {
+	OrderID        string             `json:"orderId"`
+	MarketID       string             `json:"marketId"`
+	Outcome        string             `json:"outcome"`
+	OutcomeTokenID string             `json:"outcomeTokenId"`
+	MakerAddress   string             `json:"makerAddress"`
+	Side           string             `json:"side"`
+	Price          float64            `json:"price"`
+	Size           float64            `json:"size"`
+	OrderType      string             `json:"orderType"`
+	Status         string             `json:"status"`
+	StatusDetail   string             `json:"statusDetail"`
+	OrderHashes    []string           `json:"orderHashes"`
+	Source         models.OrderSource `json:"source"`
+	CreatedAt      time.Time          `json:"createdAt"`
+	UpdatedAt      time.Time          `json:"updatedAt"`
 }
 
 func (s *TradeService) persistOrder(ctx context.Context, user *models.User, req *clob.PostOrderRequest, resp *clob.PostOrderResponse) error {
@@ -269,130 +323,8 @@ func isOnTick(val, tick float64) bool {
 	return math.Abs(steps-nearest) < 1e-6
 }
 
-// recoverOrderSigner computes the EIP-712 order digest and recovers the signer address.
-// This helps pinpoint signature mismatches before posting to CLOB (which only returns a generic 400).
-func recoverOrderSigner(order *clob.Order) (common.Address, common.Hash, error) {
-	if order == nil {
-		return common.Address{}, common.Hash{}, errors.New("order is nil")
-	}
-
-	// Constants aligned with frontend signing (Polymarket CTF Exchange on Polygon mainnet).
-	const domainName = "Polymarket CTF Exchange"
-	const domainVersion = "1"
-	const chainID = 137
-	const verifyingContract = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
-
-	// Type hashes
-	typeHashDomain := crypto.Keccak256Hash([]byte("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"))
-	typeHashOrder := crypto.Keccak256Hash([]byte("Order(uint256 salt,address maker,address signer,address taker,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint256 expiration,uint256 nonce,uint256 feeRateBps,uint8 side)"))
-
-	// Domain separator
-	domainSeparator := crypto.Keccak256Hash(
-		typeHashDomain.Bytes(),
-		crypto.Keccak256Hash([]byte(domainName)).Bytes(),
-		crypto.Keccak256Hash([]byte(domainVersion)).Bytes(),
-		padUint256(chainID),
-		padAddress(common.HexToAddress(verifyingContract)),
-	)
-
-	// Side as uint8
-	side := uint8(0)
-	switch strings.ToUpper(strings.TrimSpace(string(order.Side))) {
-	case "SELL", "1":
-		side = 1
-	}
-
-	structHash := crypto.Keccak256Hash(
-		typeHashOrder.Bytes(),
-		padBig(order.Salt.String()),
-		padAddress(common.HexToAddress(order.Maker)),
-		padAddress(common.HexToAddress(order.Signer)),
-		padAddress(common.HexToAddress(order.Taker)),
-		padBig(order.TokenID),
-		padBig(order.MakerAmount),
-		padBig(order.TakerAmount),
-		padBig(order.Expiration),
-		padBig(order.Nonce),
-		padBig(order.FeeRateBps),
-		padUint8(side),
-	)
-
-	digest := crypto.Keccak256Hash(
-		[]byte{0x19, 0x01},
-		domainSeparator.Bytes(),
-		structHash.Bytes(),
-	)
-
-	sigBytes, err := hexToBytes(order.Signature)
-	if err != nil {
-		return common.Address{}, digest, fmt.Errorf("invalid signature hex: %w", err)
-	}
-	if len(sigBytes) != 65 {
-		return common.Address{}, digest, fmt.Errorf("invalid signature length: %d (expected 65)", len(sigBytes))
-	}
-	vRaw := sigBytes[64]
-	// Normalize V for validation and recovery (clob expects 27/28, go-ethereum SigToPub expects 0/1)
-	vNorm := vRaw
-	if vNorm == 27 || vNorm == 28 {
-		// make a copy for recovery with recid 0/1
-		sigBytes[64] = vNorm - 27
-	} else if vNorm == 0 || vNorm == 1 {
-		// already 0/1, use as-is
-	} else {
-		return common.Address{}, digest, fmt.Errorf("invalid recovery id (v): %d (raw=%d)", vNorm, vRaw)
-	}
-
-	// Extra diagnostics: check r/s and v against validation rules
-	r := new(big.Int).SetBytes(sigBytes[0:32])
-	s := new(big.Int).SetBytes(sigBytes[32:64])
-	vCheck := sigBytes[64] // 0/1 after normalization above
-	valid := crypto.ValidateSignatureValues(vCheck, r, s, true)
-	if !valid {
-		return common.Address{}, digest, fmt.Errorf("signature components invalid: v(raw=%d norm=%d check=%d) r=%s s=%s", vRaw, vNorm, vCheck, r.Text(16), s.Text(16))
-	}
-
-	pubKey, err := crypto.SigToPub(digest.Bytes(), sigBytes)
-	if err != nil {
-		return common.Address{}, digest, fmt.Errorf(
-			"recover failed: %w (len=%d vRaw=%d vNorm=%d r=%s s=%s digest=%s)",
-			err, len(sigBytes), vRaw, vNorm, r.Text(16), s.Text(16), digest.Hex(),
-		)
-	}
-	return crypto.PubkeyToAddress(*pubKey), digest, nil
-}
-
-func padBig(val string) []byte {
-	bi := new(big.Int)
-	bi.SetString(strings.TrimSpace(val), 10)
-	return padUint256Big(bi)
-}
-
-func padUint256(v int) []byte {
-	return padUint256Big(big.NewInt(int64(v)))
-}
-
-func padUint8(v uint8) []byte {
-	return padUint256Big(big.NewInt(int64(v)))
-}
-
-func padUint256Big(bi *big.Int) []byte {
-	if bi == nil {
-		bi = big.NewInt(0)
-	}
-	return common.LeftPadBytes(bi.Bytes(), 32)
-}
-
-func padAddress(addr common.Address) []byte {
-	return common.LeftPadBytes(addr.Bytes(), 32)
-}
-
-func hexToBytes(sig string) ([]byte, error) {
-	s := strings.TrimPrefix(sig, "0x")
-	if len(s)%2 == 1 {
-		s = "0" + s
-	}
-	return hex.DecodeString(s)
-}
+// recoverOrderSigner and related helper functions have been removed.
+// The frontend now uses the official Polymarket SDK which handles all signing internally.
 
 func mapClobStatus(resp *clob.PostOrderResponse, orderType clob.OrderType) models.OrderStatus {
 	if resp == nil {
@@ -565,39 +497,8 @@ func firstNonEmptyString(values ...string) string {
 	return ""
 }
 
-// RelayBatchTrades iterates through the provided PostOrderRequests and relays each one sequentially.
-// Using single-order submission ensures we receive deterministic order IDs for persistence.
-func (s *TradeService) RelayBatchTrades(ctx context.Context, user *models.User, requests []*clob.PostOrderRequest, auth *clob.ClobAuthProof) ([]*clob.PostOrderResponse, error) {
-	if user == nil {
-		return nil, errors.New("user context is required")
-	}
-	if auth == nil {
-		return nil, errors.New("auth proof is required")
-	}
-	if len(requests) == 0 {
-		return nil, errors.New("at least one order is required")
-	}
-
-	creds, err := s.Clob.DeriveAPIKey(ctx, auth)
-	if err != nil {
-		return nil, fmt.Errorf("failed to derive user api key: %w", err)
-	}
-
-	responses := make([]*clob.PostOrderResponse, 0, len(requests))
-	for idx, req := range requests {
-		req.Owner = creds.Key
-		if err := req.Validate(); err != nil {
-			return nil, fmt.Errorf("order %d invalid: %w", idx, err)
-		}
-		resp, err := s.Clob.PostOrder(ctx, req, creds)
-		if err != nil {
-			return nil, fmt.Errorf("batch order %d failed: %w", idx, err)
-		}
-		responses = append(responses, resp)
-	}
-
-	return responses, nil
-}
+// RelayBatchTrades function has been removed.
+// The frontend now uses the official Polymarket SDK directly for batch order submission.
 
 // CancelOrder cancels an existing order on the CLOB and updates persistence.
 func (s *TradeService) CancelOrder(ctx context.Context, user *models.User, orderID string) (*clob.CancelResponse, error) {

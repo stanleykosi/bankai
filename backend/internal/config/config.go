@@ -66,6 +66,7 @@ type ServicesConfig struct {
 	TavilyAPIKey   string
 	OpenAIAPIKey   string
 	PolygonRPCURL  string
+	SyncJobSecret  string
 }
 
 // Load reads .env file and populates the Config struct
@@ -98,6 +99,7 @@ func Load() (*Config, error) {
 			TavilyAPIKey:   getEnv("TAVILY_API_KEY", ""),
 			OpenAIAPIKey:   getEnv("OPENAI_API_KEY", ""),
 			PolygonRPCURL:  getEnv("POLYGON_RPC_URL", ""),
+			SyncJobSecret:  getEnv("JOB_SYNC_SECRET", ""),
 		},
 	}
 

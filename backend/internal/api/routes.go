@@ -110,11 +110,13 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 
 	// Trade Routes (Protected)
 	trade := v1.Group("/trade", middleware.Protected())
-	trade.Get("/auth/typed-data", tradeHandler.GetAuthTypedData)
-	trade.Post("/", tradeHandler.PostTrade)
-	trade.Post("", tradeHandler.PostTrade)
-	trade.Post("/batch", tradeHandler.PostBatchTrade)
+	// PostTrade and PostBatchTrade endpoints removed - frontend uses SDK directly
+	// GetAuthTypedData endpoint removed - SDK handles API key derivation
 	trade.Get("/orders", tradeHandler.GetOrders)
 	trade.Post("/cancel", tradeHandler.CancelOrder)
 	trade.Post("/cancel/batch", tradeHandler.CancelOrders)
+	trade.Post("/sync", tradeHandler.SyncOrders) // Persist Polymarket orders/trades from SDK ingestion
+
+	// Internal sync route (secured via JOB_SYNC_SECRET header) for background workers
+	app.Post("/api/v1/trade/sync/internal", tradeHandler.SyncOrdersInternal)
 }

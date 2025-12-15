@@ -1,0 +1,16 @@
+# Sync worker container for builder trades -> backend ingestion
+# Uses Bun to run frontend/scripts/sync_builder_trades.ts
+
+FROM oven/bun:1.3 as base
+
+WORKDIR /app/frontend
+
+# Install deps (only frontend needed for SDKs)
+COPY frontend/package.json frontend/bun.lock ./ 
+RUN bun install --frozen-lockfile
+
+# Copy frontend code (includes scripts/)
+COPY frontend ./ 
+
+# Default command runs the sync job once; Railway cron can invoke this image on a schedule
+CMD ["bun", "run", "scripts/sync_builder_trades.ts"]

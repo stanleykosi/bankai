@@ -126,6 +126,8 @@ export interface OrderRecord {
   order_hashes?: string[] | null;
   error_msg?: string | null;
   tx_hash?: string | null;
+  source?: "BANKAI" | "EXTERNAL" | "UNKNOWN";
+  maker_address?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -156,4 +158,3 @@ export interface DepthEstimate {
   insufficientLiquidity: boolean;
   levels: DepthEstimateLevel[];
 }
-
