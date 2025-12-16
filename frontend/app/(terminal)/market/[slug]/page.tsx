@@ -10,6 +10,7 @@ import { TradeForm } from "@/components/terminal/TradeForm";
 import { OrdersPanel } from "@/components/terminal/OrdersPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { ChartContainer } from "@/components/charts/ChartContainer";
 import { fetchMarketBySlug, requestMarketStream } from "@/lib/market-data";
 import { usePriceStream } from "@/hooks/usePriceStream";
 import { cn } from "@/lib/utils";
@@ -132,57 +133,66 @@ export default function MarketDetailPage() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[2fr,1fr]">
-        <Card className="border-border bg-card/60 backdrop-blur">
-          <CardContent className="p-6 space-y-4">
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-center gap-2">
-                {marketData.tags?.slice(0, 4).map((tag) => (
-                  <span
-                    key={tag}
-                    className="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono uppercase tracking-wide text-muted-foreground"
-                  >
-                    {tag}
-                  </span>
-                ))}
-              </div>
-              <h1 className="text-2xl font-semibold leading-tight text-foreground">
-                {marketData.title}
-              </h1>
-              <p className="text-sm text-muted-foreground">{marketData.description}</p>
-              <div className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-background/70 px-3 py-1 text-[10px] font-mono uppercase tracking-wide text-muted-foreground">
-                <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shadow-[0_0_4px_rgba(251,191,36,0.7)]" />
-                Last trade prices shown; bid/ask are live quotes.
-              </div>
-            </div>
+        <div className="space-y-4">
+          <ChartContainer
+            marketId={marketData.condition_id}
+            tokenYesId={marketData.token_id_yes}
+            tokenNoId={marketData.token_id_no}
+            initialHeight={420}
+          />
 
-            <div className="grid gap-4 sm:grid-cols-3 font-mono text-xs text-muted-foreground">
-              <div>
-                <p className="uppercase tracking-wide text-[10px]">Ends</p>
-                <p className="text-foreground">
-                {marketData.end_date
-                    ? new Date(marketData.end_date).toLocaleString()
-                    : "--"}
-                </p>
+          <Card className="border-border bg-card/60 backdrop-blur">
+            <CardContent className="p-6 space-y-4">
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  {marketData.tags?.slice(0, 4).map((tag) => (
+                    <span
+                      key={tag}
+                      className="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono uppercase tracking-wide text-muted-foreground"
+                    >
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+                <h1 className="text-2xl font-semibold leading-tight text-foreground">
+                  {marketData.title}
+                </h1>
+                <p className="text-sm text-muted-foreground">{marketData.description}</p>
+                <div className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-background/70 px-3 py-1 text-[10px] font-mono uppercase tracking-wide text-muted-foreground">
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shadow-[0_0_4px_rgba(251,191,36,0.7)]" />
+                  Last trade prices shown; bid/ask are live quotes.
+                </div>
               </div>
-              <div>
-                <p className="uppercase tracking-wide text-[10px]">Liquidity</p>
-                <p className="text-foreground">
-                  {marketData.liquidity
-                    ? `$${marketData.liquidity.toLocaleString(undefined, {
-                        maximumFractionDigits: 0,
-                      })}`
-                    : "$0"}
-                </p>
+
+              <div className="grid gap-4 sm:grid-cols-3 font-mono text-xs text-muted-foreground">
+                <div>
+                  <p className="uppercase tracking-wide text-[10px]">Ends</p>
+                  <p className="text-foreground">
+                  {marketData.end_date
+                      ? new Date(marketData.end_date).toLocaleString()
+                      : "--"}
+                  </p>
+                </div>
+                <div>
+                  <p className="uppercase tracking-wide text-[10px]">Liquidity</p>
+                  <p className="text-foreground">
+                    {marketData.liquidity
+                      ? `$${marketData.liquidity.toLocaleString(undefined, {
+                          maximumFractionDigits: 0,
+                        })}`
+                      : "$0"}
+                  </p>
+                </div>
+                <div>
+                  <p className="uppercase tracking-wide text-[10px]">Outcomes</p>
+                  <p className="text-foreground truncate">
+                    {outcomes.join(" • ")}
+                  </p>
+                </div>
               </div>
-              <div>
-                <p className="uppercase tracking-wide text-[10px]">Outcomes</p>
-                <p className="text-foreground truncate">
-                  {outcomes.join(" • ")}
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        </div>
 
         <div className="space-y-4">
           <Card className="border-border bg-card/70 backdrop-blur">
