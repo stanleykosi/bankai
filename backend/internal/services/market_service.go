@@ -41,10 +41,12 @@ const (
 	CacheKeyMarketLanes     = "markets:lanes"
 	CacheKeyMarketAssets    = "markets:assets"
 	CacheKeyFreshDrops      = "markets:fresh"
+	CacheKeyPriceHistory    = "history:%s:%s"
 	streamRequestTokenKey   = "markets:stream:requested"
 	streamRequestTokenTTL   = 30 * time.Minute
 	streamRequestPubSubChan = "markets:stream:requests"
 	CacheTTL                = 5 * time.Minute
+	HistoryCacheTTL         = 5 * time.Minute
 
 	PriceUpdateChannel = "market:price_updates"
 
@@ -149,6 +151,63 @@ func NewMarketService(db *gorm.DB, redis *redis.Client, gammaClient *gamma.Clien
 
 func (s *MarketService) StreamHub() *PriceStreamHub {
 	return s.streamHub
+}
+
+// GetPriceHistory proxies history requests to the Polymarket CLOB API and caches the result in Redis.
+// This avoids storing large volumes of ticks locally while keeping charts responsive.
+func (s *MarketService) GetPriceHistory(ctx context.Context, conditionID, rangeParam string) ([]clob.HistoryPoint, error) {
+	if s.ClobClient == nil {
+		return nil, errors.New("clob client not configured")
+	}
+
+	conditionID = strings.TrimSpace(conditionID)
+	if conditionID == "" {
+		return nil, errors.New("condition id is required")
+	}
+
+	var market models.Market
+	if err := s.DB.WithContext(ctx).
+		Select("condition_id, token_id_yes").
+		Where("condition_id = ?", conditionID).
+		First(&market).Error; err != nil {
+		return nil, err
+	}
+
+	tokenID := strings.TrimSpace(market.TokenIDYes)
+	if tokenID == "" {
+		return nil, fmt.Errorf("market %s has no YES token id", conditionID)
+	}
+
+	interval, fidelity := resolveHistoryWindow(rangeParam)
+	cacheKey := historyCacheKey(tokenID, interval, fidelity)
+
+	if cached, err := s.Redis.Get(ctx, cacheKey).Result(); err == nil {
+		var history []clob.HistoryPoint
+		if unmarshalErr := json.Unmarshal([]byte(cached), &history); unmarshalErr == nil {
+			return history, nil
+		}
+	}
+
+	params := clob.PriceHistoryParams{
+		Market:   tokenID,
+		Interval: interval,
+	}
+	if fidelity > 0 {
+		params.Fidelity = fidelity
+	}
+
+	history, err := s.ClobClient.GetPriceHistory(ctx, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch history: %w", err)
+	}
+
+	if len(history) > 0 {
+		if data, marshalErr := json.Marshal(history); marshalErr == nil {
+			_ = s.Redis.Set(ctx, cacheKey, data, HistoryCacheTTL).Err()
+		}
+	}
+
+	return history, nil
 }
 
 // SyncActiveMarkets fetches top active markets from Gamma and updates DB + Cache
@@ -762,6 +821,33 @@ func (s *MarketService) releaseMarketSyncLock(ctx context.Context) {
 
 func priceRedisKey(conditionID, tokenID string) string {
 	return fmt.Sprintf("price:%s:%s", conditionID, tokenID)
+}
+
+func historyCacheKey(tokenID string, interval clob.PriceHistoryInterval, fidelity int) string {
+	base := fmt.Sprintf(CacheKeyPriceHistory, tokenID, string(interval))
+	if fidelity > 0 {
+		return fmt.Sprintf("%s:f%d", base, fidelity)
+	}
+	return base
+}
+
+func resolveHistoryWindow(rangeParam string) (clob.PriceHistoryInterval, int) {
+	switch strings.ToLower(strings.TrimSpace(rangeParam)) {
+	case "1h", "1hr", "1hour":
+		return clob.PriceHistoryInterval1h, 1
+	case "6h", "6hr", "6hour":
+		return clob.PriceHistoryInterval6h, 3
+	case "1w", "1week", "7d":
+		return clob.PriceHistoryInterval1w, 10
+	case "1m", "30d", "month":
+		return clob.PriceHistoryIntervalMax, 0
+	case "max", "all":
+		return clob.PriceHistoryIntervalMax, 0
+	case "1d", "24h", "day", "":
+		return clob.PriceHistoryInterval1d, 5
+	default:
+		return clob.PriceHistoryInterval1d, 5
+	}
 }
 
 func parseStringFloat(value string) float64 {

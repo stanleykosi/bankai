@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -95,9 +96,15 @@ func main() {
 		fmt.Println("   Using POLY_OWNER_API_KEY for order owner (preferred for real trades)")
 	}
 
+	// Create SaltNumber by unmarshaling JSON (since it has a private field)
+	var salt clob.SaltNumber
+	if err := json.Unmarshal([]byte("1"), &salt); err != nil {
+		log.Fatalf("Failed to create salt number: %v", err)
+	}
+
 	testReq := &clob.PostOrderRequest{
 		Order: clob.Order{
-			Salt:          "1",
+			Salt:          salt,
 			Maker:         "0x0000000000000000000000000000000000000000",
 			Signer:        "0x0000000000000000000000000000000000000000",
 			Taker:         "0x0000000000000000000000000000000000000000",

@@ -28,7 +28,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bankai-project/backend/internal/models"
 	"github.com/bankai-project/backend/internal/services"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -247,34 +246,7 @@ func (h *MessageHandler) handleLastTrade(ctx context.Context, m *LastTradeMessag
 	size, _ := strconv.ParseFloat(m.Size, 64)
 	volume := price * size
 
-	// 2. Persist Trade to DB (Audit Log / History)
-	// We map this to a simplified model if needed, or just the PriceHistory table
-	// Converting timestamp string (ms) to time.Time
-	tsInt, _ := strconv.ParseInt(m.Timestamp, 10, 64)
-	ts := time.UnixMilli(tsInt)
-
-	// Map side to outcome for the price history table
-	// NOTE: CLOB side BUY/SELL is regarding the token.
-	// If asset_id matches TokenIDYes, then Side=BUY -> YES Price Up.
-	// We need to know if asset_id is YES or NO.
-	// For now, we'll defer the exact YES/NO mapping logic to the service layer
-	// or assume the caller knows the asset_id mapping.
-	// We will just insert assuming the asset ID is sufficient for now.
-
-	// We use a lightweight struct here just for the insert to avoid circular deps if possible,
-	// or use the models.PriceHistory if available.
-
-	// NOTE: We skip DB insert for PriceHistory here and rely on the specialized "History Worker" (Step 13)
-	// which polls the API for definitive history, or we enrich this data downstream.
-	// The history variable is intentionally unused as per the design decision.
-	_ = models.PriceHistory{
-		MarketID:  m.Market,
-		Price:     price,
-		Volume:    volume,
-		Timestamp: ts,
-	}
-
-	// 3. Update Redis Volume Stats
+	// 2. Update Redis Volume Stats
 	// Increment 24h volume for the market
 	// Key: market:{id}:volume
 	return h.Redis.IncrByFloat(ctx, fmt.Sprintf("market:%s:volume", m.Market), volume).Err()

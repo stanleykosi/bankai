@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/bankai-project/backend/internal/polymarket/clob"
 	"github.com/bankai-project/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -95,6 +96,32 @@ func (h *MarketHandler) GetFreshDrops(c *fiber.Ctx) error {
 		})
 	}
 	return c.JSON(markets)
+}
+
+// GetPriceHistory returns historical price data for the market's YES token.
+// GET /api/v1/markets/:condition_id/history?range=1d
+func (h *MarketHandler) GetPriceHistory(c *fiber.Ctx) error {
+	conditionID := strings.TrimSpace(c.Params("condition_id"))
+	if conditionID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "condition_id param is required",
+		})
+	}
+
+	rangeParam := c.Query("range")
+	history, err := h.Service.GetPriceHistory(c.Context(), conditionID, rangeParam)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "market not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	if history == nil {
+		history = []clob.HistoryPoint{}
+	}
+
+	return c.JSON(history)
 }
 
 // StreamPriceUpdates streams live price updates over SSE

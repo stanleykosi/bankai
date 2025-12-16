@@ -254,3 +254,31 @@ type CancelResponse struct {
 	Canceled    []string          `json:"canceled"`
 	NotCanceled map[string]string `json:"not_canceled"`
 }
+
+// PriceHistoryInterval matches the intervals supported by the CLOB /prices-history endpoint.
+type PriceHistoryInterval string
+
+const (
+	PriceHistoryIntervalMax PriceHistoryInterval = "max"
+	PriceHistoryInterval1w  PriceHistoryInterval = "1w"
+	PriceHistoryInterval1d  PriceHistoryInterval = "1d"
+	PriceHistoryInterval6h  PriceHistoryInterval = "6h"
+	PriceHistoryInterval1h  PriceHistoryInterval = "1h"
+)
+
+// PriceHistoryParams encapsulates query params for the /prices-history endpoint.
+// The "market" field expects the token (asset) ID.
+type PriceHistoryParams struct {
+	Market   string               `json:"market"`
+	StartTs  int64                `json:"startTs,omitempty"`
+	EndTs    int64                `json:"endTs,omitempty"`
+	Fidelity int                  `json:"fidelity,omitempty"`
+	Interval PriceHistoryInterval `json:"interval,omitempty"`
+}
+
+// HistoryPoint represents a single historical price record.
+// t is a unix timestamp (seconds), p is the price.
+type HistoryPoint struct {
+	Timestamp int64   `json:"t"`
+	Price     float64 `json:"p"`
+}

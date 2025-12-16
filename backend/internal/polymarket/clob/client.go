@@ -31,7 +31,8 @@ import (
 )
 
 const (
-	DefaultTimeout = 10 * time.Second
+	DefaultTimeout        = 10 * time.Second
+	pricesHistoryEndpoint = "/prices-history"
 )
 
 type Client struct {
@@ -97,6 +98,42 @@ func (c *Client) GetBook(ctx context.Context, tokenID string) (*BookResponse, er
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// GetPriceHistory fetches historical prices for a token (asset) from the CLOB API.
+// The "market" parameter in the API refers to the token/asset ID.
+func (c *Client) GetPriceHistory(ctx context.Context, params PriceHistoryParams) ([]HistoryPoint, error) {
+	market := strings.TrimSpace(params.Market)
+	if market == "" {
+		return nil, fmt.Errorf("market token id is required")
+	}
+
+	values := url.Values{}
+	values.Set("market", market)
+
+	if params.Interval != "" {
+		values.Set("interval", string(params.Interval))
+	}
+	if params.StartTs > 0 {
+		values.Set("startTs", strconv.FormatInt(params.StartTs, 10))
+	}
+	if params.EndTs > 0 {
+		values.Set("endTs", strconv.FormatInt(params.EndTs, 10))
+	}
+	if params.Fidelity > 0 {
+		values.Set("fidelity", strconv.Itoa(params.Fidelity))
+	}
+
+	path := pricesHistoryEndpoint
+	if encoded := values.Encode(); encoded != "" {
+		path = fmt.Sprintf("%s?%s", pricesHistoryEndpoint, encoded)
+	}
+
+	var history []HistoryPoint
+	if err := c.sendRequestDecode(ctx, http.MethodGet, path, nil, &history, nil); err != nil {
+		return nil, err
+	}
+	return history, nil
 }
 
 // DeriveAPIKey requests (or creates) the user API credentials using the L1 ClobAuth signature.

@@ -88,6 +88,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	markets.Get("/meta", marketHandler.GetActiveMarketsMeta)
 	markets.Get("/lanes", marketHandler.GetMarketLanes)
 	markets.Get("/stream", marketHandler.StreamPriceUpdates)
+	markets.Get("/:condition_id/history", marketHandler.GetPriceHistory)
 	markets.Get("/:condition_id/depth", marketHandler.GetDepthEstimate)
 	markets.Post("/:condition_id/stream", marketHandler.RequestMarketStream)
 	markets.Get("/:slug", marketHandler.GetMarketBySlug)
