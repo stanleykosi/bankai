@@ -45,7 +45,7 @@ const (
 	streamRequestTokenKey   = "markets:stream:requested"
 	streamRequestTokenTTL   = 30 * time.Minute
 	streamRequestPubSubChan = "markets:stream:requests"
-	CacheTTL                = 5 * time.Minute
+	CacheTTL                = 15 * time.Minute
 	HistoryCacheTTL         = 5 * time.Minute
 
 	PriceUpdateChannel = "market:price_updates"
@@ -175,7 +175,7 @@ func (s *MarketService) GetPriceHistory(ctx context.Context, conditionID, rangeP
 
 	tokenID := strings.TrimSpace(market.TokenIDYes)
 	if tokenID == "" {
-		return nil, fmt.Errorf("market %s has no YES token id", conditionID)
+		return []clob.HistoryPoint{}, nil
 	}
 
 	interval, fidelity := resolveHistoryWindow(rangeParam)
@@ -198,7 +198,8 @@ func (s *MarketService) GetPriceHistory(ctx context.Context, conditionID, rangeP
 
 	history, err := s.ClobClient.GetPriceHistory(ctx, params)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch history: %w", err)
+		log.Printf("price history fetch failed for %s (token %s, interval %s, fidelity %d): %v", conditionID, tokenID, interval, fidelity, err)
+		return []clob.HistoryPoint{}, nil
 	}
 
 	if len(history) > 0 {

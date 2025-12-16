@@ -83,15 +83,17 @@ func main() {
 		ticker := time.NewTicker(2 * time.Minute) // Refresh subscriptions every 2 mins
 		defer ticker.Stop()
 
-		// Initial sync
-		syncSubscriptions(ctx, marketService, wsClient)
+		first := true
+		// Initial sync (also persists to Postgres)
+		syncSubscriptions(ctx, marketService, wsClient, first)
+		first = false
 
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				syncSubscriptions(ctx, marketService, wsClient)
+				syncSubscriptions(ctx, marketService, wsClient, first)
 			}
 		}
 	}()
@@ -113,8 +115,9 @@ func main() {
 	logger.Info("Worker exited.")
 }
 
-// syncSubscriptions fetches active markets and subscribes to their tokens
-func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds.Client) {
+// syncSubscriptions fetches active markets and subscribes to their tokens.
+// Optionally persists markets on the first run to avoid empty DB reads after restarts.
+func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds.Client, persist bool) {
 	logger.Info("🔄 Syncing market subscriptions...")
 
 	// 1. Ensure our local DB has fresh data from Gamma
@@ -128,6 +131,12 @@ func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds
 	if err := ms.SyncFreshDrops(ctx); err != nil {
 		logger.Error("Failed to sync fresh drops from Gamma: %v", err)
 		// Don't return - continue with active markets even if fresh drops fail
+	}
+
+	if persist {
+		if err := ms.PersistActiveMarkets(ctx); err != nil {
+			logger.Error("PersistActiveMarkets (initial) failed: %v", err)
+		}
 	}
 
 	// 2. Get prioritised market assets (top liquidity/volume)
