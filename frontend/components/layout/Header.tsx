@@ -164,17 +164,15 @@ export function Header() {
               {showVaultCard && (
                 <button
                   type="button"
-                  onClick={() =>
-                    hasVault ? setDepositModalOpen(true) : deployVault()
-                  }
-                  disabled={
-                    isVaultDeploying ||
-                    isLoading ||
-                    (hasVault ? false : !canDeploy)
-                  }
+                  onClick={() => {
+                    if (hasVault) {
+                      setDepositModalOpen(true);
+                    }
+                  }}
+                  disabled={isVaultDeploying || isLoading || (!hasVault && !canDeploy)}
                   className={cn(
                     "hidden md:flex h-10 items-center gap-2.5 rounded-md border border-border bg-card/70 px-2.5 py-1.5 text-left transition hover:border-primary/60 hover:bg-card",
-                    !hasVault && "border-dashed opacity-75"
+                    !hasVault && "border-dashed opacity-75 cursor-default"
                   )}
                 >
                   {walletError ? (
@@ -256,4 +254,3 @@ export function Header() {
     </header>
   );
 }
-

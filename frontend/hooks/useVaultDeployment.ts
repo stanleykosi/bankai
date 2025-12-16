@@ -93,8 +93,8 @@ export function useVaultDeployment({
     try {
       setIsDeploying(true);
       setDeployError(null);
-       setDeploymentStatus(null);
-       setDeploymentStep("preparing");
+      setDeploymentStatus(null);
+      setDeploymentStep("preparing");
 
       const token = await getToken();
       if (!token) {
@@ -128,12 +128,10 @@ export function useVaultDeployment({
           );
           // Chain switch completed, but we need to wait for React state to update
           // Return and let the user retry (or we could auto-retry)
-          autoTriggeredRef.current = false;
           setIsDeploying(false);
           return;
         } catch (error: any) {
           // If chain switch failed, stop deployment
-          autoTriggeredRef.current = false;
           setIsDeploying(false);
           setDeployError(error.message || "Failed to switch to Polygon network");
           return;
@@ -189,30 +187,32 @@ export function useVaultDeployment({
   );
 
   useEffect(() => {
-    autoTriggeredRef.current = false;
     setTypedData(null);
     setTypedDataOwner(null);
     setDeploymentStatus(null);
     setDeployError(null);
     setDeploymentStep("idle");
+    autoTriggeredRef.current = false;
   }, [eoaAddress]);
 
   useEffect(() => {
-    if (!canDeploy) {
+    if (hasVault) {
+      setDeploymentStep("idle");
+      autoTriggeredRef.current = false;
+    }
+  }, [hasVault]);
+
+  // Auto-trigger deployment only for new EOAs without a vault.
+  useEffect(() => {
+    if (!canDeploy || hasVault) {
       autoTriggeredRef.current = false;
       return;
     }
     if (!isDeploying && !autoTriggeredRef.current) {
       autoTriggeredRef.current = true;
-      deployVault();
+      void deployVault();
     }
-  }, [canDeploy, deployVault, isDeploying]);
-
-  useEffect(() => {
-    if (hasVault) {
-      setDeploymentStep("idle");
-    }
-  }, [hasVault]);
+  }, [canDeploy, deployVault, hasVault, isDeploying]);
 
   return {
     canDeploy,
@@ -223,4 +223,3 @@ export function useVaultDeployment({
     deployVault,
   };
 }
-

@@ -465,10 +465,33 @@ func (s *MarketService) GetMarketBySlug(ctx context.Context, slug string) (*mode
 
 	var market models.Market
 	if err := s.DB.WithContext(ctx).Where("slug = ?", slug).First(&market).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("failed to query market: %w", err)
+		}
+
+		// Fallback: try active markets cache so we can render even if DB missed the upsert.
+		if cached, cacheErr := s.loadAllActiveMarkets(ctx); cacheErr == nil {
+			for _, m := range cached {
+				if m.Slug == slug {
+					market = m
+
+					// Best-effort async persist so future requests hit DB.
+					go func(m models.Market) {
+						_ = s.DB.Clauses(clause.OnConflict{
+							Columns:   []clause.Column{{Name: "condition_id"}},
+							DoUpdates: clause.AssignmentColumns([]string{"slug", "title", "description", "resolution_rules", "category", "tags", "token_id_yes", "token_id_no", "end_date", "active", "closed", "archived", "accepting_orders"}),
+						}).Create(&m).Error
+					}(m)
+
+					break
+				}
+			}
+		}
+
+		// Still missing after cache lookup
+		if market.ConditionID == "" {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to query market: %w", err)
 	}
 
 	markets := []models.Market{market}
