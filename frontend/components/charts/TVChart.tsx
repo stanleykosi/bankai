@@ -78,6 +78,9 @@ export default function TVChart({
           bottom: 0.1,
         },
       },
+      localization: {
+        priceFormatter: (price: number) => (Number.isFinite(price) ? price.toFixed(3) : ""),
+      },
       crosshair: {
         mode: CrosshairMode.Normal,
         vertLine: {

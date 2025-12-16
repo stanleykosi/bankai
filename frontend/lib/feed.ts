@@ -13,6 +13,9 @@ export type HistoryPoint = {
 
 export type ChartDataPoint = LineData;
 
+const isValidNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+
 const clampPrice = (value: number) => Math.min(1, Math.max(0, value));
 
 /**
@@ -22,15 +25,17 @@ export function transformHistoryData(history: HistoryPoint[]): ChartDataPoint[] 
   if (!Array.isArray(history)) return [];
 
   const validPoints = history.filter(
-    (point) => Number.isFinite(point.t) && Number.isFinite(point.p)
+    (point) => isValidNumber(point.t) && isValidNumber(point.p)
   );
 
   const sorted = [...validPoints].sort((a, b) => a.t - b.t);
 
-  return sorted.map((point) => ({
-    time: point.t as Time,
-    value: clampPrice(point.p),
-  }));
+  return sorted
+    .map((point) => ({
+      time: point.t as Time,
+      value: clampPrice(point.p),
+    }))
+    .filter((point) => isValidNumber(point.value));
 }
 
 /**
@@ -38,10 +43,13 @@ export function transformHistoryData(history: HistoryPoint[]): ChartDataPoint[] 
  * Assumption: Price(NO) = 1 - Price(YES) for binary markets.
  */
 export function deriveInverseSeries(data: ChartDataPoint[]): ChartDataPoint[] {
-  return data.map((point) => ({
-    time: point.time,
-    value: clampPrice(1 - point.value),
-  }));
+  return data
+    .filter((point) => isValidNumber(point.time) && isValidNumber(point.value))
+    .map((point) => ({
+      time: point.time,
+      value: clampPrice(1 - point.value),
+    }))
+    .filter((point) => isValidNumber(point.value));
 }
 
 /**
@@ -52,7 +60,7 @@ export function mergeLiveTick(
   currentData: ChartDataPoint[],
   tick: { time: number; price: number }
 ): ChartDataPoint[] {
-  if (!Number.isFinite(tick.time) || !Number.isFinite(tick.price)) {
+  if (!isValidNumber(tick.time) || !isValidNumber(tick.price)) {
     return currentData;
   }
 
