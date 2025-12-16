@@ -145,9 +145,10 @@ export default function TVChart({
     const sanitized = Array.isArray(dataYes)
       ? dataYes.filter(
           (pt) =>
-            typeof pt?.value === "number" &&
+            pt &&
+            typeof pt.value === "number" &&
             Number.isFinite(pt.value) &&
-            typeof pt?.time === "number"
+            typeof pt.time === "number"
         )
       : [];
     if (yesSeriesRef.current) {
@@ -161,9 +162,10 @@ export default function TVChart({
     const sanitized = Array.isArray(dataNo)
       ? dataNo.filter(
           (pt) =>
-            typeof pt?.value === "number" &&
+            pt &&
+            typeof pt.value === "number" &&
             Number.isFinite(pt.value) &&
-            typeof pt?.time === "number"
+            typeof pt.time === "number"
         )
       : [];
 

@@ -15,6 +15,38 @@ import { walletClientToEthersSigner } from "@/lib/ethers-adapter";
 import { POLYGON_CHAIN_ID } from "@/lib/polymarket";
 
 const CLOB_API_URL = "https://clob.polymarket.com";
+const STORAGE_PREFIX = "clob-creds:";
+
+const loadStoredCreds = (address: string): UserApiCredentials | null => {
+  try {
+    const raw = localStorage.getItem(`${STORAGE_PREFIX}${address.toLowerCase()}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed?.key && parsed?.secret && parsed?.passphrase) {
+      return parsed as UserApiCredentials;
+    }
+  } catch {
+    // ignore parse errors
+  }
+  return null;
+};
+
+const persistCreds = (address: string, creds: UserApiCredentials) => {
+  try {
+    localStorage.setItem(`${STORAGE_PREFIX}${address.toLowerCase()}`, JSON.stringify(creds));
+  } catch {
+    // ignore storage errors (e.g., private mode)
+  }
+};
+
+const clearStoredCreds = (address?: string) => {
+  if (!address) return;
+  try {
+    localStorage.removeItem(`${STORAGE_PREFIX}${address.toLowerCase()}`);
+  } catch {
+    // ignore
+  }
+};
 
 export interface UserApiCredentials {
   key: string;
@@ -38,6 +70,13 @@ export function useUserApiCredentials() {
     // Return cached credentials if available
     if (credentials) {
       return credentials;
+    }
+
+    // Try localStorage cache
+    const cached = loadStoredCreds(address);
+    if (cached) {
+      setCredentials(cached);
+      return cached;
     }
 
     // Prevent concurrent fetches
@@ -81,6 +120,7 @@ export function useUserApiCredentials() {
           passphrase: derivedCreds.passphrase,
         };
         setCredentials(creds);
+        persistCreds(address, creds);
         return creds;
       }
 
@@ -92,6 +132,7 @@ export function useUserApiCredentials() {
         passphrase: newCreds.passphrase,
       };
       setCredentials(creds);
+      persistCreds(address, creds);
       return creds;
     } catch (err: any) {
       const error = err instanceof Error ? err : new Error("Failed to get API credentials");
@@ -103,15 +144,15 @@ export function useUserApiCredentials() {
     }
   }, [walletClient, address, credentials]);
 
-  // Auto-fetch credentials when wallet connects (optimization for network performance)
+  // Warm state from localStorage when wallet connects
   useEffect(() => {
-    if (walletClient && address && !credentials && !isLoading && !fetchInProgressRef.current) {
-      // Silently fetch in background - don't show errors to user unless they try to trade
-      getCredentials().catch(() => {
-        // Silently fail - credentials will be fetched on-demand when needed
-      });
+    if (address && !credentials) {
+      const cached = loadStoredCreds(address);
+      if (cached) {
+        setCredentials(cached);
+      }
     }
-  }, [walletClient, address, credentials, isLoading, getCredentials]);
+  }, [address, credentials]);
 
   // Clear credentials when wallet disconnects
   useEffect(() => {
@@ -128,4 +169,3 @@ export function useUserApiCredentials() {
     error,
   };
 }
-

@@ -16,7 +16,13 @@ export type ChartDataPoint = LineData;
 const isValidNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
 
-const clampPrice = (value: number) => Math.min(1, Math.max(0, value));
+const clampPrice = (value: unknown) => {
+  if (!isValidNumber(value)) {
+    return null;
+  }
+  const clamped = Math.min(1, Math.max(0, value));
+  return isValidNumber(clamped) ? clamped : null;
+};
 
 /**
  * Transforms backend history points to Lightweight Charts line data.
@@ -31,11 +37,15 @@ export function transformHistoryData(history: HistoryPoint[]): ChartDataPoint[] 
   const sorted = [...validPoints].sort((a, b) => a.t - b.t);
 
   return sorted
-    .map((point) => ({
-      time: point.t as Time,
-      value: clampPrice(point.p),
-    }))
-    .filter((point) => isValidNumber(point.value));
+    .map((point) => {
+      const value = clampPrice(point.p);
+      if (value === null) return null;
+      return {
+        time: point.t as Time,
+        value,
+      };
+    })
+    .filter((point): point is ChartDataPoint => Boolean(point) && isValidNumber(point.value));
 }
 
 /**
@@ -47,7 +57,7 @@ export function deriveInverseSeries(data: ChartDataPoint[]): ChartDataPoint[] {
     .filter((point) => isValidNumber(point.time) && isValidNumber(point.value))
     .map((point) => ({
       time: point.time,
-      value: clampPrice(1 - point.value),
+      value: clampPrice(1 - point.value) ?? 0,
     }))
     .filter((point) => isValidNumber(point.value));
 }
@@ -64,7 +74,12 @@ export function mergeLiveTick(
     return currentData;
   }
 
-  const nextPoint = { time: tick.time as Time, value: clampPrice(tick.price) };
+  const value = clampPrice(tick.price);
+  if (value === null) {
+    return currentData;
+  }
+
+  const nextPoint = { time: tick.time as Time, value };
 
   if (currentData.length === 0) {
     return [nextPoint];
