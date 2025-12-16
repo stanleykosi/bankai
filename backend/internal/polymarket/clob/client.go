@@ -156,6 +156,23 @@ func (c *Client) GetPriceHistory(ctx context.Context, params PriceHistoryParams)
 			return wrapper.Result, nil
 		case len(wrapper.Prices) > 0:
 			return wrapper.Prices, nil
+		default:
+			// If the wrapper keys exist but are empty arrays, treat as empty history instead of error.
+			var keyed map[string]json.RawMessage
+			if mapErr := json.Unmarshal(raw, &keyed); mapErr == nil {
+				if _, ok := keyed["history"]; ok {
+					return []HistoryPoint{}, nil
+				}
+				if _, ok := keyed["data"]; ok {
+					return []HistoryPoint{}, nil
+				}
+				if _, ok := keyed["result"]; ok {
+					return []HistoryPoint{}, nil
+				}
+				if _, ok := keyed["prices"]; ok {
+					return []HistoryPoint{}, nil
+				}
+			}
 		}
 	}
 
