@@ -142,17 +142,34 @@ export default function TVChart({
   }, [background, textColor, gridColor, height, yesColor, noColor]);
 
   useEffect(() => {
+    const sanitized = Array.isArray(dataYes)
+      ? dataYes.filter(
+          (pt) =>
+            typeof pt?.value === "number" &&
+            Number.isFinite(pt.value) &&
+            typeof pt?.time === "number"
+        )
+      : [];
     if (yesSeriesRef.current) {
-      yesSeriesRef.current.setData(dataYes);
+      yesSeriesRef.current.setData(sanitized);
     }
   }, [dataYes]);
 
   useEffect(() => {
     if (!noSeriesRef.current) return;
 
+    const sanitized = Array.isArray(dataNo)
+      ? dataNo.filter(
+          (pt) =>
+            typeof pt?.value === "number" &&
+            Number.isFinite(pt.value) &&
+            typeof pt?.time === "number"
+        )
+      : [];
+
     noSeriesRef.current.applyOptions({ visible: showNoSeries });
     if (showNoSeries) {
-      noSeriesRef.current.setData(dataNo);
+      noSeriesRef.current.setData(sanitized);
     }
   }, [dataNo, showNoSeries]);
 

@@ -29,7 +29,7 @@ import {
 } from "@/lib/market-data";
 import type { Market } from "@/types";
 
-const PAGE_SIZE = 200;
+const PAGE_SIZE = 100;
 
 const formatCurrency = (value?: number) => {
   if (!value || Number.isNaN(value)) return "—";
@@ -105,11 +105,12 @@ export default function MarketsPage() {
     staleTime: 5 * 60 * 1000,
   });
 
-  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, status } = useInfiniteQuery({
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, status, isFetching } = useInfiniteQuery({
     queryKey: ["markets", "list", filters, sortVersion],
     queryFn: ({ pageParam = 0 }) => fetchMarketsPage(filters, PAGE_SIZE, pageParam),
     initialPageParam: 0,
-    refetchInterval: 60_000,
+    refetchOnWindowFocus: false,
+    staleTime: 60_000,
     getNextPageParam: (lastPage) =>
       lastPage.nextOffset < lastPage.total ? lastPage.nextOffset : undefined,
   });
