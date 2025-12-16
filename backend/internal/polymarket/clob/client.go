@@ -129,11 +129,37 @@ func (c *Client) GetPriceHistory(ctx context.Context, params PriceHistoryParams)
 		path = fmt.Sprintf("%s?%s", pricesHistoryEndpoint, encoded)
 	}
 
-	var history []HistoryPoint
-	if err := c.sendRequestDecode(ctx, http.MethodGet, path, nil, &history, nil); err != nil {
+	var raw json.RawMessage
+	if err := c.sendRequestDecode(ctx, http.MethodGet, path, nil, &raw, nil); err != nil {
 		return nil, err
 	}
-	return history, nil
+
+	var history []HistoryPoint
+	if err := json.Unmarshal(raw, &history); err == nil {
+		return history, nil
+	}
+
+	// Some responses wrap the array (e.g., {"history":[...]} or {"data":[...]}).
+	var wrapper struct {
+		History []HistoryPoint `json:"history"`
+		Data    []HistoryPoint `json:"data"`
+		Result  []HistoryPoint `json:"result"`
+		Prices  []HistoryPoint `json:"prices"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err == nil {
+		switch {
+		case len(wrapper.History) > 0:
+			return wrapper.History, nil
+		case len(wrapper.Data) > 0:
+			return wrapper.Data, nil
+		case len(wrapper.Result) > 0:
+			return wrapper.Result, nil
+		case len(wrapper.Prices) > 0:
+			return wrapper.Prices, nil
+		}
+	}
+
+	return nil, fmt.Errorf("unexpected prices-history response shape: %s", string(raw))
 }
 
 // DeriveAPIKey requests (or creates) the user API credentials using the L1 ClobAuth signature.
