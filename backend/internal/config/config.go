@@ -101,7 +101,7 @@ func Load() (*Config, error) {
 			TavilyAPIKey:   getEnv("TAVILY_API_KEY", ""),
 			OpenAIAPIKey:   getEnv("OPENAI_API_KEY", ""),
 			OpenAIBaseURL:  getEnv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"),
-			OpenAIModel:    getEnv("OPENAI_MODEL", "google/gemini-3.0-pro"),
+			OpenAIModel:    getEnv("OPENAI_MODEL", "google/gemini-3-pro-preview"),
 			PolygonRPCURL:  getEnv("POLYGON_RPC_URL", ""),
 			SyncJobSecret:  getEnv("JOB_SYNC_SECRET", ""),
 		},
