@@ -13,6 +13,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { ChartContainer } from "@/components/charts/ChartContainer";
 import { fetchMarketBySlug, requestMarketStream } from "@/lib/market-data";
 import { usePriceStream } from "@/hooks/usePriceStream";
+import { useTerminalStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export default function MarketDetailPage() {
@@ -20,6 +21,7 @@ export default function MarketDetailPage() {
   const slug = params?.slug;
   const streamRequestedRef = useRef<string | null>(null);
   const { augmentMarket } = usePriceStream();
+  const { setActiveMarket } = useTerminalStore();
 
   const {
     data: market,
@@ -34,6 +36,13 @@ export default function MarketDetailPage() {
   });
 
   const loadingState = isLoading || !slug;
+
+  useEffect(() => {
+    if (market) {
+      setActiveMarket(market);
+    }
+    return () => setActiveMarket(null);
+  }, [market, setActiveMarket]);
 
   useEffect(() => {
     const conditionId = market?.condition_id;
