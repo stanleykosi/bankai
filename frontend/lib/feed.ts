@@ -45,7 +45,7 @@ export function transformHistoryData(history: HistoryPoint[]): ChartDataPoint[] 
         value,
       };
     })
-    .filter((point): point is ChartDataPoint => Boolean(point) && isValidNumber(point.value));
+    .filter((point): point is ChartDataPoint => point !== null && isValidNumber(point.value));
 }
 
 /**
