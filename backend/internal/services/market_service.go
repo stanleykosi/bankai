@@ -517,6 +517,50 @@ func (s *MarketService) GetFreshDrops(ctx context.Context) ([]models.Market, err
 	return markets, nil
 }
 
+// GetMarketByConditionID fetches a single market by condition_id and attaches the latest price snapshot.
+func (s *MarketService) GetMarketByConditionID(ctx context.Context, conditionID string) (*models.Market, error) {
+	conditionID = strings.TrimSpace(conditionID)
+	if conditionID == "" {
+		return nil, fmt.Errorf("condition_id is required")
+	}
+
+	var market models.Market
+	if err := s.DB.WithContext(ctx).Where("condition_id = ?", conditionID).First(&market).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("failed to query market: %w", err)
+		}
+
+		// Fallback to cached snapshot so we can still render if DB is missing the row.
+		if cached, cacheErr := s.loadAllActiveMarkets(ctx); cacheErr == nil {
+			for _, m := range cached {
+				if m.ConditionID == conditionID {
+					market = m
+
+					// Best-effort async persist to keep DB in sync for future requests.
+					go func(m models.Market) {
+						_ = s.DB.Clauses(clause.OnConflict{
+							Columns:   []clause.Column{{Name: "condition_id"}},
+							DoUpdates: clause.AssignmentColumns([]string{"slug", "title", "description", "resolution_rules", "category", "tags", "token_id_yes", "token_id_no", "end_date", "active", "closed", "archived", "accepting_orders"}),
+						}).Create(&m).Error
+					}(m)
+
+					break
+				}
+			}
+		}
+
+		if market.ConditionID == "" {
+			return nil, nil
+		}
+	}
+
+	markets := []models.Market{market}
+	s.attachRealtimePrices(ctx, markets)
+	market = markets[0]
+
+	return &market, nil
+}
+
 // GetMarketBySlug fetches a single market by its slug and attaches the latest price snapshot.
 func (s *MarketService) GetMarketBySlug(ctx context.Context, slug string) (*models.Market, error) {
 	if slug == "" {

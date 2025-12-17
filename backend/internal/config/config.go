@@ -65,6 +65,8 @@ type ServicesConfig struct {
 	ClerkJWKSURL   string // URL to fetch JSON Web Key Set for JWT validation
 	TavilyAPIKey   string
 	OpenAIAPIKey   string
+	OpenAIBaseURL  string
+	OpenAIModel    string
 	PolygonRPCURL  string
 	SyncJobSecret  string
 }
@@ -98,6 +100,8 @@ func Load() (*Config, error) {
 			ClerkJWKSURL:   getEnv("CLERK_JWKS_URL", ""),
 			TavilyAPIKey:   getEnv("TAVILY_API_KEY", ""),
 			OpenAIAPIKey:   getEnv("OPENAI_API_KEY", ""),
+			OpenAIBaseURL:  getEnv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"),
+			OpenAIModel:    getEnv("OPENAI_MODEL", "google/gemini-3.0-pro"),
 			PolygonRPCURL:  getEnv("POLYGON_RPC_URL", ""),
 			SyncJobSecret:  getEnv("JOB_SYNC_SECRET", ""),
 		},

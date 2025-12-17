@@ -18,6 +18,8 @@ import (
 	"github.com/bankai-project/backend/internal/api/handlers"
 	"github.com/bankai-project/backend/internal/api/middleware"
 	"github.com/bankai-project/backend/internal/config"
+	"github.com/bankai-project/backend/internal/integrations/openai"
+	"github.com/bankai-project/backend/internal/integrations/tavily"
 	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/polymarket/clob"
 	"github.com/bankai-project/backend/internal/polymarket/gamma"
@@ -42,11 +44,14 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	gammaClient := gamma.NewClient(cfg)
 	relayerClient := relayer.NewClient(cfg)
 	clobClient := clob.NewClient(cfg)
+	tavilyClient := tavily.NewClient(cfg)
+	openaiClient := openai.NewClient(cfg)
 
 	// 3. Initialize Services
 	marketService := services.NewMarketService(db, rdb, gammaClient, clobClient)
 	walletManager := services.NewWalletManager(db, relayerClient, gammaClient)
 	tradeService := services.NewTradeService(db, clobClient)
+	oracleService := services.NewOracleService(marketService, tavilyClient, openaiClient)
 
 	// Initialize Blockchain Service
 	blockchainService, err := services.NewBlockchainService(cfg)
@@ -61,6 +66,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	marketHandler := handlers.NewMarketHandler(marketService)
 	walletHandler := handlers.NewWalletHandler(walletManager, blockchainService)
 	tradeHandler := handlers.NewTradeHandler(tradeService, cfg, db)
+	oracleHandler := handlers.NewOracleHandler(oracleService)
 
 	// 5. Define Routes
 	// Root route for easy health checks
@@ -92,6 +98,10 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	markets.Get("/:condition_id/depth", marketHandler.GetDepthEstimate)
 	markets.Post("/:condition_id/stream", marketHandler.RequestMarketStream)
 	markets.Get("/:slug", marketHandler.GetMarketBySlug)
+
+	// Oracle Routes (Public for now, can be protected)
+	oracle := v1.Group("/oracle")
+	oracle.Get("/analyze/:condition_id", oracleHandler.AnalyzeMarket)
 
 	// User Routes (Protected)
 	user := v1.Group("/user", middleware.Protected())
