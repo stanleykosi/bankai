@@ -27,7 +27,7 @@ import (
 
 const (
 	DefaultBaseURL   = "https://openrouter.ai/api/v1/chat/completions"
-	DefaultModel     = "google/gemini-3.0-pro"
+	DefaultModel     = "google/gemini-3-pro-preview"
 	requestTimeout   = 60 * time.Second
 	defaultMaxTokens = 512
 )
