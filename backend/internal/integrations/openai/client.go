@@ -29,7 +29,7 @@ const (
 	DefaultBaseURL   = "https://openrouter.ai/api/v1/chat/completions"
 	DefaultModel     = "google/gemini-3-pro-preview"
 	requestTimeout   = 60 * time.Second
-	defaultMaxTokens = 4000 // High limit to allow extensive reasoning + content generation
+	defaultMaxTokens = 10000 // High limit for comprehensive analysis with full context
 )
 
 type Client struct {

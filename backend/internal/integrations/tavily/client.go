@@ -83,10 +83,10 @@ func (c *Client) Search(ctx context.Context, query string) ([]SearchResult, erro
 	payload := SearchRequest{
 		APIKey:            c.apiKey,
 		Query:             query,
-		SearchDepth:       "basic",
+		SearchDepth:       "advanced", // Deep crawl for comprehensive, current, and highly relevant results
 		IncludeAnswer:     false,
-		IncludeRawContent: true,
-		MaxResults:        5,
+		IncludeRawContent: true, // Get full content for maximum context
+		MaxResults:        5,     // Get top 5 results with highest relevance scores
 	}
 
 	bodyBytes, err := json.Marshal(payload)

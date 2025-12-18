@@ -31,10 +31,10 @@ import (
 )
 
 const (
-	maxSourceEntries       = 4
-	maxSourceContentLength = 480
-	maxRulesLength         = 600
-	maxDescriptionLength   = 600
+	maxSourceEntries       = 5  // Use all 5 Tavily results for maximum context
+	maxSourceContentLength = 0  // 0 = no truncation, send full content
+	maxRulesLength         = 0  // 0 = no truncation, send full resolution rules
+	maxDescriptionLength   = 0  // 0 = no truncation, send full description
 )
 
 var ErrMarketNotFound = errors.New("market not found")
@@ -96,15 +96,162 @@ func (s *OracleService) AnalyzeMarket(ctx context.Context, conditionID string) (
 	logger.Info("Oracle search completed for %s | query=%q | results=%d", conditionID, query, len(searchResults))
 
 	// 3. Construct LLM Context
+	// Note: Market data sources:
+	// - DB fields: title, description, rules, dates, volume, liquidity, price changes, BestBid/BestAsk (overall market)
+	// - Redis fields (via attachRealtimePrices): YesPrice, NoPrice, YesBestBid/Ask, NoBestBid/Ask (token-specific)
+	// - TrendingScore: NOT available for single market fetches (only computed for market lanes)
 	contextBuilder := strings.Builder{}
-	contextBuilder.WriteString(fmt.Sprintf("Market Title: %s\n", market.Title))
+	contextBuilder.WriteString("=== MARKET INFORMATION ===\n")
+	contextBuilder.WriteString(fmt.Sprintf("Title: %s\n", market.Title))
+	
 	if desc := strings.TrimSpace(market.Description); desc != "" {
-		contextBuilder.WriteString(fmt.Sprintf("Description: %s\n", truncateText(desc, maxDescriptionLength)))
+		// No truncation - send full description for maximum context
+		contextBuilder.WriteString(fmt.Sprintf("Description: %s\n", desc))
 	}
+	
 	if rules := strings.TrimSpace(market.ResolutionRules); rules != "" {
-		contextBuilder.WriteString(fmt.Sprintf("Resolution Rules: %s\n", truncateText(rules, maxRulesLength)))
+		// No truncation - send full resolution rules for maximum context
+		contextBuilder.WriteString(fmt.Sprintf("Resolution Rules: %s\n", rules))
 	}
-	contextBuilder.WriteString("\nRecent Search Results:\n")
+	
+	if market.Category != "" {
+		contextBuilder.WriteString(fmt.Sprintf("Category: %s\n", market.Category))
+	}
+	
+	if len(market.Tags) > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("Tags: %s\n", strings.Join(market.Tags, ", ")))
+	}
+	
+	if market.Outcomes != "" {
+		contextBuilder.WriteString(fmt.Sprintf("Outcomes: %s\n", market.Outcomes))
+	}
+	
+	// Date information
+	if market.StartDate != nil {
+		contextBuilder.WriteString(fmt.Sprintf("Start Date: %s\n", market.StartDate.Format(time.RFC3339)))
+	}
+	if market.EndDate != nil {
+		contextBuilder.WriteString(fmt.Sprintf("End Date: %s\n", market.EndDate.Format(time.RFC3339)))
+	}
+	if market.EventStartTime != nil {
+		contextBuilder.WriteString(fmt.Sprintf("Event Start Time: %s\n", market.EventStartTime.Format(time.RFC3339)))
+	}
+	
+	// Market status
+	statusParts := []string{}
+	if market.Closed {
+		statusParts = append(statusParts, "Closed")
+	}
+	if market.Archived {
+		statusParts = append(statusParts, "Archived")
+	}
+	if market.Active {
+		statusParts = append(statusParts, "Active")
+	}
+	if market.Funded {
+		statusParts = append(statusParts, "Funded")
+	}
+	if market.Ready {
+		statusParts = append(statusParts, "Ready")
+	}
+	if len(statusParts) > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("Status: %s\n", strings.Join(statusParts, ", ")))
+	}
+	
+	// Price Information
+	contextBuilder.WriteString("\n=== PRICING DATA ===\n")
+	if market.YesPrice > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("YES Price: %.4f (%.2f%%)\n", market.YesPrice, market.YesPrice*100))
+	}
+	if market.NoPrice > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("NO Price: %.4f (%.2f%%)\n", market.NoPrice, market.NoPrice*100))
+	}
+	if market.LastTradePrice > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("Last Trade Price: %.4f\n", market.LastTradePrice))
+	}
+	if market.BestBid > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("Best Bid: %.4f\n", market.BestBid))
+	}
+	if market.BestAsk > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("Best Ask: %.4f\n", market.BestAsk))
+	}
+	if market.Spread > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("Spread: %.4f\n", market.Spread))
+	}
+	if market.YesBestBid > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("YES Best Bid: %.4f\n", market.YesBestBid))
+	}
+	if market.YesBestAsk > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("YES Best Ask: %.4f\n", market.YesBestAsk))
+	}
+	if market.NoBestBid > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("NO Best Bid: %.4f\n", market.NoBestBid))
+	}
+	if market.NoBestAsk > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("NO Best Ask: %.4f\n", market.NoBestAsk))
+	}
+	
+	// Price Changes (momentum indicators)
+	priceChangeParts := []string{}
+	if market.OneHourPriceChange != 0 {
+		priceChangeParts = append(priceChangeParts, fmt.Sprintf("1h: %.2f%%", market.OneHourPriceChange*100))
+	}
+	if market.OneDayPriceChange != 0 {
+		priceChangeParts = append(priceChangeParts, fmt.Sprintf("24h: %.2f%%", market.OneDayPriceChange*100))
+	}
+	if market.OneWeekPriceChange != 0 {
+		priceChangeParts = append(priceChangeParts, fmt.Sprintf("7d: %.2f%%", market.OneWeekPriceChange*100))
+	}
+	if market.OneMonthPriceChange != 0 {
+		priceChangeParts = append(priceChangeParts, fmt.Sprintf("30d: %.2f%%", market.OneMonthPriceChange*100))
+	}
+	if len(priceChangeParts) > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("Price Changes: %s\n", strings.Join(priceChangeParts, ", ")))
+	}
+	
+	// Volume Metrics
+	contextBuilder.WriteString("\n=== VOLUME METRICS ===\n")
+	if market.Volume24h > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("24h Volume: $%.2f\n", market.Volume24h))
+	}
+	if market.Volume1Week > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("7d Volume: $%.2f\n", market.Volume1Week))
+	}
+	if market.Volume1Month > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("30d Volume: $%.2f\n", market.Volume1Month))
+	}
+	if market.VolumeAllTime > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("All-Time Volume: $%.2f\n", market.VolumeAllTime))
+	}
+	
+	// Liquidity Metrics
+	if market.Liquidity > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("Liquidity: $%.2f\n", market.Liquidity))
+	}
+	if market.LiquidityClob > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("CLOB Liquidity: $%.2f\n", market.LiquidityClob))
+	}
+	
+	// Outcome Prices (if available)
+	if market.OutcomePrices != "" {
+		contextBuilder.WriteString(fmt.Sprintf("Outcome Prices: %s\n", market.OutcomePrices))
+	}
+	
+	// Market Quality Indicators
+	if market.Competitive > 0 {
+		contextBuilder.WriteString(fmt.Sprintf("Competitive Score: %.2f\n", market.Competitive))
+	}
+	// Note: TrendingScore is only computed for market lanes, not available for single market fetches
+	
+	// Market Timestamps
+	if market.MarketCreatedAt != nil {
+		contextBuilder.WriteString(fmt.Sprintf("Market Created: %s\n", market.MarketCreatedAt.Format(time.RFC3339)))
+	}
+	if market.MarketUpdatedAt != nil {
+		contextBuilder.WriteString(fmt.Sprintf("Last Updated: %s\n", market.MarketUpdatedAt.Format(time.RFC3339)))
+	}
+	
+	contextBuilder.WriteString("\n=== RECENT SEARCH RESULTS ===\n")
 
 	var sources []Source
 	if len(searchResults) == 0 {
@@ -114,33 +261,106 @@ func (s *OracleService) AnalyzeMarket(ctx context.Context, conditionID string) (
 			if i >= maxSourceEntries {
 				break
 			}
-			snippet := truncateText(strings.TrimSpace(res.Content), maxSourceContentLength)
-			contextBuilder.WriteString(fmt.Sprintf("[%d] %s: %s\n", i+1, res.Title, snippet))
+			// No truncation - send full content for maximum context
+			content := strings.TrimSpace(res.Content)
+			if content != "" {
+				contextBuilder.WriteString(fmt.Sprintf("[%d] %s: %s\n", i+1, res.Title, content))
+			} else {
+				contextBuilder.WriteString(fmt.Sprintf("[%d] %s\n", i+1, res.Title))
+			}
 			sources = append(sources, Source{Title: res.Title, URL: res.URL})
 		}
 	}
 
 	// 4. Prompt Engineering
-	systemPrompt := `You are Bankai Oracle, an elite prediction market analyst.
-Your goal is to estimate the probability (0-100%) of a "YES" outcome for the given market.
-You must be objective, identifying key factors, potential blockers, and recent developments.
-If the information is insufficient, acknowledge the uncertainty.
+	systemPrompt := `You are Bankai Oracle, a precision prediction market analysis engine. Your sole purpose is to calculate the exact probability of a "YES" outcome for the given market using all available data.
 
-CRITICAL: You MUST respond with ONLY a valid JSON object. No markdown, no headings, no prose, no code fences, no reasoning tokens, no explanations outside the JSON.
-If you cannot comply, return: {"probability":0,"sentiment":"Uncertain","reasoning":"Unable to comply"}
+ANALYSIS METHODOLOGY:
 
-Required JSON format (exactly these fields):
+1. MARKET FUNDAMENTALS:
+   - Parse the full description and resolution rules meticulously. These define what "YES" means and how the market resolves.
+   - Identify the specific event, deadline, and resolution criteria. Any ambiguity in rules increases uncertainty.
+   - Consider category and tags for context about market type and domain expertise required.
+
+2. TEMPORAL ANALYSIS:
+   - Compare current time against Start Date, End Date, and Event Start Time.
+   - Markets closer to resolution dates have less time for conditions to change.
+   - Recent market creation suggests less historical data; older markets may have more established patterns.
+
+3. MARKET SENTIMENT (PRICING DATA):
+   - Current YES/NO prices reflect aggregate market belief. YES price = implied probability.
+   - Compare YES price to your calculated probability. Significant divergence indicates either market inefficiency or your analysis gap.
+   - Best Bid/Ask spreads indicate liquidity depth. Wide spreads suggest uncertainty or low confidence.
+   - Last Trade Price shows recent market activity and direction.
+
+4. MOMENTUM INDICATORS:
+   - Price changes (1h, 24h, 7d, 30d) reveal trend direction and velocity.
+   - Positive momentum in YES price suggests increasing confidence in YES outcome.
+   - Negative momentum suggests deteriorating YES prospects.
+   - Consider both short-term (1h, 24h) and medium-term (7d, 30d) trends for context.
+
+5. MARKET DEPTH & ACTIVITY:
+   - Volume metrics indicate market interest and information flow. High volume suggests active information discovery.
+   - 24h volume vs historical volume shows if interest is accelerating or declining.
+   - Liquidity depth determines how easily positions can be entered/exited. Low liquidity may indicate low confidence or niche market.
+   - Competitive score reflects market quality and participant engagement.
+
+6. EXTERNAL INTELLIGENCE (Tavily Search Results):
+   - Analyze all 5 search results for concrete, current information relevant to the market question.
+   - Prioritize recent developments, official announcements, regulatory changes, and factual events.
+   - Cross-reference news with market description and resolution rules. Does the news support or contradict YES outcome?
+   - Ignore speculation and opinion; focus on verifiable facts and events.
+   - If news is contradictory or insufficient, factor this into uncertainty.
+
+7. SYNTHESIS & PROBABILITY CALCULATION:
+   - Weight all factors: fundamentals (40%), market sentiment/pricing (30%), external news (20%), momentum/volume (10%).
+   - If market price strongly diverges from fundamentals, question why. Market may know something you don't, or vice versa.
+   - If resolution rules are ambiguous or external information is contradictory, increase uncertainty.
+   - If all signals align (fundamentals + pricing + news + momentum), confidence should be high.
+   - Output a precise probability (e.g., 0.734, not 0.7 or 0.75). Use decimal precision to reflect confidence level.
+
+8. SENTIMENT CLASSIFICATION:
+   - "Bullish": Strong positive signals across multiple dimensions, probability > 0.65
+   - "Bearish": Strong negative signals, probability < 0.35
+   - "Neutral": Mixed signals or balanced evidence, probability 0.35-0.65
+   - "Uncertain": Insufficient information, contradictory signals, or ambiguous resolution criteria
+
+OUTPUT REQUIREMENTS:
+- Respond with ONLY a valid JSON object. No markdown, no code fences, no prose, no reasoning tokens outside JSON.
+- If you cannot produce valid JSON, return: {"probability":0,"sentiment":"Uncertain","reasoning":"Unable to comply"}
+
+Required JSON format:
 {
-  "probability": number, // 0.0 to 1.0 (e.g. 0.71 for 71%)
-  "sentiment": string, // Must be one of: "Bullish", "Bearish", "Neutral", "Uncertain"
-  "reasoning": string // Concise summary of your analysis (2-4 sentences max)
+  "probability": number,  // 0.0 to 1.0, precise decimal (e.g., 0.734 for 73.4%)
+  "sentiment": string,    // Exactly one of: "Bullish", "Bearish", "Neutral", "Uncertain"
+  "reasoning": string     // 3-5 sentences: Concise synthesis of key factors that led to your probability estimate. Reference specific data points (prices, volume, news, dates) that influenced your decision. Be direct and factual.
 }`
 
-	userPrompt := fmt.Sprintf(`Analyze this market based on the context:
+	userPrompt := fmt.Sprintf(`Analyze this prediction market and calculate the probability of a YES outcome.
 
-%s
+You have been provided with:
+- Complete market description and resolution rules (read carefully - these define what YES means)
+- Current market pricing data (YES/NO prices, bids/asks, spreads, last trade)
+- Price momentum indicators (1h, 24h, 7d, 30d changes)
+- Trading volume and liquidity metrics (24h, 7d, 30d, all-time)
+- Market status, dates, and metadata
+- 5 external news sources with full content (analyze for relevant, current information)
 
-Return ONLY the JSON object described above. Do not include any other text or formatting.`, contextBuilder.String())
+SYNTHESIZE ALL DATA:
+1. What do the fundamentals (description + rules) tell you about the likelihood of YES?
+2. What does current market pricing imply about collective belief?
+3. What do price momentum trends indicate about direction?
+4. What do volume and liquidity metrics reveal about market confidence?
+5. What concrete information do the external news sources provide?
+6. How do all these signals align or conflict?
+
+Calculate a precise probability (0.0-1.0) that reflects your synthesis of ALL available data.
+Classify sentiment based on the strength and direction of signals.
+Provide reasoning that references specific data points that influenced your calculation.
+
+Return ONLY the JSON object with your analysis.
+
+%s`, contextBuilder.String())
 
 	// 5. Call LLM
 	logger.Info("Oracle calling LLM for market %s | model=%s | context_len=%d", market.ConditionID, s.OpenAI.Model(), len(userPrompt))
