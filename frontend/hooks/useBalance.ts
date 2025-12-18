@@ -48,8 +48,11 @@ export function useBalance() {
       }
     },
     enabled: !!isSignedIn, // Only fetch when signed in
-    refetchInterval: 30000, // Refetch every 30 seconds
-    staleTime: 10000, // Consider data stale after 10 seconds
+    // Reduce chatter: no interval; refresh on demand via queryClient.invalidateQueries(["balance"])
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: true,
+    staleTime: 60_000, // 1 minute
   });
 }
-

@@ -123,7 +123,7 @@ Your goal is to estimate the probability (0-100%) of a "YES" outcome for the giv
 You must be objective, identifying key factors, potential blockers, and recent developments.
 If the information is insufficient, acknowledge the uncertainty.
 
-Return ONLY a single JSON object. No markdown, no prose, no code fences.
+Return ONLY a single JSON object. No markdown, no prose, no code fences. Keep the total response under 120 tokens.
 Output JSON format:
 {
   "probability": number, // 0.0 to 1.0 (e.g. 0.65)

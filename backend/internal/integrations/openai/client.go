@@ -29,7 +29,7 @@ const (
 	DefaultBaseURL   = "https://openrouter.ai/api/v1/chat/completions"
 	DefaultModel     = "google/gemini-3-pro-preview"
 	requestTimeout   = 60 * time.Second
-	defaultMaxTokens = 1024
+	defaultMaxTokens = 768
 )
 
 type Client struct {
@@ -40,20 +40,22 @@ type Client struct {
 }
 
 type ChatRequest struct {
-	Model          string          `json:"model"`
-	Messages       []Message       `json:"messages"`
-	Temperature    float64         `json:"temperature"`
-	MaxTokens      int             `json:"max_tokens,omitempty"`
-	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+	Model       string    `json:"model"`
+	Messages    []Message `json:"messages"`
+	Temperature float64   `json:"temperature"`
+	MaxTokens   int       `json:"max_tokens,omitempty"`
 }
 
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role             string            `json:"role"`
+	Content          string            `json:"content"`
+	Reasoning        string            `json:"reasoning,omitempty"`
+	ReasoningDetails []ReasoningDetail `json:"reasoning_details,omitempty"`
 }
 
-type ResponseFormat struct {
-	Type string `json:"type"`
+type ReasoningDetail struct {
+	Text string `json:"text,omitempty"`
+	// Some providers include format/index; omit for brevity
 }
 
 type ChatResponse struct {
@@ -112,9 +114,8 @@ func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},
 		},
-		Temperature:    0.1,
-		MaxTokens:      defaultMaxTokens,
-		ResponseFormat: &ResponseFormat{Type: "json_object"},
+		Temperature: 0.1,
+		MaxTokens:   defaultMaxTokens,
 	}
 
 	bodyBytes, err := json.Marshal(payload)
@@ -154,6 +155,14 @@ func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (
 	}
 
 	content := strings.TrimSpace(result.Choices[0].Message.Content)
+	if content == "" {
+		if alt := strings.TrimSpace(result.Choices[0].Message.Reasoning); alt != "" {
+			content = alt
+		} else if len(result.Choices[0].Message.ReasoningDetails) > 0 {
+			content = strings.TrimSpace(result.Choices[0].Message.ReasoningDetails[0].Text)
+		}
+	}
+
 	if content == "" {
 		logger.Error("OpenAI response missing content | response: %s | raw: %s", toJSON(result), string(respBody))
 		return "", fmt.Errorf("openai response missing content")
