@@ -29,7 +29,7 @@ const (
 	DefaultBaseURL   = "https://openrouter.ai/api/v1/chat/completions"
 	DefaultModel     = "google/gemini-3-pro-preview"
 	requestTimeout   = 60 * time.Second
-	defaultMaxTokens = 500
+	defaultMaxTokens = 4000 // High limit to allow extensive reasoning + content generation
 )
 
 type Client struct {
@@ -53,7 +53,7 @@ type ResponseFormat struct {
 }
 
 type ReasoningConfig struct {
-	Exclude bool `json:"exclude,omitempty"`
+	Exclude bool `json:"exclude,omitempty"` // Exclude reasoning from content, but allow unlimited reasoning internally
 }
 
 type Message struct {
@@ -130,9 +130,10 @@ func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (
 		ResponseFormat: &ResponseFormat{
 			Type: "json_object",
 		},
-		// Exclude reasoning tokens from response to avoid interference with JSON parsing
+		// Exclude reasoning tokens from content field, but allow unlimited reasoning internally
+		// The model can reason as much as it wants, but only the final JSON output appears in content
 		Reasoning: &ReasoningConfig{
-			Exclude: true,
+			Exclude: true, // Reasoning happens internally but is excluded from the content field
 		},
 	}
 
@@ -192,8 +193,15 @@ func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (
 	}
 
 	if content == "" {
-		logger.Error("OpenAI response missing content field | response: %s | raw: %s", toJSON(result), string(respBody))
-		return "", fmt.Errorf("openai response missing content")
+		finishReason := result.Choices[0].FinishReason
+		logger.Error("OpenAI response missing content field | finish_reason=%s | response: %s | raw: %s", 
+			finishReason, toJSON(result), truncateForLog(string(respBody), 1000))
+		
+		// If truncated due to length, the model used all tokens for reasoning without generating content
+		if finishReason == "length" {
+			return "", fmt.Errorf("openai response truncated: model consumed all %d tokens in reasoning without generating content. Consider increasing max_tokens further", defaultMaxTokens)
+		}
+		return "", fmt.Errorf("openai response missing content (finish_reason: %s)", finishReason)
 	}
 
 	return content, nil
