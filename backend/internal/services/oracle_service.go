@@ -109,6 +109,15 @@ func (s *OracleService) AnalyzeMarket(ctx context.Context, conditionID string) (
 	// - Redis fields (via attachRealtimePrices): YesPrice, NoPrice, YesBestBid/Ask, NoBestBid/Ask (token-specific)
 	// - TrendingScore: NOT available for single market fetches (only computed for market lanes)
 	contextBuilder := strings.Builder{}
+	
+	// Add current date/time context for temporal analysis
+	currentTime := time.Now().UTC()
+	contextBuilder.WriteString("=== TEMPORAL CONTEXT ===\n")
+	contextBuilder.WriteString(fmt.Sprintf("Current Date/Time (UTC): %s\n", currentTime.Format(time.RFC3339)))
+	contextBuilder.WriteString(fmt.Sprintf("Current Date: %s\n", currentTime.Format("2006-01-02")))
+	contextBuilder.WriteString(fmt.Sprintf("Current Year: %d\n", currentTime.Year()))
+	contextBuilder.WriteString("\n")
+	
 	contextBuilder.WriteString("=== MARKET INFORMATION ===\n")
 	contextBuilder.WriteString(fmt.Sprintf("Title: %s\n", market.Title))
 	
@@ -291,9 +300,11 @@ ANALYSIS METHODOLOGY:
    - Consider category and tags for context about market type and domain expertise required.
 
 2. TEMPORAL ANALYSIS:
+   - The current date/time is provided in the context. Use it to calculate time remaining until market resolution.
    - Compare current time against Start Date, End Date, and Event Start Time.
    - Markets closer to resolution dates have less time for conditions to change.
    - Recent market creation suggests less historical data; older markets may have more established patterns.
+   - Calculate days/months remaining until resolution to assess feasibility of YES outcome.
 
 3. MARKET SENTIMENT (PRICING DATA):
    - Current YES/NO prices reflect aggregate market belief. YES price = implied probability.
