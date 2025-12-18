@@ -87,8 +87,16 @@ func (s *OracleService) AnalyzeMarket(ctx context.Context, conditionID string) (
 	logger.Info("Oracle analyzing market: %s", market.Title)
 
 	// 2. Search for Information
-	query := fmt.Sprintf("%s latest news analysis", market.Title)
-	searchResults, err := s.Tavily.Search(ctx, query)
+	// Build a focused query that extracts key entities and avoids generic market terms
+	query := buildSearchQuery(market)
+	// Exclude Wikipedia and Polymarket to get actual news sources
+	excludeDomains := []string{
+		"wikipedia.org",
+		"en.wikipedia.org",
+		"polymarket.com",
+		"www.polymarket.com",
+	}
+	searchResults, err := s.Tavily.Search(ctx, query, excludeDomains...)
 	if err != nil {
 		logger.Error("Oracle search failed for %s: %v", conditionID, err)
 		searchResults = nil
@@ -581,6 +589,65 @@ func truncateText(s string, limit int) string {
 		return s
 	}
 	return string(runes[:limit]) + "..."
+}
+
+// buildSearchQuery constructs an optimized search query for Tavily that focuses on
+// finding relevant, current news articles about the market topic.
+// Keeps all meaningful terms from the title and adds news-focused context.
+func buildSearchQuery(market *models.Market) string {
+	title := strings.TrimSpace(market.Title)
+	if title == "" {
+		return "latest news"
+	}
+
+	// Clean up the title: remove question mark and "Will" prefix, but keep all entities
+	title = strings.ReplaceAll(title, "Will ", "")
+	title = strings.ReplaceAll(title, "?", "")
+	title = strings.TrimSpace(title)
+
+	// Split into words and filter out only the most common filler words
+	words := strings.Fields(title)
+	keyTerms := []string{}
+	
+	// Minimal filtering - only remove very common grammatical words
+	// Keep all entities, proper nouns, and meaningful terms
+	fillerWords := map[string]bool{
+		"the": true, "a": true, "an": true, "and": true, "or": true,
+		"in": true, "on": true, "at": true, "to": true, "for": true,
+		"of": true, "with": true, "by": true,
+	}
+	
+	for _, word := range words {
+		word = strings.Trim(word, ".,!?;:")
+		if word == "" {
+			continue
+		}
+		lower := strings.ToLower(word)
+		// Only skip very common filler words, keep everything else
+		if !fillerWords[lower] {
+			keyTerms = append(keyTerms, word)
+		}
+	}
+
+	// If we filtered out too much, use the cleaned title directly
+	if len(keyTerms) < 2 {
+		keyTerms = strings.Fields(title)
+	}
+
+	// Build query: keep all key terms + add news context
+	queryParts := keyTerms
+	
+	// Add news-focused terms to prioritize actual news articles
+	queryParts = append(queryParts, "news", "latest")
+
+	// Combine into focused query
+	query := strings.Join(queryParts, " ")
+
+	// Clean up multiple spaces
+	query = regexp.MustCompile(`\s+`).ReplaceAllString(query, " ")
+	query = strings.TrimSpace(query)
+
+	return query
 }
 
 func normalizeProbability(p float64) float64 {

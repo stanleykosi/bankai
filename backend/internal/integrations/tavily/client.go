@@ -71,7 +71,8 @@ func NewClient(cfg *config.Config) *Client {
 }
 
 // Search performs a query against Tavily API.
-func (c *Client) Search(ctx context.Context, query string) ([]SearchResult, error) {
+// ExcludeDomains can be provided to filter out unwanted sources (e.g., Wikipedia, Polymarket).
+func (c *Client) Search(ctx context.Context, query string, excludeDomains ...string) ([]SearchResult, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, fmt.Errorf("query is required")
@@ -87,6 +88,11 @@ func (c *Client) Search(ctx context.Context, query string) ([]SearchResult, erro
 		IncludeAnswer:     false,
 		IncludeRawContent: true, // Get full content for maximum context
 		MaxResults:        5,     // Get top 5 results with highest relevance scores
+	}
+
+	// Exclude generic/unhelpful domains to get better news results
+	if len(excludeDomains) > 0 {
+		payload.ExcludeDomains = excludeDomains
 	}
 
 	bodyBytes, err := json.Marshal(payload)
