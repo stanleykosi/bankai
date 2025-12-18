@@ -146,3 +146,8 @@ func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (
 
 	return strings.TrimSpace(result.Choices[0].Message.Content), nil
 }
+
+// Model returns the model name being used by this client
+func (c *Client) Model() string {
+	return c.model
+}
