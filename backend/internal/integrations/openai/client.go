@@ -29,7 +29,7 @@ const (
 	DefaultBaseURL   = "https://openrouter.ai/api/v1/chat/completions"
 	DefaultModel     = "google/gemini-3-pro-preview"
 	requestTimeout   = 60 * time.Second
-	defaultMaxTokens = 320
+	defaultMaxTokens = 500
 )
 
 type Client struct {
@@ -40,10 +40,20 @@ type Client struct {
 }
 
 type ChatRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Temperature float64   `json:"temperature"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
+	Model          string                 `json:"model"`
+	Messages       []Message              `json:"messages"`
+	Temperature    float64                `json:"temperature"`
+	MaxTokens      int                    `json:"max_tokens,omitempty"`
+	ResponseFormat *ResponseFormat        `json:"response_format,omitempty"`
+	Reasoning      *ReasoningConfig       `json:"reasoning,omitempty"`
+}
+
+type ResponseFormat struct {
+	Type string `json:"type"`
+}
+
+type ReasoningConfig struct {
+	Exclude bool `json:"exclude,omitempty"`
 }
 
 type Message struct {
@@ -116,6 +126,14 @@ func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (
 		},
 		Temperature: 0.1,
 		MaxTokens:   defaultMaxTokens,
+		// Enforce JSON output format
+		ResponseFormat: &ResponseFormat{
+			Type: "json_object",
+		},
+		// Exclude reasoning tokens from response to avoid interference with JSON parsing
+		Reasoning: &ReasoningConfig{
+			Exclude: true,
+		},
 	}
 
 	bodyBytes, err := json.Marshal(payload)
@@ -154,17 +172,27 @@ func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (
 		return "", fmt.Errorf("no choices returned from openai")
 	}
 
+	// Extract ONLY the content field - never use reasoning tokens as content
+	// Reasoning tokens are separate and should not interfere with JSON parsing
 	content := strings.TrimSpace(result.Choices[0].Message.Content)
-	if content == "" {
-		if alt := strings.TrimSpace(result.Choices[0].Message.Reasoning); alt != "" {
-			content = alt
-		} else if len(result.Choices[0].Message.ReasoningDetails) > 0 {
-			content = strings.TrimSpace(result.Choices[0].Message.ReasoningDetails[0].Text)
+	
+	// Log reasoning separately for debugging (if present) but don't use it as content
+	if reasoning := strings.TrimSpace(result.Choices[0].Message.Reasoning); reasoning != "" {
+		logger.Info("OpenRouter reasoning tokens received (excluded from content): %s", truncateForLog(reasoning, 200))
+	}
+	if len(result.Choices[0].Message.ReasoningDetails) > 0 {
+		for i, detail := range result.Choices[0].Message.ReasoningDetails {
+			if i >= 3 { // Limit logging
+				break
+			}
+			if text := strings.TrimSpace(detail.Text); text != "" {
+				logger.Info("OpenRouter reasoning detail %d (excluded from content): %s", i+1, truncateForLog(text, 200))
+			}
 		}
 	}
 
 	if content == "" {
-		logger.Error("OpenAI response missing content | response: %s | raw: %s", toJSON(result), string(respBody))
+		logger.Error("OpenAI response missing content field | response: %s | raw: %s", toJSON(result), string(respBody))
 		return "", fmt.Errorf("openai response missing content")
 	}
 
@@ -182,4 +210,15 @@ func toJSON(v interface{}) string {
 		return ""
 	}
 	return string(b)
+}
+
+func truncateForLog(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	return string(runes[:limit]) + "...(truncated)"
 }

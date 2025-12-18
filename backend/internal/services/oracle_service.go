@@ -126,13 +126,14 @@ Your goal is to estimate the probability (0-100%) of a "YES" outcome for the giv
 You must be objective, identifying key factors, potential blockers, and recent developments.
 If the information is insufficient, acknowledge the uncertainty.
 
-Respond with ONLY one valid JSON object and nothing else. No markdown, no headings, no prose, no code fences.
-Keep the entire response under 120 tokens. If you cannot comply, return {"probability":0,"sentiment":"Uncertain","reasoning":"Unable to comply"}.
-Output JSON format:
+CRITICAL: You MUST respond with ONLY a valid JSON object. No markdown, no headings, no prose, no code fences, no reasoning tokens, no explanations outside the JSON.
+If you cannot comply, return: {"probability":0,"sentiment":"Uncertain","reasoning":"Unable to comply"}
+
+Required JSON format (exactly these fields):
 {
-  "probability": number, // 0.0 to 1.0 (e.g. 0.65)
-  "sentiment": string, // "Bullish", "Bearish", "Neutral", "Uncertain"
-  "reasoning": string // Concise summary of your analysis (max 3 sentences)
+  "probability": number, // 0.0 to 1.0 (e.g. 0.71 for 71%)
+  "sentiment": string, // Must be one of: "Bullish", "Bearish", "Neutral", "Uncertain"
+  "reasoning": string // Concise summary of your analysis (2-4 sentences max)
 }`
 
 	userPrompt := fmt.Sprintf(`Analyze this market based on the context:
@@ -154,10 +155,18 @@ Return ONLY the JSON object described above. Do not include any other text or fo
 	logger.Info("Oracle raw LLM response for %s (truncated): %s", market.ConditionID, truncateForLog(rawResponse, 2000))
 
 	// 6. Parse Response
-	cleanedResponse := cleanJSONFence(rawResponse)
-	cleanedResponse = extractJSONObject(cleanedResponse)
-	if strings.TrimSpace(cleanedResponse) == "" {
-		logger.Error("Cleaned LLM response empty for market %s | raw: %q", market.ConditionID, rawResponse)
+	// First, try to extract JSON object directly (handles cases with reasoning text before/after)
+	cleanedResponse := extractJSONObject(rawResponse)
+	
+	// If no JSON found, try cleaning markdown fences
+	if !strings.Contains(cleanedResponse, "{") {
+		cleanedResponse = cleanJSONFence(rawResponse)
+		cleanedResponse = extractJSONObject(cleanedResponse)
+	}
+	
+	cleanedResponse = strings.TrimSpace(cleanedResponse)
+	if cleanedResponse == "" {
+		logger.Error("Cleaned LLM response empty for market %s | raw: %q", market.ConditionID, truncateForLog(rawResponse, 500))
 		return fallbackAnalysis(market, sources, "empty LLM response after cleaning")
 	}
 	logger.Info("Oracle cleaned JSON candidate for %s (truncated): %s", market.ConditionID, truncateForLog(cleanedResponse, 1000))
@@ -169,7 +178,7 @@ Return ONLY the JSON object described above. Do not include any other text or fo
 	}
 
 	if err := json.Unmarshal([]byte(cleanedResponse), &llmResult); err != nil {
-		logger.Error("Failed to parse LLM response: %s | raw: %s", cleanedResponse, rawResponse)
+		logger.Error("Failed to parse LLM response as JSON: %v | cleaned: %s | raw: %s", err, truncateForLog(cleanedResponse, 500), truncateForLog(rawResponse, 500))
 		if coerced := coerceAnalysisFromText(rawResponse); coerced != nil {
 			logger.Info("Oracle coerced analysis from non-JSON response for %s", market.ConditionID)
 			coerced.MarketID = market.ConditionID
@@ -181,7 +190,14 @@ Return ONLY the JSON object described above. Do not include any other text or fo
 		return fallbackAnalysis(market, sources, cleanedResponse)
 	}
 
-	logger.Info("Oracle parsed result for %s | prob=%.3f | sentiment=%s", market.ConditionID, llmResult.Probability, llmResult.Sentiment)
+	// Validate parsed fields
+	if llmResult.Reasoning == "" {
+		logger.Warn("Oracle parsed result missing reasoning field for %s", market.ConditionID)
+		llmResult.Reasoning = "Analysis completed but no reasoning provided."
+	}
+
+	logger.Info("Oracle parsed result for %s | prob=%.3f | sentiment=%s | reasoning_len=%d", 
+		market.ConditionID, llmResult.Probability, llmResult.Sentiment, len(llmResult.Reasoning))
 
 	return &MarketAnalysis{
 		MarketID:    market.ConditionID,
@@ -203,24 +219,60 @@ func cleanJSONFence(s string) string {
 }
 
 // extractJSONObject tries to pull the first top-level JSON object from a string.
+// This handles cases where reasoning tokens or other text appear before/after the JSON.
 func extractJSONObject(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	
+	// Find the first '{' character
 	start := strings.IndexByte(s, '{')
 	if start == -1 {
 		return s
 	}
+	
+	// Track depth to find matching closing brace
 	depth := 0
+	inString := false
+	escapeNext := false
+	
 	for i := start; i < len(s); i++ {
-		switch s[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return strings.TrimSpace(s[start : i+1])
+		char := s[i]
+		
+		// Handle escape sequences in strings
+		if escapeNext {
+			escapeNext = false
+			continue
+		}
+		if char == '\\' {
+			escapeNext = true
+			continue
+		}
+		
+		// Track string boundaries
+		if char == '"' && !escapeNext {
+			inString = !inString
+			continue
+		}
+		
+		// Only count braces when not inside a string
+		if !inString {
+			switch char {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					// Found complete JSON object
+					return strings.TrimSpace(s[start : i+1])
+				}
 			}
 		}
 	}
-	return s
+	
+	// If we didn't find a complete object, return what we have
+	return strings.TrimSpace(s[start:])
 }
 
 func truncateForLog(s string, limit int) string {
