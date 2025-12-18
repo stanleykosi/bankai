@@ -29,7 +29,7 @@ const (
 	DefaultBaseURL   = "https://openrouter.ai/api/v1/chat/completions"
 	DefaultModel     = "google/gemini-3-pro-preview"
 	requestTimeout   = 60 * time.Second
-	defaultMaxTokens = 512
+	defaultMaxTokens = 1024
 )
 
 type Client struct {
@@ -135,29 +135,43 @@ func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (
 	}
 	defer resp.Body.Close()
 
+	respBody, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
 		logger.Error("OpenAI API error: %d - %s", resp.StatusCode, string(respBody))
 		return "", fmt.Errorf("openai api returned status %d", resp.StatusCode)
 	}
 
 	var result ChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		logger.Error("Failed to decode OpenAI response: %v | raw: %s", err, string(respBody))
 		return "", fmt.Errorf("failed to decode openai response: %w", err)
 	}
 
 	if len(result.Choices) == 0 {
+		logger.Error("OpenAI response had no choices | raw: %s", string(respBody))
 		return "", fmt.Errorf("no choices returned from openai")
 	}
 
 	content := strings.TrimSpace(result.Choices[0].Message.Content)
 	if content == "" {
-		body, _ := json.Marshal(result)
-		logger.Error("OpenAI response missing content | response: %s", string(body))
+		logger.Error("OpenAI response missing content | response: %s | raw: %s", toJSON(result), string(respBody))
 		return "", fmt.Errorf("openai response missing content")
 	}
 
 	return content, nil
+}
+
+func (c *Client) Model() string {
+	return c.model
+}
+
+func toJSON(v interface{}) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // Model returns the model name being used by this client
