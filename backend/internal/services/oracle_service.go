@@ -192,7 +192,7 @@ Return ONLY the JSON object described above. Do not include any other text or fo
 
 	// Validate parsed fields
 	if llmResult.Reasoning == "" {
-		logger.Warn("Oracle parsed result missing reasoning field for %s", market.ConditionID)
+		logger.Info("Oracle parsed result missing reasoning field for %s, using default", market.ConditionID)
 		llmResult.Reasoning = "Analysis completed but no reasoning provided."
 	}
 
