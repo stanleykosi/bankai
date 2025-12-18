@@ -122,6 +122,7 @@ Your goal is to estimate the probability (0-100%) of a "YES" outcome for the giv
 You must be objective, identifying key factors, potential blockers, and recent developments.
 If the information is insufficient, acknowledge the uncertainty.
 
+Return ONLY a single JSON object. No markdown, no prose, no code fences.
 Output JSON format:
 {
   "probability": number, // 0.0 to 1.0 (e.g. 0.65)
@@ -139,6 +140,7 @@ Output JSON format:
 
 	// 6. Parse Response
 	cleanedResponse := cleanJSONFence(rawResponse)
+	cleanedResponse = extractJSONObject(cleanedResponse)
 
 	var llmResult struct {
 		Probability float64 `json:"probability"`
@@ -147,7 +149,7 @@ Output JSON format:
 	}
 
 	if err := json.Unmarshal([]byte(cleanedResponse), &llmResult); err != nil {
-		logger.Error("Failed to parse LLM response: %s", cleanedResponse)
+		logger.Error("Failed to parse LLM response: %s | raw: %s", cleanedResponse, rawResponse)
 		return nil, fmt.Errorf("failed to parse analysis result")
 	}
 
@@ -168,6 +170,27 @@ func cleanJSONFence(s string) string {
 	s = strings.TrimPrefix(s, "```")
 	s = strings.TrimSuffix(s, "```")
 	return strings.TrimSpace(s)
+}
+
+// extractJSONObject tries to pull the first top-level JSON object from a string.
+func extractJSONObject(s string) string {
+	start := strings.IndexByte(s, '{')
+	if start == -1 {
+		return s
+	}
+	depth := 0
+	for i := start; i < len(s); i++ {
+		switch s[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return strings.TrimSpace(s[start : i+1])
+			}
+		}
+	}
+	return s
 }
 
 func truncateText(s string, limit int) string {
