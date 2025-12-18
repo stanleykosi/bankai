@@ -29,7 +29,7 @@ const (
 	DefaultBaseURL   = "https://openrouter.ai/api/v1/chat/completions"
 	DefaultModel     = "google/gemini-3-pro-preview"
 	requestTimeout   = 60 * time.Second
-	defaultMaxTokens = 256
+	defaultMaxTokens = 320
 )
 
 type Client struct {
@@ -44,7 +44,6 @@ type ChatRequest struct {
 	Messages    []Message `json:"messages"`
 	Temperature float64   `json:"temperature"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
-	Stop        []string  `json:"stop,omitempty"`
 }
 
 type Message struct {
@@ -117,7 +116,6 @@ func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (
 		},
 		Temperature: 0.1,
 		MaxTokens:   defaultMaxTokens,
-		Stop:        []string{"\n\n", "\n\n\n"},
 	}
 
 	bodyBytes, err := json.Marshal(payload)

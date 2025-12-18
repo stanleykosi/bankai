@@ -19,6 +19,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -125,7 +127,7 @@ You must be objective, identifying key factors, potential blockers, and recent d
 If the information is insufficient, acknowledge the uncertainty.
 
 Respond with ONLY one valid JSON object and nothing else. No markdown, no headings, no prose, no code fences.
-Keep the entire response under 120 tokens.
+Keep the entire response under 120 tokens. If you cannot comply, return {"probability":0,"sentiment":"Uncertain","reasoning":"Unable to comply"}.
 Output JSON format:
 {
   "probability": number, // 0.0 to 1.0 (e.g. 0.65)
@@ -168,6 +170,14 @@ Return ONLY the JSON object described above. Do not include any other text or fo
 
 	if err := json.Unmarshal([]byte(cleanedResponse), &llmResult); err != nil {
 		logger.Error("Failed to parse LLM response: %s | raw: %s", cleanedResponse, rawResponse)
+		if coerced := coerceAnalysisFromText(rawResponse); coerced != nil {
+			logger.Info("Oracle coerced analysis from non-JSON response for %s", market.ConditionID)
+			coerced.MarketID = market.ConditionID
+			coerced.Question = market.Title
+			coerced.Sources = sources
+			coerced.LastUpdated = time.Now().UTC().Format(time.RFC3339)
+			return coerced, nil
+		}
 		return fallbackAnalysis(market, sources, cleanedResponse)
 	}
 
@@ -234,6 +244,60 @@ func fallbackAnalysis(market *models.Market, sources []Source, reason string) (*
 		Sources:     sources,
 		LastUpdated: time.Now().UTC().Format(time.RFC3339),
 	}, nil
+}
+
+// coerceAnalysisFromText tries to extract probability/sentiment/reasoning from free-form text.
+func coerceAnalysisFromText(raw string) *MarketAnalysis {
+	txt := strings.TrimSpace(raw)
+	if txt == "" {
+		return nil
+	}
+
+	// Extract first probability-like number
+	var prob float64
+	probFound := false
+
+	// Match percentages like 65% or 65.5%
+	rePct := regexp.MustCompile(`(?i)(\d{1,3}(\.\d+)?)[ ]*%`)
+	if m := rePct.FindStringSubmatch(txt); len(m) > 0 {
+		if p, err := strconv.ParseFloat(m[1], 64); err == nil {
+			prob = p / 100.0
+			probFound = true
+		}
+	}
+
+	// Match decimal probabilities 0.xx if not already found
+	if !probFound {
+		reDec := regexp.MustCompile(`(?m)\b0\.\d+\b`)
+		if m := reDec.FindString(txt); m != "" {
+			if p, err := strconv.ParseFloat(m, 64); err == nil {
+				prob = p
+				probFound = true
+			}
+		}
+	}
+
+	sentiment := "Uncertain"
+	lower := strings.ToLower(txt)
+	if strings.Contains(lower, "bullish") {
+		sentiment = "Bullish"
+	} else if strings.Contains(lower, "bearish") {
+		sentiment = "Bearish"
+	} else if strings.Contains(lower, "neutral") {
+		sentiment = "Neutral"
+	}
+
+	reasoning := truncateForLog(txt, 400)
+
+	if !probFound {
+		prob = 0
+	}
+
+	return &MarketAnalysis{
+		Probability: normalizeProbability(prob),
+		Sentiment:   sentiment,
+		Reasoning:   reasoning,
+	}
 }
 
 func truncateText(s string, limit int) string {
