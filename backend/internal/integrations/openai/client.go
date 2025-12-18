@@ -162,6 +162,7 @@ func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (
 	return content, nil
 }
 
+// Model returns the model name being used by this client
 func (c *Client) Model() string {
 	return c.model
 }
@@ -172,9 +173,4 @@ func toJSON(v interface{}) string {
 		return ""
 	}
 	return string(b)
-}
-
-// Model returns the model name being used by this client
-func (c *Client) Model() string {
-	return c.model
 }
