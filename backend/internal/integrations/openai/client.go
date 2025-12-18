@@ -40,15 +40,20 @@ type Client struct {
 }
 
 type ChatRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Temperature float64   `json:"temperature"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
+	Model          string          `json:"model"`
+	Messages       []Message       `json:"messages"`
+	Temperature    float64         `json:"temperature"`
+	MaxTokens      int             `json:"max_tokens,omitempty"`
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
 }
 
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+type ResponseFormat struct {
+	Type string `json:"type"`
 }
 
 type ChatResponse struct {
@@ -107,8 +112,9 @@ func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},
 		},
-		Temperature: 0.1,
-		MaxTokens:   defaultMaxTokens,
+		Temperature:    0.1,
+		MaxTokens:      defaultMaxTokens,
+		ResponseFormat: &ResponseFormat{Type: "json_object"},
 	}
 
 	bodyBytes, err := json.Marshal(payload)
@@ -144,7 +150,14 @@ func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (
 		return "", fmt.Errorf("no choices returned from openai")
 	}
 
-	return strings.TrimSpace(result.Choices[0].Message.Content), nil
+	content := strings.TrimSpace(result.Choices[0].Message.Content)
+	if content == "" {
+		body, _ := json.Marshal(result)
+		logger.Error("OpenAI response missing content | response: %s", string(body))
+		return "", fmt.Errorf("openai response missing content")
+	}
+
+	return content, nil
 }
 
 // Model returns the model name being used by this client
