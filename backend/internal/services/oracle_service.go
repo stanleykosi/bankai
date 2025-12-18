@@ -25,6 +25,7 @@ import (
 	"github.com/bankai-project/backend/internal/integrations/openai"
 	"github.com/bankai-project/backend/internal/integrations/tavily"
 	"github.com/bankai-project/backend/internal/logger"
+	"github.com/bankai-project/backend/internal/models"
 )
 
 const (
@@ -123,7 +124,8 @@ Your goal is to estimate the probability (0-100%) of a "YES" outcome for the giv
 You must be objective, identifying key factors, potential blockers, and recent developments.
 If the information is insufficient, acknowledge the uncertainty.
 
-Return ONLY a single JSON object. No markdown, no prose, no code fences. Keep the total response under 120 tokens.
+Respond with ONLY one valid JSON object and nothing else. No markdown, no headings, no prose, no code fences.
+Keep the entire response under 120 tokens.
 Output JSON format:
 {
   "probability": number, // 0.0 to 1.0 (e.g. 0.65)
@@ -131,7 +133,11 @@ Output JSON format:
   "reasoning": string // Concise summary of your analysis (max 3 sentences)
 }`
 
-	userPrompt := fmt.Sprintf("Analyze this market based on the context:\n\n%s", contextBuilder.String())
+	userPrompt := fmt.Sprintf(`Analyze this market based on the context:
+
+%s
+
+Return ONLY the JSON object described above. Do not include any other text or formatting.`, contextBuilder.String())
 
 	// 5. Call LLM
 	logger.Info("Oracle calling LLM for market %s | model=%s | context_len=%d", market.ConditionID, s.OpenAI.Model(), len(userPrompt))
@@ -150,7 +156,7 @@ Output JSON format:
 	cleanedResponse = extractJSONObject(cleanedResponse)
 	if strings.TrimSpace(cleanedResponse) == "" {
 		logger.Error("Cleaned LLM response empty for market %s | raw: %q", market.ConditionID, rawResponse)
-		return nil, fmt.Errorf("failed to parse analysis result")
+		return fallbackAnalysis(market, sources, "empty LLM response after cleaning")
 	}
 	logger.Info("Oracle cleaned JSON candidate for %s (truncated): %s", market.ConditionID, truncateForLog(cleanedResponse, 1000))
 
@@ -162,7 +168,7 @@ Output JSON format:
 
 	if err := json.Unmarshal([]byte(cleanedResponse), &llmResult); err != nil {
 		logger.Error("Failed to parse LLM response: %s | raw: %s", cleanedResponse, rawResponse)
-		return nil, fmt.Errorf("failed to parse analysis result")
+		return fallbackAnalysis(market, sources, cleanedResponse)
 	}
 
 	logger.Info("Oracle parsed result for %s | prob=%.3f | sentiment=%s", market.ConditionID, llmResult.Probability, llmResult.Sentiment)
@@ -216,6 +222,18 @@ func truncateForLog(s string, limit int) string {
 		return s
 	}
 	return string(runes[:limit]) + "...(truncated)"
+}
+
+func fallbackAnalysis(market *models.Market, sources []Source, reason string) (*MarketAnalysis, error) {
+	return &MarketAnalysis{
+		MarketID:    market.ConditionID,
+		Question:    market.Title,
+		Probability: 0,
+		Sentiment:   "Uncertain",
+		Reasoning:   fmt.Sprintf("LLM response unparsable: %s", truncateForLog(reason, 200)),
+		Sources:     sources,
+		LastUpdated: time.Now().UTC().Format(time.RFC3339),
+	}, nil
 }
 
 func truncateText(s string, limit int) string {
