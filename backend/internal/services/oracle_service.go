@@ -90,6 +90,7 @@ func (s *OracleService) AnalyzeMarket(ctx context.Context, conditionID string) (
 		logger.Error("Oracle search failed for %s: %v", conditionID, err)
 		searchResults = nil
 	}
+	logger.Info("Oracle search completed for %s | query=%q | results=%d", conditionID, query, len(searchResults))
 
 	// 3. Construct LLM Context
 	contextBuilder := strings.Builder{}
@@ -133,14 +134,25 @@ Output JSON format:
 	userPrompt := fmt.Sprintf("Analyze this market based on the context:\n\n%s", contextBuilder.String())
 
 	// 5. Call LLM
+	logger.Info("Oracle calling LLM for market %s | model=%s | context_len=%d", market.ConditionID, s.OpenAI.Model(), len(userPrompt))
 	rawResponse, err := s.OpenAI.Analyze(ctx, systemPrompt, userPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("analysis generation failed: %w", err)
 	}
+	if strings.TrimSpace(rawResponse) == "" {
+		logger.Error("LLM response was empty for market %s", market.ConditionID)
+		return nil, fmt.Errorf("analysis result was empty")
+	}
+	logger.Info("Oracle raw LLM response for %s (truncated): %s", market.ConditionID, truncateForLog(rawResponse, 2000))
 
 	// 6. Parse Response
 	cleanedResponse := cleanJSONFence(rawResponse)
 	cleanedResponse = extractJSONObject(cleanedResponse)
+	if strings.TrimSpace(cleanedResponse) == "" {
+		logger.Error("Cleaned LLM response empty for market %s | raw: %q", market.ConditionID, rawResponse)
+		return nil, fmt.Errorf("failed to parse analysis result")
+	}
+	logger.Info("Oracle cleaned JSON candidate for %s (truncated): %s", market.ConditionID, truncateForLog(cleanedResponse, 1000))
 
 	var llmResult struct {
 		Probability float64 `json:"probability"`
@@ -152,6 +164,8 @@ Output JSON format:
 		logger.Error("Failed to parse LLM response: %s | raw: %s", cleanedResponse, rawResponse)
 		return nil, fmt.Errorf("failed to parse analysis result")
 	}
+
+	logger.Info("Oracle parsed result for %s | prob=%.3f | sentiment=%s", market.ConditionID, llmResult.Probability, llmResult.Sentiment)
 
 	return &MarketAnalysis{
 		MarketID:    market.ConditionID,
@@ -191,6 +205,17 @@ func extractJSONObject(s string) string {
 		}
 	}
 	return s
+}
+
+func truncateForLog(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	return string(runes[:limit]) + "...(truncated)"
 }
 
 func truncateText(s string, limit int) string {
