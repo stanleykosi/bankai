@@ -235,8 +235,21 @@ func (h *WalletHandler) GetBalance(c *fiber.Ctx) error {
 	balance, err := h.Blockchain.GetUSDCBalance(c.Context(), user.VaultAddress)
 	if err != nil {
 		logger.Error("Failed to fetch USDC balance for %s: %v", user.VaultAddress, err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to get balance: " + err.Error(),
+		if cached := h.Blockchain.GetCachedUSDCBalance(user.VaultAddress, true); cached != nil {
+			return c.JSON(fiber.Map{
+				"balance":           cached.String(),
+				"balance_formatted": h.Blockchain.FormatUSDCBalance(cached),
+				"vault_address":     user.VaultAddress,
+				"token":             "USDC",
+				"balance_stale":     true,
+			})
+		}
+		return c.JSON(fiber.Map{
+			"balance":             "0",
+			"balance_formatted":   "0.00",
+			"vault_address":       user.VaultAddress,
+			"token":               "USDC",
+			"balance_unavailable": true,
 		})
 	}
 

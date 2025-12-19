@@ -15,8 +15,8 @@ import (
 	"context"
 	"fmt"
 	"math/big"
-	"sync"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bankai-project/backend/internal/config"
@@ -36,23 +36,26 @@ const (
 	// Default Polygon RPC endpoint (can be overridden via POLYGON_RPC_URL)
 	DefaultPolygonRPCEndpoint = "https://polygon-rpc.com"
 
-	balanceCacheTTL      = 30 * time.Second
-	balanceStaleFallback = 5 * time.Minute
+	balanceCacheTTL        = 30 * time.Second
+	balanceStaleFallback   = 5 * time.Minute
+	balanceAttemptCooldown = 15 * time.Second
 )
 
 // ERC20 ABI for balanceOf function
 const erc20BalanceOfABI = `[{"constant":true,"inputs":[{"name":"_owner","type":"address"}],"name":"balanceOf","outputs":[{"name":"balance","type":"uint256"}],"type":"function"}]`
 
 type BlockchainService struct {
-	client      *ethclient.Client
-	usdcAddress common.Address
-	cacheMu     sync.Mutex
+	client       *ethclient.Client
+	usdcAddress  common.Address
+	cacheMu      sync.Mutex
 	balanceCache map[string]cachedBalance
 }
 
 type cachedBalance struct {
-	value     *big.Int
-	expiresAt time.Time
+	value       *big.Int
+	expiresAt   time.Time
+	lastAttempt time.Time
+	lastErrorAt time.Time
 }
 
 func NewBlockchainService(cfg *config.Config) (*BlockchainService, error) {
@@ -68,8 +71,8 @@ func NewBlockchainService(cfg *config.Config) (*BlockchainService, error) {
 	}
 
 	return &BlockchainService{
-		client:      client,
-		usdcAddress: common.HexToAddress(USDCAddressPolygon),
+		client:       client,
+		usdcAddress:  common.HexToAddress(USDCAddressPolygon),
 		balanceCache: make(map[string]cachedBalance),
 	}, nil
 }
@@ -84,6 +87,13 @@ func (s *BlockchainService) GetUSDCBalance(ctx context.Context, address string) 
 	cacheKey := strings.ToLower(addr.Hex())
 	if cached := s.getCachedBalance(cacheKey, false); cached != nil {
 		return cached, nil
+	}
+
+	if s.shouldBackoffBalance(cacheKey) {
+		if cached := s.getCachedBalance(cacheKey, true); cached != nil {
+			return cached, nil
+		}
+		return nil, fmt.Errorf("balance fetch throttled")
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
@@ -107,8 +117,10 @@ func (s *BlockchainService) GetUSDCBalance(ctx context.Context, address string) 
 		Data: data,
 	}
 
+	s.markBalanceAttempt(cacheKey)
 	result, err := s.client.CallContract(ctx, callMsg, nil)
 	if err != nil {
+		s.markBalanceError(cacheKey)
 		if cached := s.getCachedBalance(cacheKey, true); cached != nil {
 			return cached, nil
 		}
@@ -161,10 +173,53 @@ func (s *BlockchainService) setCachedBalance(key string, value *big.Int) {
 
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
-	s.balanceCache[key] = cachedBalance{
-		value:     new(big.Int).Set(value),
-		expiresAt: time.Now().Add(balanceCacheTTL),
+	entry := s.balanceCache[key]
+	entry.value = new(big.Int).Set(value)
+	entry.expiresAt = time.Now().Add(balanceCacheTTL)
+	s.balanceCache[key] = entry
+}
+
+// GetCachedUSDCBalance returns the last cached balance for an address.
+// If allowStale is true, it will return entries that are past the normal TTL
+// but still within the stale fallback window.
+func (s *BlockchainService) GetCachedUSDCBalance(address string, allowStale bool) *big.Int {
+	addr := common.HexToAddress(address)
+	if addr == (common.Address{}) {
+		return nil
 	}
+	return s.getCachedBalance(strings.ToLower(addr.Hex()), allowStale)
+}
+
+func (s *BlockchainService) shouldBackoffBalance(key string) bool {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+
+	entry, ok := s.balanceCache[key]
+	if !ok {
+		return false
+	}
+	if entry.lastAttempt.IsZero() {
+		return false
+	}
+	return time.Since(entry.lastAttempt) < balanceAttemptCooldown
+}
+
+func (s *BlockchainService) markBalanceAttempt(key string) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+
+	entry := s.balanceCache[key]
+	entry.lastAttempt = time.Now()
+	s.balanceCache[key] = entry
+}
+
+func (s *BlockchainService) markBalanceError(key string) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+
+	entry := s.balanceCache[key]
+	entry.lastErrorAt = time.Now()
+	s.balanceCache[key] = entry
 }
 
 // FormatUSDCBalance formats a USDC balance (6 decimals) to a human-readable string

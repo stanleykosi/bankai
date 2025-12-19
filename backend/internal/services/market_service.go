@@ -372,15 +372,17 @@ func (s *MarketService) loadActiveMarketsFromCache(ctx context.Context) ([]model
 func (s *MarketService) loadAllActiveMarkets(ctx context.Context) ([]models.Market, error) {
 	if markets, err := s.loadActiveMarketsFromCache(ctx); err == nil {
 		return markets, nil
-	}
-
-	if s.GammaClient != nil {
+	} else if !errors.Is(err, redis.Nil) {
+		log.Printf("Active markets cache unavailable: %v", err)
+	} else if s.GammaClient != nil {
 		if err := s.syncActiveMarketsCache(ctx); err == nil {
 			if markets, err := s.loadActiveMarketsFromCache(ctx); err == nil {
 				return markets, nil
 			}
 		}
 	}
+
+	// Fall back to DB if cache is missing or unavailable.
 
 	now := time.Now().UTC()
 
@@ -404,7 +406,7 @@ func (s *MarketService) loadAllActiveMarkets(ctx context.Context) ([]models.Mark
 
 func (s *MarketService) getCachedActiveMarket(ctx context.Context, match func(models.Market) bool) *models.Market {
 	markets, err := s.loadActiveMarketsFromCache(ctx)
-	if err != nil && s.GammaClient != nil {
+	if errors.Is(err, redis.Nil) && s.GammaClient != nil {
 		if syncErr := s.syncActiveMarketsCache(ctx); syncErr == nil {
 			markets, err = s.loadActiveMarketsFromCache(ctx)
 		}
@@ -1063,14 +1065,14 @@ func (s *MarketService) buildMarketLanesFromSnapshot(ctx context.Context, market
 	}
 
 	fresh := topMarkets(filtered, 20, func(a, b models.Market) bool {
-		return a.CreatedAt.After(b.CreatedAt)
+		return marketCreatedAt(a).After(marketCreatedAt(b))
 	})
 
 	velocity := topMarkets(filtered, 20, func(a, b models.Market) bool {
-		if a.Volume24h == b.Volume24h {
-			return a.VolumeAllTime > b.VolumeAllTime
+		if a.VolumeAllTime == b.VolumeAllTime {
+			return a.Volume24h > b.Volume24h
 		}
-		return a.Volume24h > b.Volume24h
+		return a.VolumeAllTime > b.VolumeAllTime
 	})
 
 	liquidity := topMarkets(filtered, 20, func(a, b models.Market) bool {
@@ -1100,6 +1102,13 @@ func filterActiveMarkets(markets []models.Market, now time.Time) []models.Market
 		result = append(result, market)
 	}
 	return result
+}
+
+func marketCreatedAt(market models.Market) time.Time {
+	if market.MarketCreatedAt != nil && !market.MarketCreatedAt.IsZero() {
+		return *market.MarketCreatedAt
+	}
+	return market.CreatedAt
 }
 
 func filterMarketLanes(lanes *MarketLanes, now time.Time) {
@@ -1195,11 +1204,11 @@ func sortMarketsByParam(markets []models.Market, sortKey string) {
 		})
 	case "created":
 		sort.SliceStable(markets, func(i, j int) bool {
-			return markets[i].CreatedAt.After(markets[j].CreatedAt)
+			return marketCreatedAt(markets[i]).After(marketCreatedAt(markets[j]))
 		})
 	default:
 		sort.SliceStable(markets, func(i, j int) bool {
-			return markets[i].CreatedAt.After(markets[j].CreatedAt)
+			return marketCreatedAt(markets[i]).After(marketCreatedAt(markets[j]))
 		})
 	}
 }

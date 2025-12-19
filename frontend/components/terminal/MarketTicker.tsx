@@ -33,6 +33,8 @@ interface MarketLaneProps {
   icon: React.ReactNode;
   markets: Market[];
   colorClass: string; // e.g., "text-constructive"
+  volumeMode?: "all_time" | "24h";
+  newCount?: number;
 }
 
 const compactCurrencyFormatter = new Intl.NumberFormat("en-US", {
@@ -101,12 +103,20 @@ const formatDate = (date?: string | null) => {
   });
 };
 
-const MarketCard = ({ market }: { market: Market }) => {
+const MarketCard = ({
+  market,
+  volumeMode = "all_time",
+}: {
+  market: Market;
+  volumeMode?: "all_time" | "24h";
+}) => {
   const router = useRouter();
   const outcomes = React.useMemo(() => parseOutcomes(market.outcomes), [market.outcomes]);
   const primaryOutcome = outcomes[0] ?? fallbackOutcomes[0];
   const secondaryOutcome = outcomes[1] ?? fallbackOutcomes[1];
   const coverImage = market.image_url || market.icon_url;
+  const volumeValue = volumeMode === "24h" ? market.volume_24h : market.volume_all_time ?? market.volume_24h;
+  const volumeLabel = volumeMode === "24h" ? "24h Volume" : "Total Volume";
 
   return (
     <motion.div
@@ -166,10 +176,10 @@ const MarketCard = ({ market }: { market: Market }) => {
 
       <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-mono text-muted-foreground">
         <div className="flex flex-col gap-1">
-          <span className="text-[10px] uppercase tracking-wide opacity-70">Total Volume</span>
+          <span className="text-[10px] uppercase tracking-wide opacity-70">{volumeLabel}</span>
           <span className="text-xs text-primary flex items-center gap-1">
             <TrendingUp className="h-3 w-3" />
-            {formatCurrency(market.volume_all_time ?? market.volume_24h)}
+            {formatCurrency(volumeValue)}
           </span>
         </div>
         <div className="flex flex-col items-end gap-1">
@@ -197,19 +207,26 @@ const MarketCard = ({ market }: { market: Market }) => {
   );
 };
 
-const MarketLane = ({ title, icon, markets, colorClass }: MarketLaneProps) => {
+const MarketLane = ({ title, icon, markets, colorClass, volumeMode, newCount }: MarketLaneProps) => {
   return (
     <div className="flex flex-col h-full overflow-hidden border-r border-border/50 last:border-r-0 bg-background/30 backdrop-blur-sm">
       <div className={`flex items-center gap-2 p-4 border-b border-border/50 font-mono uppercase tracking-wider text-sm ${colorClass}`}>
         {icon}
         <h3>{title}</h3>
-        <SimpleBadge className="ml-auto border-border bg-background text-foreground/70">
-          {markets.length}
-        </SimpleBadge>
+        <div className="ml-auto flex items-center gap-2">
+          {newCount && newCount > 0 ? (
+            <SimpleBadge className="border-primary/40 bg-primary/10 text-primary">
+              +{newCount} new
+            </SimpleBadge>
+          ) : null}
+          <SimpleBadge className="border-border bg-background text-foreground/70">
+            {markets.length}
+          </SimpleBadge>
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar">
         {markets.map((market) => (
-          <MarketCard key={market.condition_id} market={market} />
+          <MarketCard key={market.condition_id} market={market} volumeMode={volumeMode} />
         ))}
         {markets.length === 0 && (
           <div className="text-center text-muted-foreground text-xs py-10">
@@ -225,9 +242,14 @@ interface MarketTickerProps {
   freshDrops: Market[];
   highVelocity: Market[];
   deepLiquidity: Market[];
+  newCounts?: {
+    fresh: number;
+    high_velocity: number;
+    deep_liquidity: number;
+  };
 }
 
-export const MarketTicker = ({ freshDrops, highVelocity, deepLiquidity }: MarketTickerProps) => {
+export const MarketTicker = ({ freshDrops, highVelocity, deepLiquidity, newCounts }: MarketTickerProps) => {
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 h-[600px] border border-border rounded-lg overflow-hidden shadow-2xl shadow-black/50">
       <MarketLane
@@ -235,18 +257,21 @@ export const MarketTicker = ({ freshDrops, highVelocity, deepLiquidity }: Market
         icon={<Clock className="h-4 w-4" />}
         markets={freshDrops}
         colorClass="text-blue-400"
+        newCount={newCounts?.fresh}
       />
       <MarketLane
         title="High Velocity"
         icon={<Zap className="h-4 w-4" />}
         markets={highVelocity}
         colorClass="text-yellow-400"
+        newCount={newCounts?.high_velocity}
       />
       <MarketLane
         title="Deep Liquidity"
         icon={<TrendingUp className="h-4 w-4" />}
         markets={deepLiquidity}
         colorClass="text-constructive"
+        newCount={newCounts?.deep_liquidity}
       />
     </div>
   );

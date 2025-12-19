@@ -12,6 +12,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@clerk/nextjs";
+import { useWallet } from "@/hooks/useWallet";
 import { api } from "@/lib/api";
 
 export interface BalanceResponse {
@@ -23,9 +24,10 @@ export interface BalanceResponse {
 
 export function useBalance() {
   const { getToken, isSignedIn } = useAuth();
+  const { vaultAddress } = useWallet();
 
   return useQuery({
-    queryKey: ["balance"],
+    queryKey: ["balance", vaultAddress],
     queryFn: async (): Promise<BalanceResponse | null> => {
       const token = await getToken();
       if (!token) {
@@ -47,12 +49,14 @@ export function useBalance() {
         throw error;
       }
     },
-    enabled: !!isSignedIn, // Only fetch when signed in
+    enabled: !!isSignedIn && !!vaultAddress, // Only fetch when signed in and wallet exists
     // Reduce chatter: no interval; refresh on demand via queryClient.invalidateQueries(["balance"])
     refetchInterval: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     refetchOnMount: false,
-    staleTime: 120_000, // 2 minutes
+    retry: false,
+    staleTime: 5 * 60_000, // 5 minutes
+    gcTime: 30 * 60_000, // 30 minutes
   });
 }

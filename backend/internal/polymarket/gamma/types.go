@@ -126,22 +126,22 @@ type GammaTag struct {
 // Profile represents a Polymarket user profile returned by /public-search
 // Includes both the controlling EOA (baseAddress) and the custodial vault/proxy wallet.
 type Profile struct {
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	BaseAddress      string `json:"baseAddress"`
-	ProxyWallet      string `json:"proxyWallet"`
-	Pseudonym        string `json:"pseudonym"`
-	DisplayPublic    bool   `json:"displayUsernamePublic"`
-	WalletActivated  bool   `json:"walletActivated"`
-	User             int    `json:"user"`
-	Referral         string `json:"referral"`
-	ProfileImage     string `json:"profileImage"`
-	Bio              string `json:"bio"`
-	IsCloseOnly      bool   `json:"isCloseOnly"`
-	IsCertReq        bool   `json:"isCertReq"`
-	CertReqDate      string `json:"certReqDate"`
-	CreatedAt        string `json:"createdAt"`
-	UpdatedAt        string `json:"updatedAt"`
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	BaseAddress     string `json:"baseAddress"`
+	ProxyWallet     string `json:"proxyWallet"`
+	Pseudonym       string `json:"pseudonym"`
+	DisplayPublic   bool   `json:"displayUsernamePublic"`
+	WalletActivated bool   `json:"walletActivated"`
+	User            int    `json:"user"`
+	Referral        string `json:"referral"`
+	ProfileImage    string `json:"profileImage"`
+	Bio             string `json:"bio"`
+	IsCloseOnly     bool   `json:"isCloseOnly"`
+	IsCertReq       bool   `json:"isCertReq"`
+	CertReqDate     string `json:"certReqDate"`
+	CreatedAt       string `json:"createdAt"`
+	UpdatedAt       string `json:"updatedAt"`
 }
 
 // SearchResponse represents the Gamma /public-search payload
@@ -265,15 +265,29 @@ func parseTimePtr(value string) *time.Time {
 		return nil
 	}
 
-	layouts := []string{
+	layoutsWithZone := []string{
 		time.RFC3339Nano,
 		time.RFC3339,
 		"2006-01-02T15:04:05Z07:00",
+	}
+
+	layoutsWithoutZone := []string{
+		"2006-01-02T15:04:05.999999999",
+		"2006-01-02T15:04:05.999999",
+		"2006-01-02T15:04:05.999",
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
 		"2006-01-02",
 	}
 
-	for _, layout := range layouts {
+	for _, layout := range layoutsWithZone {
 		if t, err := time.Parse(layout, value); err == nil {
+			return &t
+		}
+	}
+
+	for _, layout := range layoutsWithoutZone {
+		if t, err := time.ParseInLocation(layout, value, time.UTC); err == nil {
 			return &t
 		}
 	}
