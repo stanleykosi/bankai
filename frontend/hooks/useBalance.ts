@@ -52,7 +52,7 @@ export function useBalance() {
     refetchInterval: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
-    refetchOnMount: true,
-    staleTime: 60_000, // 1 minute
+    refetchOnMount: false,
+    staleTime: 120_000, // 2 minutes
   });
 }

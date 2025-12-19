@@ -32,8 +32,9 @@ func NewUserHandler(db *gorm.DB) *UserHandler {
 
 // SyncUserRequest defines payload for syncing user
 type SyncUserRequest struct {
-	Email      string `json:"email"`
-	EOAAddress string `json:"eoa_address"` // The wallet address (Metamask or Embedded)
+	Email       string `json:"email"`
+	EOAAddress  string `json:"eoa_address"`  // The wallet address (Metamask or Embedded)
+	ClearWallet bool   `json:"clear_wallet"` // Explicit disconnect request
 }
 
 // SyncUser ensures the user exists in the database
@@ -70,17 +71,31 @@ func (h *UserHandler) SyncUser(c *fiber.Ctx) error {
 
 	// 4. Upsert User
 	now := time.Now()
+	requestedEOA := strings.TrimSpace(req.EOAAddress)
+	shouldUpdateEOA := req.ClearWallet || requestedEOA != ""
+	nextEOA := requestedEOA
+	if req.ClearWallet {
+		nextEOA = ""
+	}
 	user := models.User{
 		ClerkID:    clerkID,
 		Email:      req.Email,
-		EOAAddress: req.EOAAddress, // Can be empty string if no wallet connected yet
+		EOAAddress: nextEOA, // May be empty on first insert or explicit clear
 		UpdatedAt:  now,
+	}
+
+	updates := map[string]interface{}{
+		"email":      req.Email,
+		"updated_at": now,
+	}
+	if shouldUpdateEOA {
+		updates["eoa_address"] = nextEOA
 	}
 
 	// Use Postgres ON CONFLICT to update email/eoa if changed, or do nothing
 	result := h.DB.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "clerk_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"email", "eoa_address", "updated_at"}),
+		DoUpdates: clause.Assignments(updates),
 	}).Create(&user)
 
 	if result.Error != nil {
@@ -91,12 +106,21 @@ func (h *UserHandler) SyncUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 5. Clear vault metadata if the connected EOA changed
+	// 5. Clear vault metadata if the connected EOA changed (or explicit disconnect)
 	if hasExisting {
 		oldEOA := strings.ToLower(strings.TrimSpace(existingUser.EOAAddress))
-		newEOA := strings.ToLower(strings.TrimSpace(req.EOAAddress))
-		if oldEOA != newEOA {
+		newEOA := strings.ToLower(strings.TrimSpace(nextEOA))
+		switch {
+		case req.ClearWallet:
+			logger.Info("SyncUser: Explicit wallet clear for user %s. Clearing cached vault state.", clerkID)
+		case !shouldUpdateEOA:
+			// Skip vault reset if we didn't update the EOA (e.g., refresh with empty address).
+			newEOA = oldEOA
+		case oldEOA != newEOA:
 			logger.Info("SyncUser: EOA changed for user %s. Clearing cached vault state.", clerkID)
+		}
+
+		if oldEOA != newEOA || req.ClearWallet {
 			reset := map[string]interface{}{
 				"vault_address": "",
 				"wallet_type":   gorm.Expr("NULL"),

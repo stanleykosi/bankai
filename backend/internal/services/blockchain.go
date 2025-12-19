@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"sync"
 	"strings"
 	"time"
 
@@ -34,6 +35,9 @@ const (
 
 	// Default Polygon RPC endpoint (can be overridden via POLYGON_RPC_URL)
 	DefaultPolygonRPCEndpoint = "https://polygon-rpc.com"
+
+	balanceCacheTTL      = 30 * time.Second
+	balanceStaleFallback = 5 * time.Minute
 )
 
 // ERC20 ABI for balanceOf function
@@ -42,6 +46,13 @@ const erc20BalanceOfABI = `[{"constant":true,"inputs":[{"name":"_owner","type":"
 type BlockchainService struct {
 	client      *ethclient.Client
 	usdcAddress common.Address
+	cacheMu     sync.Mutex
+	balanceCache map[string]cachedBalance
+}
+
+type cachedBalance struct {
+	value     *big.Int
+	expiresAt time.Time
 }
 
 func NewBlockchainService(cfg *config.Config) (*BlockchainService, error) {
@@ -59,6 +70,7 @@ func NewBlockchainService(cfg *config.Config) (*BlockchainService, error) {
 	return &BlockchainService{
 		client:      client,
 		usdcAddress: common.HexToAddress(USDCAddressPolygon),
+		balanceCache: make(map[string]cachedBalance),
 	}, nil
 }
 
@@ -67,6 +79,11 @@ func (s *BlockchainService) GetUSDCBalance(ctx context.Context, address string) 
 	addr := common.HexToAddress(address)
 	if addr == (common.Address{}) {
 		return nil, fmt.Errorf("invalid address: %s", address)
+	}
+
+	cacheKey := strings.ToLower(addr.Hex())
+	if cached := s.getCachedBalance(cacheKey, false); cached != nil {
+		return cached, nil
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
@@ -92,6 +109,9 @@ func (s *BlockchainService) GetUSDCBalance(ctx context.Context, address string) 
 
 	result, err := s.client.CallContract(ctx, callMsg, nil)
 	if err != nil {
+		if cached := s.getCachedBalance(cacheKey, true); cached != nil {
+			return cached, nil
+		}
 		return nil, fmt.Errorf("failed to call contract: %w", err)
 	}
 
@@ -110,7 +130,41 @@ func (s *BlockchainService) GetUSDCBalance(ctx context.Context, address string) 
 		return nil, fmt.Errorf("failed to decode balance as *big.Int")
 	}
 
+	s.setCachedBalance(cacheKey, balance)
 	return balance, nil
+}
+
+func (s *BlockchainService) getCachedBalance(key string, allowStale bool) *big.Int {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+
+	entry, ok := s.balanceCache[key]
+	if !ok || entry.value == nil {
+		return nil
+	}
+
+	now := time.Now()
+	if now.Before(entry.expiresAt) {
+		return new(big.Int).Set(entry.value)
+	}
+	if allowStale && now.Before(entry.expiresAt.Add(balanceStaleFallback)) {
+		return new(big.Int).Set(entry.value)
+	}
+
+	return nil
+}
+
+func (s *BlockchainService) setCachedBalance(key string, value *big.Int) {
+	if value == nil {
+		return
+	}
+
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.balanceCache[key] = cachedBalance{
+		value:     new(big.Int).Set(value),
+		expiresAt: time.Now().Add(balanceCacheTTL),
+	}
 }
 
 // FormatUSDCBalance formats a USDC balance (6 decimals) to a human-readable string
