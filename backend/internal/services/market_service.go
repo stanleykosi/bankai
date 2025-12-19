@@ -165,15 +165,19 @@ func (s *MarketService) GetPriceHistory(ctx context.Context, conditionID, rangeP
 		return nil, errors.New("condition id is required")
 	}
 
-	var market models.Market
-	if err := s.DB.WithContext(ctx).
-		Select("condition_id, token_id_yes").
-		Where("condition_id = ?", conditionID).
-		First(&market).Error; err != nil {
-		return nil, err
+	tokenID := ""
+	if cached := s.getCachedActiveMarketByConditionID(ctx, conditionID); cached != nil {
+		tokenID = strings.TrimSpace(cached.TokenIDYes)
+	} else {
+		var market models.Market
+		if err := s.DB.WithContext(ctx).
+			Select("condition_id, token_id_yes").
+			Where("condition_id = ?", conditionID).
+			First(&market).Error; err != nil {
+			return nil, err
+		}
+		tokenID = strings.TrimSpace(market.TokenIDYes)
 	}
-
-	tokenID := strings.TrimSpace(market.TokenIDYes)
 	if tokenID == "" {
 		return []clob.HistoryPoint{}, nil
 	}
@@ -351,21 +355,44 @@ func (s *MarketService) syncActiveMarketsCache(ctx context.Context) error {
 
 const activeWhereClause = "active = ? AND closed = ? AND accepting_orders = ?"
 
-func (s *MarketService) loadAllActiveMarkets(ctx context.Context) ([]models.Market, error) {
+func (s *MarketService) loadActiveMarketsFromCache(ctx context.Context) ([]models.Market, error) {
 	val, err := s.Redis.Get(ctx, CacheKeyActiveMarkets).Result()
-	if err == nil {
-		var markets []models.Market
-		if err := json.Unmarshal([]byte(val), &markets); err == nil {
-			return markets, nil
+	if err != nil {
+		return nil, err
+	}
+
+	var markets []models.Market
+	if err := json.Unmarshal([]byte(val), &markets); err != nil {
+		return nil, err
+	}
+
+	return filterActiveMarkets(markets, time.Now().UTC()), nil
+}
+
+func (s *MarketService) loadAllActiveMarkets(ctx context.Context) ([]models.Market, error) {
+	if markets, err := s.loadActiveMarketsFromCache(ctx); err == nil {
+		return markets, nil
+	}
+
+	if s.GammaClient != nil {
+		if err := s.syncActiveMarketsCache(ctx); err == nil {
+			if markets, err := s.loadActiveMarketsFromCache(ctx); err == nil {
+				return markets, nil
+			}
 		}
 	}
+
+	now := time.Now().UTC()
 
 	var markets []models.Market
 	if err := s.DB.WithContext(ctx).
 		Where(activeWhereClause, true, false, true).
+		Where("end_date IS NULL OR end_date > ?", now).
 		Order("created_at DESC").Find(&markets).Error; err != nil {
 		return nil, err
 	}
+
+	markets = filterActiveMarkets(markets, now)
 
 	if data, err := json.Marshal(markets); err == nil {
 		_ = s.Redis.Set(ctx, CacheKeyActiveMarkets, data, CacheTTL).Err()
@@ -373,6 +400,47 @@ func (s *MarketService) loadAllActiveMarkets(ctx context.Context) ([]models.Mark
 	}
 
 	return markets, nil
+}
+
+func (s *MarketService) getCachedActiveMarket(ctx context.Context, match func(models.Market) bool) *models.Market {
+	markets, err := s.loadActiveMarketsFromCache(ctx)
+	if err != nil && s.GammaClient != nil {
+		if syncErr := s.syncActiveMarketsCache(ctx); syncErr == nil {
+			markets, err = s.loadActiveMarketsFromCache(ctx)
+		}
+	}
+	if err != nil {
+		return nil
+	}
+
+	for _, market := range markets {
+		if match(market) {
+			matched := market
+			return &matched
+		}
+	}
+
+	return nil
+}
+
+func (s *MarketService) getCachedActiveMarketByConditionID(ctx context.Context, conditionID string) *models.Market {
+	conditionID = strings.TrimSpace(conditionID)
+	if conditionID == "" {
+		return nil
+	}
+	return s.getCachedActiveMarket(ctx, func(market models.Market) bool {
+		return market.ConditionID == conditionID
+	})
+}
+
+func (s *MarketService) getCachedActiveMarketBySlug(ctx context.Context, slug string) *models.Market {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return nil
+	}
+	return s.getCachedActiveMarket(ctx, func(market models.Market) bool {
+		return market.Slug == slug
+	})
 }
 
 // GetActiveMarkets returns the full active market snapshot (without pagination).
@@ -524,34 +592,19 @@ func (s *MarketService) GetMarketByConditionID(ctx context.Context, conditionID 
 		return nil, fmt.Errorf("condition_id is required")
 	}
 
+	if cached := s.getCachedActiveMarketByConditionID(ctx, conditionID); cached != nil {
+		markets := []models.Market{*cached}
+		s.attachRealtimePrices(ctx, markets)
+		market := markets[0]
+		return &market, nil
+	}
+
 	var market models.Market
 	if err := s.DB.WithContext(ctx).Where("condition_id = ?", conditionID).First(&market).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, fmt.Errorf("failed to query market: %w", err)
 		}
-
-		// Fallback to cached snapshot so we can still render if DB is missing the row.
-		if cached, cacheErr := s.loadAllActiveMarkets(ctx); cacheErr == nil {
-			for _, m := range cached {
-				if m.ConditionID == conditionID {
-					market = m
-
-					// Best-effort async persist to keep DB in sync for future requests.
-					go func(m models.Market) {
-						_ = s.DB.Clauses(clause.OnConflict{
-							Columns:   []clause.Column{{Name: "condition_id"}},
-							DoUpdates: clause.AssignmentColumns([]string{"slug", "title", "description", "resolution_rules", "category", "tags", "token_id_yes", "token_id_no", "end_date", "active", "closed", "archived", "accepting_orders"}),
-						}).Create(&m).Error
-					}(m)
-
-					break
-				}
-			}
-		}
-
-		if market.ConditionID == "" {
-			return nil, nil
-		}
+		return nil, nil
 	}
 
 	markets := []models.Market{market}
@@ -567,35 +620,19 @@ func (s *MarketService) GetMarketBySlug(ctx context.Context, slug string) (*mode
 		return nil, fmt.Errorf("slug is required")
 	}
 
+	if cached := s.getCachedActiveMarketBySlug(ctx, slug); cached != nil {
+		markets := []models.Market{*cached}
+		s.attachRealtimePrices(ctx, markets)
+		market := markets[0]
+		return &market, nil
+	}
+
 	var market models.Market
 	if err := s.DB.WithContext(ctx).Where("slug = ?", slug).First(&market).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, fmt.Errorf("failed to query market: %w", err)
 		}
-
-		// Fallback: try active markets cache so we can render even if DB missed the upsert.
-		if cached, cacheErr := s.loadAllActiveMarkets(ctx); cacheErr == nil {
-			for _, m := range cached {
-				if m.Slug == slug {
-					market = m
-
-					// Best-effort async persist so future requests hit DB.
-					go func(m models.Market) {
-						_ = s.DB.Clauses(clause.OnConflict{
-							Columns:   []clause.Column{{Name: "condition_id"}},
-							DoUpdates: clause.AssignmentColumns([]string{"slug", "title", "description", "resolution_rules", "category", "tags", "token_id_yes", "token_id_no", "end_date", "active", "closed", "archived", "accepting_orders"}),
-						}).Create(&m).Error
-					}(m)
-
-					break
-				}
-			}
-		}
-
-		// Still missing after cache lookup
-		if market.ConditionID == "" {
-			return nil, nil
-		}
+		return nil, nil
 	}
 
 	markets := []models.Market{market}
@@ -947,6 +984,7 @@ func (s *MarketService) GetMarketLanes(ctx context.Context, params MarketLanePar
 		if val, err := s.Redis.Get(ctx, CacheKeyMarketLanes).Result(); err == nil {
 			var lanes MarketLanes
 			if err := json.Unmarshal([]byte(val), &lanes); err == nil {
+				filterMarketLanes(&lanes, time.Now().UTC())
 				s.attachRealtimePrices(ctx, lanes.FreshDrops)
 				s.attachRealtimePrices(ctx, lanes.HighVelocity)
 				s.attachRealtimePrices(ctx, lanes.DeepLiquidity)
@@ -1049,24 +1087,49 @@ func (s *MarketService) buildMarketLanesFromSnapshot(ctx context.Context, market
 	}, nil
 }
 
-func filterMarketsForParams(markets []models.Market, category, tag string) []models.Market {
-	if category == "" && tag == "" {
-		result := make([]models.Market, 0, len(markets))
-		for _, market := range markets {
-			if !market.Active || market.Closed || !market.AcceptingOrders {
-				continue
-			}
-			result = append(result, market)
-		}
-		return result
+func filterActiveMarkets(markets []models.Market, now time.Time) []models.Market {
+	if len(markets) == 0 {
+		return []models.Market{}
 	}
+
+	result := make([]models.Market, 0, len(markets))
+	for _, market := range markets {
+		if !isMarketActive(market, now) {
+			continue
+		}
+		result = append(result, market)
+	}
+	return result
+}
+
+func filterMarketLanes(lanes *MarketLanes, now time.Time) {
+	if lanes == nil {
+		return
+	}
+	lanes.FreshDrops = filterActiveMarkets(lanes.FreshDrops, now)
+	lanes.HighVelocity = filterActiveMarkets(lanes.HighVelocity, now)
+	lanes.DeepLiquidity = filterActiveMarkets(lanes.DeepLiquidity, now)
+}
+
+func isMarketActive(market models.Market, now time.Time) bool {
+	if !market.Active || market.Closed || !market.AcceptingOrders {
+		return false
+	}
+	if market.EndDate != nil && !market.EndDate.After(now) {
+		return false
+	}
+	return true
+}
+
+func filterMarketsForParams(markets []models.Market, category, tag string) []models.Market {
+	now := time.Now().UTC()
 
 	tag = strings.TrimSpace(tag)
 	category = strings.TrimSpace(category)
 
 	result := make([]models.Market, 0, len(markets))
 	for _, market := range markets {
-		if !market.Active || market.Closed || !market.AcceptingOrders {
+		if !isMarketActive(market, now) {
 			continue
 		}
 		if category != "" && !strings.EqualFold(market.Category, category) {
@@ -1361,8 +1424,12 @@ func (s *MarketService) RequestMarketStream(ctx context.Context, conditionID str
 	}
 
 	var market models.Market
-	if err := s.DB.WithContext(ctx).Where("condition_id = ?", conditionID).First(&market).Error; err != nil {
-		return err
+	if cached := s.getCachedActiveMarketByConditionID(ctx, conditionID); cached != nil {
+		market = *cached
+	} else {
+		if err := s.DB.WithContext(ctx).Where("condition_id = ?", conditionID).First(&market).Error; err != nil {
+			return err
+		}
 	}
 
 	tokenValues := make([]string, 0, 2)
