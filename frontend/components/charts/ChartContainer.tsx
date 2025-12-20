@@ -55,6 +55,7 @@ export function ChartContainer({
 }: ChartContainerProps) {
   const [range, setRange] = useState<TimeRange>("1D");
   const [showNo, setShowNo] = useState(false);
+  const [latestTick, setLatestTick] = useState<{ time: number; price: number } | null>(null);
 
   const { data: historyData, isLoading, isError, refetch } = useQuery({
     queryKey: ["price-history", marketId, range],
@@ -88,10 +89,14 @@ export function ChartContainer({
   const [chartDataYes, setChartDataYes] = useState<ChartDataPoint[]>([]);
 
   useEffect(() => {
-    if (historyData) {
-      setChartDataYes(transformHistoryData(historyData));
-    }
-  }, [historyData]);
+    if (!historyData) return;
+    const base = transformHistoryData(historyData);
+    setChartDataYes(() => (latestTick ? mergeLiveTick(base, latestTick) : base));
+  }, [historyData, latestTick]);
+
+  useEffect(() => {
+    setLatestTick(null);
+  }, [marketId]);
 
   useEffect(() => {
     if (!liveMarket) return;
@@ -124,7 +129,9 @@ export function ChartContainer({
     }
 
     const tickTime = Math.floor(tsMs / 1000);
-    setChartDataYes((prev) => mergeLiveTick(prev, { time: tickTime, price: currentPrice }));
+    const tick = { time: tickTime, price: currentPrice };
+    setLatestTick(tick);
+    setChartDataYes((prev) => mergeLiveTick(prev, tick));
   }, [liveMarket]);
 
   const chartDataNo = useMemo(() => deriveInverseSeries(chartDataYes), [chartDataYes]);
