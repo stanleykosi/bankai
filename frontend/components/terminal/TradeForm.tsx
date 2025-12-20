@@ -48,6 +48,7 @@ import { cn } from "@/lib/utils";
 import { fetchDepthEstimate } from "@/lib/market-data";
 import { ensurePolygonChain } from "@/lib/chain-utils";
 import type { DepthEstimate, Market } from "@/types";
+import { calculateDisplayPrice } from "@/lib/price-utils";
 
 interface TradeFormProps {
   market: Market;
@@ -248,11 +249,25 @@ export function TradeForm({ market }: TradeFormProps) {
     const labels =
       outcomeLabels.length > 0 ? outcomeLabels : OUTCOME_FALLBACKS;
 
+    // Calculate current display price for each outcome (midpoint unless spread > 10c)
+    const yesCurrentPrice = calculateDisplayPrice(
+      market?.yes_best_bid,
+      market?.yes_best_ask,
+      market?.yes_price,
+      market?.condition_id ? `${market.condition_id}:yes` : undefined
+    );
+    const noCurrentPrice = calculateDisplayPrice(
+      market?.no_best_bid,
+      market?.no_best_ask,
+      market?.no_price,
+      market?.condition_id ? `${market.condition_id}:no` : undefined
+    );
+
     return [
       {
         label: labels[0] ?? OUTCOME_FALLBACKS[0],
         tokenId: market?.token_id_yes ?? null,
-        lastPrice: market?.yes_price,
+        lastPrice: yesCurrentPrice, // Use display price per Polymarket rule
         bestBid: market?.yes_best_bid,
         bestAsk: market?.yes_best_ask,
         accent: "constructive",
@@ -260,7 +275,7 @@ export function TradeForm({ market }: TradeFormProps) {
       {
         label: labels[1] ?? OUTCOME_FALLBACKS[1],
         tokenId: market?.token_id_no ?? null,
-        lastPrice: market?.no_price,
+        lastPrice: noCurrentPrice, // Use display price per Polymarket rule
         bestBid: market?.no_best_bid,
         bestAsk: market?.no_best_ask,
         accent: "destructive",
@@ -337,18 +352,24 @@ export function TradeForm({ market }: TradeFormProps) {
       return;
     }
 
+    // Use display price as the default for limit orders
+    // For market orders, we'll use best bid/ask directly
     const { bestAsk, bestBid, lastPrice } = selectedOutcome;
+    const displayPrice = calculateDisplayPrice(bestBid, bestAsk, lastPrice, selectedOutcome?.tokenId ?? undefined);
+    
     if (side === "BUY") {
-      if (typeof bestAsk === "number") {
+      // For BUY: prefer best ask (what you'd pay), fall back to display price
+      if (typeof bestAsk === "number" && bestAsk > 0) {
         setPrice(bestAsk.toString());
-      } else if (typeof lastPrice === "number") {
-        setPrice(lastPrice.toString());
+      } else if (typeof displayPrice === "number") {
+        setPrice(displayPrice.toString());
       }
     } else {
-      if (typeof bestBid === "number") {
+      // For SELL: prefer best bid (what you'd receive), fall back to display price
+      if (typeof bestBid === "number" && bestBid > 0) {
         setPrice(bestBid.toString());
-      } else if (typeof lastPrice === "number") {
-        setPrice(lastPrice.toString());
+      } else if (typeof displayPrice === "number") {
+        setPrice(displayPrice.toString());
       }
     }
   }, [side, selectedOutcome]);
@@ -924,10 +945,6 @@ export function TradeForm({ market }: TradeFormProps) {
                     </span>
                     <span className="text-xs font-semibold text-foreground">
                       {formatPriceLabel(option.lastPrice)}
-                    </span>
-                    <span className="text-[10px] text-muted-foreground block">
-                      Bid {formatPriceLabel(option.bestBid)} • Ask{" "}
-                      {formatPriceLabel(option.bestAsk)}
                     </span>
                   </button>
                 );

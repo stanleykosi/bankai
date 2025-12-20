@@ -23,6 +23,7 @@ import type { Market } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { calculateDisplayPrice } from "@/lib/price-utils";
 
 const TVChart = dynamic(() => import("./TVChart"), {
   ssr: false,
@@ -89,12 +90,19 @@ export function ChartContainer({
   useEffect(() => {
     if (!liveMarket) return;
 
-    const { yes_price: yesPrice, yes_price_updated: updatedAt } = liveMarket as {
-      yes_price?: number;
+    // Use Polymarket display rule for live updates (midpoint unless spread > 10c).
+    const currentPrice = calculateDisplayPrice(
+      liveMarket.yes_best_bid,
+      liveMarket.yes_best_ask,
+      liveMarket.yes_price,
+      `${marketId}:yes`
+    );
+
+    const { yes_price_updated: updatedAt } = liveMarket as {
       yes_price_updated?: string;
     };
 
-    if (typeof yesPrice !== "number" || !updatedAt) {
+    if (typeof currentPrice !== "number" || !updatedAt) {
       return;
     }
 
@@ -104,7 +112,7 @@ export function ChartContainer({
     }
 
     const tickTime = Math.floor(tsMs / 1000);
-    setChartDataYes((prev) => mergeLiveTick(prev, { time: tickTime, price: yesPrice }));
+    setChartDataYes((prev) => mergeLiveTick(prev, { time: tickTime, price: currentPrice }));
   }, [liveMarket]);
 
   const chartDataNo = useMemo(() => deriveInverseSeries(chartDataYes), [chartDataYes]);

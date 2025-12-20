@@ -848,18 +848,18 @@ func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []mode
 			continue
 		}
 
-		price := parseStringFloat(result["price"])
 		bestBid := parseStringFloat(result["best_bid"])
 		bestAsk := parseStringFloat(result["best_ask"])
+		lastTradePrice := parseStringFloat(result["last_trade_price"])
 		ts := parseUnixTimestamp(result["updated"])
 
 		if meta.side == "yes" {
-			markets[meta.index].YesPrice = price
+			markets[meta.index].YesPrice = lastTradePrice
 			markets[meta.index].YesBestBid = bestBid
 			markets[meta.index].YesBestAsk = bestAsk
 			markets[meta.index].YesPriceUpdated = ts
 		} else {
-			markets[meta.index].NoPrice = price
+			markets[meta.index].NoPrice = lastTradePrice
 			markets[meta.index].NoBestBid = bestBid
 			markets[meta.index].NoBestAsk = bestAsk
 			markets[meta.index].NoPriceUpdated = ts

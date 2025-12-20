@@ -12,10 +12,11 @@ import { Market } from "@/types";
 
 type AssetPrice = {
   condition_id: string;
-  price: number;
-  best_bid: number;
-  best_ask: number;
-  timestamp: string;
+  best_bid?: number;
+  best_ask?: number;
+  last_trade_price?: number;
+  timestamp?: string;
+  last_trade_timestamp?: string;
 };
 
 const FLUSH_INTERVAL_MS = 200;
@@ -33,26 +34,47 @@ export const usePriceStream = () => {
       source = new EventSource(`${API_BASE_URL}/api/v1/markets/stream`);
       source.onmessage = (event) => {
         try {
-          const payload = JSON.parse(event.data) as {
-            condition_id: string;
-            asset_id: string;
-            price: number;
-            best_bid: number;
-            best_ask: number;
-            timestamp: string;
-          };
+        const payload = JSON.parse(event.data) as {
+          condition_id: string;
+          asset_id: string;
+          best_bid?: number;
+          best_ask?: number;
+          timestamp?: string;
+          last_trade_price?: number;
+          last_trade_timestamp?: string;
+        };
 
-          priceMapRef.current[payload.asset_id] = {
-            condition_id: payload.condition_id,
-            price: payload.price,
-            best_bid: payload.best_bid,
-            best_ask: payload.best_ask,
-            timestamp: payload.timestamp,
-          };
-          needsFlushRef.current = true;
-        } catch (error) {
-          console.error("Failed to parse price update:", error);
+        const existing = priceMapRef.current[payload.asset_id];
+        const next: AssetPrice = {
+          condition_id: payload.condition_id || existing?.condition_id || "",
+          best_bid: existing?.best_bid,
+          best_ask: existing?.best_ask,
+          last_trade_price: existing?.last_trade_price,
+          timestamp: existing?.timestamp,
+          last_trade_timestamp: existing?.last_trade_timestamp,
+        };
+
+        if (typeof payload.best_bid === "number") {
+          next.best_bid = payload.best_bid;
         }
+        if (typeof payload.best_ask === "number") {
+          next.best_ask = payload.best_ask;
+        }
+        if (typeof payload.timestamp === "string") {
+          next.timestamp = payload.timestamp;
+        }
+        if (typeof payload.last_trade_price === "number") {
+          next.last_trade_price = payload.last_trade_price;
+        }
+        if (typeof payload.last_trade_timestamp === "string") {
+          next.last_trade_timestamp = payload.last_trade_timestamp;
+        }
+
+        priceMapRef.current[payload.asset_id] = next;
+        needsFlushRef.current = true;
+      } catch (error) {
+        console.error("Failed to parse price update:", error);
+      }
       };
 
       source.onerror = () => {
@@ -87,11 +109,12 @@ export const usePriceStream = () => {
 
       return {
         ...market,
-        yes_price: yes?.price ?? market.yes_price,
+        // Store last trade price for spread-aware display rules.
+        yes_price: yes?.last_trade_price ?? market.yes_price,
         yes_best_bid: yes?.best_bid ?? market.yes_best_bid,
         yes_best_ask: yes?.best_ask ?? market.yes_best_ask,
         yes_price_updated: yes?.timestamp ?? market.yes_price_updated,
-        no_price: no?.price ?? market.no_price,
+        no_price: no?.last_trade_price ?? market.no_price,
         no_best_bid: no?.best_bid ?? market.no_best_bid,
         no_best_ask: no?.best_ask ?? market.no_best_ask,
         no_price_updated: no?.timestamp ?? market.no_price_updated,
@@ -107,4 +130,3 @@ export const usePriceStream = () => {
 
   return { hydrateMarkets, augmentMarket };
 };
-

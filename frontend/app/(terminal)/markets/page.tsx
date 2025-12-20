@@ -27,6 +27,7 @@ import {
   fetchMarketsPage,
   type ActiveMarketParams,
 } from "@/lib/market-data";
+import { calculateDisplayPrice } from "@/lib/price-utils";
 import type { Market } from "@/types";
 
 const PAGE_SIZE = 100;
@@ -225,14 +226,38 @@ export default function MarketsPage() {
                         const labels = parseOutcomes(market.outcomes);
                         const entries = [];
                         if (labels.length > 0) {
-                          entries.push({ label: labels[0], price: market.yes_price, color: "text-constructive" });
+                          const yesPrice = calculateDisplayPrice(
+                            market.yes_best_bid,
+                            market.yes_best_ask,
+                            market.yes_price,
+                            `${market.condition_id}:yes`
+                          );
+                          entries.push({ label: labels[0], price: yesPrice, color: "text-constructive" });
                         }
                         if (labels.length > 1) {
-                          entries.push({ label: labels[1], price: market.no_price, color: "text-destructive" });
+                          const noPrice = calculateDisplayPrice(
+                            market.no_best_bid,
+                            market.no_best_ask,
+                            market.no_price,
+                            `${market.condition_id}:no`
+                          );
+                          entries.push({ label: labels[1], price: noPrice, color: "text-destructive" });
                         }
                         if (!entries.length) {
-                          entries.push({ label: "Outcome A", price: market.yes_price, color: "text-constructive" });
-                          entries.push({ label: "Outcome B", price: market.no_price, color: "text-destructive" });
+                          const yesPrice = calculateDisplayPrice(
+                            market.yes_best_bid,
+                            market.yes_best_ask,
+                            market.yes_price,
+                            `${market.condition_id}:yes`
+                          );
+                          const noPrice = calculateDisplayPrice(
+                            market.no_best_bid,
+                            market.no_best_ask,
+                            market.no_price,
+                            `${market.condition_id}:no`
+                          );
+                          entries.push({ label: "Outcome A", price: yesPrice, color: "text-constructive" });
+                          entries.push({ label: "Outcome B", price: noPrice, color: "text-destructive" });
                         }
                         labels.slice(2).forEach((label) => {
                           entries.push({ label, price: undefined, color: "text-muted-foreground" });
@@ -240,10 +265,8 @@ export default function MarketsPage() {
                         return entries.slice(0, 4).map((entry) => (
                           <div key={`${market.condition_id}-${entry.label}`} className="flex justify-between gap-2">
                             <span className="truncate">{entry.label}</span>
-                            <span className={`font-mono inline-flex items-center gap-1 ${entry.color}`}>
-                              <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shadow-[0_0_4px_rgba(251,191,36,0.7)]" />
+                            <span className={`font-mono inline-flex items-center ${entry.color}`}>
                               {formatCents(entry.price)}
-                              <span className="text-[9px] uppercase text-muted-foreground/70">Last</span>
                             </span>
                           </div>
                         ));

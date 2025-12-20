@@ -167,10 +167,6 @@ export default function MarketDetailPage() {
                   {marketData.title}
                 </h1>
                 <p className="text-sm text-muted-foreground">{marketData.description}</p>
-                <div className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-background/70 px-3 py-1 text-[10px] font-mono uppercase tracking-wide text-muted-foreground">
-                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shadow-[0_0_4px_rgba(251,191,36,0.7)]" />
-                  Last trade prices shown; bid/ask are live quotes.
-                </div>
               </div>
 
               <div className="grid gap-4 sm:grid-cols-3 font-mono text-xs text-muted-foreground">

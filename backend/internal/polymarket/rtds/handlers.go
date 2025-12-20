@@ -246,32 +246,55 @@ func (h *MessageHandler) handleLastTrade(ctx context.Context, m *LastTradeMessag
 	size, _ := strconv.ParseFloat(m.Size, 64)
 	volume := price * size
 
+	pipe := h.Redis.Pipeline()
+
 	// 2. Update Redis Volume Stats
 	// Increment 24h volume for the market
 	// Key: market:{id}:volume
-	return h.Redis.IncrByFloat(ctx, fmt.Sprintf("market:%s:volume", m.Market), volume).Err()
+	pipe.IncrByFloat(ctx, fmt.Sprintf("market:%s:volume", m.Market), volume)
+
+	// 3. Cache latest last trade price for UI fallback when spread > $0.10
+	key := fmt.Sprintf("price:%s:%s", m.Market, m.AssetID)
+	pipe.HSet(ctx, key, map[string]interface{}{
+		"last_trade_price":   m.Price,
+		"last_trade_updated": m.Timestamp,
+	})
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		return err
+	}
+
+	h.publishLastTradeUpdate(ctx, m)
+	return nil
 }
 
 type priceUpdatePayload struct {
-	ConditionID string  `json:"condition_id"`
-	AssetID     string  `json:"asset_id"`
-	Price       float64 `json:"price"`
-	BestBid     float64 `json:"best_bid"`
-	BestAsk     float64 `json:"best_ask"`
-	Timestamp   string  `json:"timestamp"`
+	ConditionID        string   `json:"condition_id"`
+	AssetID            string   `json:"asset_id"`
+	Price              *float64 `json:"price,omitempty"`
+	BestBid            *float64 `json:"best_bid,omitempty"`
+	BestAsk            *float64 `json:"best_ask,omitempty"`
+	Timestamp          *string  `json:"timestamp,omitempty"`
+	LastTradePrice     *float64 `json:"last_trade_price,omitempty"`
+	LastTradeTimestamp *string  `json:"last_trade_timestamp,omitempty"`
 }
 
 func (h *MessageHandler) publishPriceUpdates(ctx context.Context, m *PriceChangeMessage) {
 	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
 
 	for _, change := range m.PriceChanges {
+		price := parseFloat(change.Price)
+		bestBid := parseFloat(change.BestBid)
+		bestAsk := parseFloat(change.BestAsk)
+		ts := timestamp
+
 		payload := priceUpdatePayload{
 			ConditionID: m.Market,
 			AssetID:     change.AssetID,
-			Price:       parseFloat(change.Price),
-			BestBid:     parseFloat(change.BestBid),
-			BestAsk:     parseFloat(change.BestAsk),
-			Timestamp:   timestamp,
+			Price:       &price,
+			BestBid:     &bestBid,
+			BestAsk:     &bestAsk,
+			Timestamp:   &ts,
 		}
 
 		data, err := json.Marshal(payload)
@@ -282,6 +305,26 @@ func (h *MessageHandler) publishPriceUpdates(ctx context.Context, m *PriceChange
 		if err := h.Redis.Publish(ctx, services.PriceUpdateChannel, data).Err(); err != nil {
 			log.Printf("Redis publish error: %v", err)
 		}
+	}
+}
+
+func (h *MessageHandler) publishLastTradeUpdate(ctx context.Context, m *LastTradeMessage) {
+	price := parseFloat(m.Price)
+	ts := m.Timestamp
+	payload := priceUpdatePayload{
+		ConditionID:        m.Market,
+		AssetID:            m.AssetID,
+		LastTradePrice:     &price,
+		LastTradeTimestamp: &ts,
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+
+	if err := h.Redis.Publish(ctx, services.PriceUpdateChannel, data).Err(); err != nil {
+		log.Printf("Redis publish error: %v", err)
 	}
 }
 

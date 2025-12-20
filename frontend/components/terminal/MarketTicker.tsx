@@ -18,6 +18,7 @@ import { TrendingUp, Zap, Clock, ArrowUpRight, CalendarDays } from "lucide-react
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Market } from "@/types";
 import { useRouter } from "next/navigation";
+import { calculateDisplayPrice } from "@/lib/price-utils";
 
 // Temporary Badge component if Shadcn one isn't fully set up yet in previous steps, 
 // but usually 'npx shadcn-ui@latest add badge' would add it. 
@@ -149,27 +150,33 @@ const MarketCard = ({
 
       <div className="mt-3 grid grid-cols-2 gap-3 text-[11px] font-mono text-muted-foreground">
         <div className="rounded-md border border-border/60 bg-background/50 p-2">
-          <div className="flex items-center justify-between text-[10px] uppercase tracking-wide opacity-70">
+          <div className="flex items-center text-[10px] uppercase tracking-wide opacity-70">
             <span className="truncate pr-2">{primaryOutcome}</span>
-            <span className="inline-flex items-center gap-1 text-[9px] text-muted-foreground/80">
-              <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shadow-[0_0_4px_rgba(251,191,36,0.7)]" />
-              Last trade
-            </span>
           </div>
           <div className="text-sm font-semibold text-constructive">
-            {formatCents(market.yes_price)}
+            {formatCents(
+              calculateDisplayPrice(
+                market.yes_best_bid,
+                market.yes_best_ask,
+                market.yes_price,
+                `${market.condition_id}:yes`
+              )
+            )}
           </div>
         </div>
         <div className="rounded-md border border-border/60 bg-background/50 p-2">
-          <div className="flex items-center justify-between text-[10px] uppercase tracking-wide opacity-70">
+          <div className="flex items-center text-[10px] uppercase tracking-wide opacity-70">
             <span className="truncate pr-2">{secondaryOutcome}</span>
-            <span className="inline-flex items-center gap-1 text-[9px] text-muted-foreground/80">
-              <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shadow-[0_0_4px_rgba(251,191,36,0.7)]" />
-              Last trade
-            </span>
           </div>
           <div className="text-sm font-semibold text-destructive">
-            {formatCents(market.no_price)}
+            {formatCents(
+              calculateDisplayPrice(
+                market.no_best_bid,
+                market.no_best_ask,
+                market.no_price,
+                `${market.condition_id}:no`
+              )
+            )}
           </div>
         </div>
       </div>
