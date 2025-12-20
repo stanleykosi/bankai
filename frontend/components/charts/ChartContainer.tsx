@@ -106,7 +106,13 @@ export function ChartContainer({
       return;
     }
 
-    const tsMs = Date.parse(updatedAt);
+    let tsMs = Date.parse(updatedAt);
+    if (Number.isNaN(tsMs)) {
+      const numericTs = Number(updatedAt);
+      if (Number.isFinite(numericTs)) {
+        tsMs = numericTs > 1e12 ? numericTs : numericTs * 1000;
+      }
+    }
     if (Number.isNaN(tsMs)) {
       return;
     }

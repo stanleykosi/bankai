@@ -113,11 +113,11 @@ export const usePriceStream = () => {
         yes_price: yes?.last_trade_price ?? market.yes_price,
         yes_best_bid: yes?.best_bid ?? market.yes_best_bid,
         yes_best_ask: yes?.best_ask ?? market.yes_best_ask,
-        yes_price_updated: yes?.timestamp ?? market.yes_price_updated,
+        yes_price_updated: yes?.timestamp ?? yes?.last_trade_timestamp ?? market.yes_price_updated,
         no_price: no?.last_trade_price ?? market.no_price,
         no_best_bid: no?.best_bid ?? market.no_best_bid,
         no_best_ask: no?.best_ask ?? market.no_best_ask,
-        no_price_updated: no?.timestamp ?? market.no_price_updated,
+        no_price_updated: no?.timestamp ?? no?.last_trade_timestamp ?? market.no_price_updated,
       };
     },
     [assetPrices]

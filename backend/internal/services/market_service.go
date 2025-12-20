@@ -816,21 +816,23 @@ func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []mode
 	}
 
 	type keyMeta struct {
-		index int
-		side  string
+		index   int
+		side    string
+		tokenID string
 	}
 
 	pipe := s.Redis.Pipeline()
 	cmdMeta := make(map[*redis.MapStringStringCmd]keyMeta)
+	fallbackTargets := make([]keyMeta, 0)
 
 	for idx, market := range markets {
 		if market.TokenIDYes != "" {
 			cmd := pipe.HGetAll(ctx, priceRedisKey(market.ConditionID, market.TokenIDYes))
-			cmdMeta[cmd] = keyMeta{index: idx, side: "yes"}
+			cmdMeta[cmd] = keyMeta{index: idx, side: "yes", tokenID: market.TokenIDYes}
 		}
 		if market.TokenIDNo != "" {
 			cmd := pipe.HGetAll(ctx, priceRedisKey(market.ConditionID, market.TokenIDNo))
-			cmdMeta[cmd] = keyMeta{index: idx, side: "no"}
+			cmdMeta[cmd] = keyMeta{index: idx, side: "no", tokenID: market.TokenIDNo}
 		}
 	}
 
@@ -845,6 +847,9 @@ func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []mode
 	for cmd, meta := range cmdMeta {
 		result, err := cmd.Result()
 		if err != nil || len(result) == 0 {
+			if meta.tokenID != "" {
+				fallbackTargets = append(fallbackTargets, meta)
+			}
 			continue
 		}
 
@@ -852,6 +857,9 @@ func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []mode
 		bestAsk := parseStringFloat(result["best_ask"])
 		lastTradePrice := parseStringFloat(result["last_trade_price"])
 		ts := parseUnixTimestamp(result["updated"])
+		if ts == nil {
+			ts = parseUnixTimestamp(result["last_trade_updated"])
+		}
 
 		if meta.side == "yes" {
 			markets[meta.index].YesPrice = lastTradePrice
@@ -863,6 +871,48 @@ func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []mode
 			markets[meta.index].NoBestBid = bestBid
 			markets[meta.index].NoBestAsk = bestAsk
 			markets[meta.index].NoPriceUpdated = ts
+		}
+
+		if meta.tokenID == "" {
+			continue
+		}
+
+		midpointAvailable := bestBid > 0 && bestAsk > 0 && bestBid <= bestAsk
+		spreadTooWide := midpointAvailable && (bestAsk-bestBid > 0.10)
+		if lastTradePrice <= 0 && (!midpointAvailable || spreadTooWide) {
+			fallbackTargets = append(fallbackTargets, meta)
+		}
+	}
+
+	if len(fallbackTargets) == 0 || s.ClobClient == nil {
+		return
+	}
+
+	for _, target := range fallbackTargets {
+		price, timestamp, err := s.ClobClient.GetLastTradePrice(ctx, target.tokenID)
+		if err != nil || price <= 0 {
+			if err != nil {
+				log.Printf("attachRealtimePrices last-trade fallback failed for %s: %v", target.tokenID, err)
+			}
+			continue
+		}
+
+		if target.side == "yes" {
+			markets[target.index].YesPrice = price
+		} else {
+			markets[target.index].NoPrice = price
+		}
+
+		updated := timestamp
+		if updated == "" {
+			updated = time.Now().UTC().Format(time.RFC3339Nano)
+		}
+		key := priceRedisKey(markets[target.index].ConditionID, target.tokenID)
+		if err := s.Redis.HSet(ctx, key, map[string]interface{}{
+			"last_trade_price":   strconv.FormatFloat(price, 'f', -1, 64),
+			"last_trade_updated": updated,
+		}).Err(); err != nil {
+			log.Printf("attachRealtimePrices failed to cache last-trade price for %s: %v", target.tokenID, err)
 		}
 	}
 }

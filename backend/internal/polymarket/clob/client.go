@@ -33,6 +33,7 @@ import (
 const (
 	DefaultTimeout        = 10 * time.Second
 	pricesHistoryEndpoint = "/prices-history"
+	lastTradeEndpoint     = "/last-trade-price"
 )
 
 type Client struct {
@@ -177,6 +178,75 @@ func (c *Client) GetPriceHistory(ctx context.Context, params PriceHistoryParams)
 	}
 
 	return nil, fmt.Errorf("unexpected prices-history response shape: %s", string(raw))
+}
+
+// GetLastTradePrice fetches the last traded price for a token from the CLOB API.
+func (c *Client) GetLastTradePrice(ctx context.Context, tokenID string) (float64, string, error) {
+	tokenID = strings.TrimSpace(tokenID)
+	if tokenID == "" {
+		return 0, "", fmt.Errorf("tokenID is required")
+	}
+
+	path := fmt.Sprintf("%s?token_id=%s", lastTradeEndpoint, tokenID)
+	var raw json.RawMessage
+	if err := c.sendRequestDecode(ctx, http.MethodGet, path, nil, &raw, nil); err != nil {
+		return 0, "", err
+	}
+
+	return parseLastTradePriceResponse(raw)
+}
+
+func parseLastTradePriceResponse(raw json.RawMessage) (float64, string, error) {
+	var num float64
+	if err := json.Unmarshal(raw, &num); err == nil && num > 0 {
+		return num, "", nil
+	}
+
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		if parsed, perr := strconv.ParseFloat(str, 64); perr == nil && parsed > 0 {
+			return parsed, "", nil
+		}
+	}
+
+	var obj map[string]interface{}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return 0, "", fmt.Errorf("unexpected last-trade-price response: %s", string(raw))
+	}
+
+	parseNumeric := func(value interface{}) (float64, bool) {
+		switch v := value.(type) {
+		case float64:
+			return v, v > 0
+		case json.Number:
+			if parsed, err := v.Float64(); err == nil {
+				return parsed, parsed > 0
+			}
+		case string:
+			if parsed, err := strconv.ParseFloat(v, 64); err == nil {
+				return parsed, parsed > 0
+			}
+		}
+		return 0, false
+	}
+
+	price, ok := parseNumeric(obj["price"])
+	if !ok {
+		price, ok = parseNumeric(obj["last_trade_price"])
+	}
+
+	timestamp := ""
+	if value, ok := obj["timestamp"]; ok {
+		if str, ok := value.(string); ok {
+			timestamp = str
+		}
+	}
+
+	if price > 0 {
+		return price, timestamp, nil
+	}
+
+	return 0, "", fmt.Errorf("unexpected last-trade-price response: %s", string(raw))
 }
 
 // DeriveAPIKey requests (or creates) the user API credentials using the L1 ClobAuth signature.
