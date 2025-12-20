@@ -39,6 +39,7 @@ interface ChartContainerProps {
   tokenYesId: string;
   tokenNoId: string;
   initialHeight?: number;
+  market?: Market;
 }
 
 type TimeRange = "1H" | "6H" | "1D" | "1W" | "1M" | "ALL";
@@ -50,6 +51,7 @@ export function ChartContainer({
   tokenYesId,
   tokenNoId,
   initialHeight = 400,
+  market,
 }: ChartContainerProps) {
   const [range, setRange] = useState<TimeRange>("1D");
   const [showNo, setShowNo] = useState(false);
@@ -67,17 +69,21 @@ export function ChartContainer({
     enabled: Boolean(marketId),
   });
 
-  const { hydrateMarkets } = usePriceStream();
+  const { augmentMarket } = usePriceStream();
 
   const liveMarket = useMemo(() => {
+    if (market) {
+      return augmentMarket(market);
+    }
+
     const stubMarket = {
       condition_id: marketId,
       token_id_yes: tokenYesId,
       token_id_no: tokenNoId,
     } satisfies Partial<Market>;
 
-    return hydrateMarkets([stubMarket as Market])[0];
-  }, [hydrateMarkets, marketId, tokenYesId, tokenNoId]);
+    return augmentMarket(stubMarket as Market);
+  }, [augmentMarket, market, marketId, tokenYesId, tokenNoId]);
 
   const [chartDataYes, setChartDataYes] = useState<ChartDataPoint[]>([]);
 

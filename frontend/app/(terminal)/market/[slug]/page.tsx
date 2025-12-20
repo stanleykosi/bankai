@@ -148,6 +148,7 @@ export default function MarketDetailPage() {
             tokenYesId={marketData.token_id_yes}
             tokenNoId={marketData.token_id_no}
             initialHeight={420}
+            market={marketData}
           />
 
           <Card className="border-border bg-card/60 backdrop-blur">

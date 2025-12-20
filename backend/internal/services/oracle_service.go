@@ -35,6 +35,7 @@ const (
 	maxSourceContentLength = 0  // 0 = no truncation, send full content
 	maxRulesLength         = 0  // 0 = no truncation, send full resolution rules
 	maxDescriptionLength   = 0  // 0 = no truncation, send full description
+	maxDisplaySpread       = 0.10
 )
 
 var ErrMarketNotFound = errors.New("market not found")
@@ -66,6 +67,29 @@ func NewOracleService(ms *MarketService, tavilyClient *tavily.Client, openaiClie
 		Tavily:        tavilyClient,
 		OpenAI:        openaiClient,
 	}
+}
+
+func calculateDisplayPrice(bestBid, bestAsk, lastTrade float64) (float64, bool) {
+	hasBid := bestBid > 0
+	hasAsk := bestAsk > 0
+	hasLast := lastTrade > 0
+
+	if hasBid && hasAsk && bestBid <= bestAsk {
+		spread := bestAsk - bestBid
+		if spread > maxDisplaySpread {
+			if hasLast {
+				return lastTrade, true
+			}
+			return 0, false
+		}
+		return (bestBid + bestAsk) / 2, true
+	}
+
+	if hasLast {
+		return lastTrade, true
+	}
+
+	return 0, false
 }
 
 // AnalyzeMarket performs a full RAG analysis on a market
@@ -177,11 +201,20 @@ func (s *OracleService) AnalyzeMarket(ctx context.Context, conditionID string) (
 	
 	// Price Information
 	contextBuilder.WriteString("\n=== PRICING DATA ===\n")
+	contextBuilder.WriteString("Display price rule: midpoint of best bid/ask unless spread > $0.10, then last trade price is shown.\n")
+	yesDisplayPrice, yesDisplayOk := calculateDisplayPrice(market.YesBestBid, market.YesBestAsk, market.YesPrice)
+	noDisplayPrice, noDisplayOk := calculateDisplayPrice(market.NoBestBid, market.NoBestAsk, market.NoPrice)
+	if yesDisplayOk {
+		contextBuilder.WriteString(fmt.Sprintf("YES Display Price: %.4f (%.2f%%)\n", yesDisplayPrice, yesDisplayPrice*100))
+	}
+	if noDisplayOk {
+		contextBuilder.WriteString(fmt.Sprintf("NO Display Price: %.4f (%.2f%%)\n", noDisplayPrice, noDisplayPrice*100))
+	}
 	if market.YesPrice > 0 {
-		contextBuilder.WriteString(fmt.Sprintf("YES Price: %.4f (%.2f%%)\n", market.YesPrice, market.YesPrice*100))
+		contextBuilder.WriteString(fmt.Sprintf("YES Last Trade Price: %.4f\n", market.YesPrice))
 	}
 	if market.NoPrice > 0 {
-		contextBuilder.WriteString(fmt.Sprintf("NO Price: %.4f (%.2f%%)\n", market.NoPrice, market.NoPrice*100))
+		contextBuilder.WriteString(fmt.Sprintf("NO Last Trade Price: %.4f\n", market.NoPrice))
 	}
 	if market.LastTradePrice > 0 {
 		contextBuilder.WriteString(fmt.Sprintf("Last Trade Price: %.4f\n", market.LastTradePrice))
