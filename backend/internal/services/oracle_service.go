@@ -323,12 +323,12 @@ func (s *OracleService) AnalyzeMarket(ctx context.Context, conditionID string) (
 	}
 
 	// 4. Prompt Engineering
-	systemPrompt := `You are Bankai Oracle, a precision prediction market analysis engine. Your sole purpose is to calculate the exact probability of a "YES" outcome for the given market using all available data.
+systemPrompt := `You are Bankai Oracle, a precision prediction market analysis engine. Your sole purpose is to calculate the exact probability of a "YES" outcome for the given market using all available data.
 
 ANALYSIS METHODOLOGY:
 
 1. MARKET FUNDAMENTALS:
-   - Parse the full description and resolution rules meticulously. These define what "YES" means and how the market resolves.
+   - Parse the full description and resolution rules meticulously. These are authoritative and define what "YES" means and how the market resolves.
    - Identify the specific event, deadline, and resolution criteria. Any ambiguity in rules increases uncertainty.
    - Consider category and tags for context about market type and domain expertise required.
 
@@ -340,8 +340,8 @@ ANALYSIS METHODOLOGY:
    - Calculate days/months remaining until resolution to assess feasibility of YES outcome.
 
 3. MARKET SENTIMENT (PRICING DATA):
-   - Current YES/NO prices reflect aggregate market belief. YES price = implied probability.
-   - Compare YES price to your calculated probability. Significant divergence indicates either market inefficiency or your analysis gap.
+   - Current YES/NO prices reflect aggregate market belief, not ground truth. Use them only as a weak reference.
+   - Do NOT anchor on market prices. If prices conflict with fundamentals and verified news, defer to fundamentals and news.
    - Best Bid/Ask spreads indicate liquidity depth. Wide spreads suggest uncertainty or low confidence.
    - Last Trade Price shows recent market activity and direction.
 
@@ -365,8 +365,8 @@ ANALYSIS METHODOLOGY:
    - If news is contradictory or insufficient, factor this into uncertainty.
 
 7. SYNTHESIS & PROBABILITY CALCULATION:
-   - Weight all factors: fundamentals (40%), market sentiment/pricing (30%), external news (20%), momentum/volume (10%).
-   - If market price strongly diverges from fundamentals, question why. Market may know something you don't, or vice versa.
+   - Weight all factors: fundamentals (50%), external news (30%), momentum/volume (10%), market sentiment/pricing (10%).
+   - If market price diverges from fundamentals and verified news, do not follow it blindly. Treat price as a hint, not a source of truth.
    - If resolution rules are ambiguous or external information is contradictory, increase uncertainty.
    - If all signals align (fundamentals + pricing + news + momentum), confidence should be high.
    - Output a precise probability (e.g., 0.734, not 0.7 or 0.75). Use decimal precision to reflect confidence level.
@@ -388,7 +388,7 @@ Required JSON format:
   "reasoning": string     // 3-5 sentences: Concise synthesis of key factors that led to your probability estimate. Reference specific data points (prices, volume, news, dates) that influenced your decision. Be direct and factual.
 }`
 
-	userPrompt := fmt.Sprintf(`Analyze this prediction market and calculate the probability of a YES outcome.
+userPrompt := fmt.Sprintf(`Analyze this prediction market and calculate the probability of a YES outcome.
 
 You have been provided with:
 - Complete market description and resolution rules (read carefully - these define what YES means)
@@ -399,14 +399,15 @@ You have been provided with:
 - 5 external news sources with full content (analyze for relevant, current information)
 
 SYNTHESIZE ALL DATA:
-1. What do the fundamentals (description + rules) tell you about the likelihood of YES?
-2. What does current market pricing imply about collective belief?
+1. What do the fundamentals (description + resolution rules) tell you about the likelihood of YES?
+2. What does current market pricing imply about collective belief (use as weak reference only)?
 3. What do price momentum trends indicate about direction?
 4. What do volume and liquidity metrics reveal about market confidence?
 5. What concrete information do the external news sources provide?
 6. How do all these signals align or conflict?
 
 Calculate a precise probability (0.0-1.0) that reflects your synthesis of ALL available data.
+Do not anchor on market prices; prioritize resolution rules and verified external information.
 Classify sentiment based on the strength and direction of signals.
 Provide reasoning that references specific data points that influenced your calculation.
 
@@ -637,22 +638,15 @@ func truncateText(s string, limit int) string {
 
 // buildSearchQuery constructs an optimized search query for Tavily that focuses on
 // finding relevant, current news articles about the market topic.
-// Keeps all meaningful terms from the title and adds news-focused context.
+// Keeps meaningful terms from the title, description, and resolution rules and adds news-focused context.
 func buildSearchQuery(market *models.Market) string {
 	title := strings.TrimSpace(market.Title)
-	if title == "" {
+	desc := strings.TrimSpace(market.Description)
+	rules := strings.TrimSpace(market.ResolutionRules)
+	if title == "" && desc == "" && rules == "" {
 		return "latest news"
 	}
 
-	// Clean up the title: remove question mark and "Will" prefix, but keep all entities
-	title = strings.ReplaceAll(title, "Will ", "")
-	title = strings.ReplaceAll(title, "?", "")
-	title = strings.TrimSpace(title)
-
-	// Split into words and filter out only the most common filler words
-	words := strings.Fields(title)
-	keyTerms := []string{}
-	
 	// Minimal filtering - only remove very common grammatical words
 	// Keep all entities, proper nouns, and meaningful terms
 	fillerWords := map[string]bool{
@@ -660,28 +654,19 @@ func buildSearchQuery(market *models.Market) string {
 		"in": true, "on": true, "at": true, "to": true, "for": true,
 		"of": true, "with": true, "by": true,
 	}
-	
-	for _, word := range words {
-		word = strings.Trim(word, ".,!?;:")
-		if word == "" {
-			continue
-		}
-		lower := strings.ToLower(word)
-		// Only skip very common filler words, keep everything else
-		if !fillerWords[lower] {
-			keyTerms = append(keyTerms, word)
-		}
+
+	titleTerms := extractSearchTerms(title, fillerWords, 0)
+	descTerms := extractSearchTerms(desc, fillerWords, 12)
+	rulesTerms := extractSearchTerms(rules, fillerWords, 8)
+
+	// If we filtered out too much from the title, fall back to the cleaned title
+	if len(titleTerms) < 2 && title != "" {
+		titleTerms = strings.Fields(cleanTitleForSearch(title))
 	}
 
-	// If we filtered out too much, use the cleaned title directly
-	if len(keyTerms) < 2 {
-		keyTerms = strings.Fields(title)
-	}
-
-	// Build query: keep all key terms + add news context
-	queryParts := keyTerms
-	
-	// Add news-focused terms to prioritize actual news articles
+	queryParts := append([]string{}, titleTerms...)
+	queryParts = appendUniqueTerms(queryParts, descTerms...)
+	queryParts = appendUniqueTerms(queryParts, rulesTerms...)
 	queryParts = append(queryParts, "news", "latest")
 
 	// Combine into focused query
@@ -692,6 +677,58 @@ func buildSearchQuery(market *models.Market) string {
 	query = strings.TrimSpace(query)
 
 	return query
+}
+
+func cleanTitleForSearch(title string) string {
+	title = strings.ReplaceAll(title, "Will ", "")
+	title = strings.ReplaceAll(title, "?", "")
+	return strings.TrimSpace(title)
+}
+
+func extractSearchTerms(text string, fillerWords map[string]bool, maxTerms int) []string {
+	if text == "" {
+		return nil
+	}
+	text = cleanTitleForSearch(text)
+	words := strings.Fields(text)
+	terms := make([]string, 0, len(words))
+	for _, word := range words {
+		word = strings.Trim(word, ".,!?;:\"'()[]{}")
+		if word == "" {
+			continue
+		}
+		lower := strings.ToLower(word)
+		if fillerWords[lower] {
+			continue
+		}
+		terms = append(terms, word)
+		if maxTerms > 0 && len(terms) >= maxTerms {
+			break
+		}
+	}
+	return terms
+}
+
+func appendUniqueTerms(base []string, extras ...string) []string {
+	if len(extras) == 0 {
+		return base
+	}
+	seen := make(map[string]struct{}, len(base))
+	for _, term := range base {
+		seen[strings.ToLower(term)] = struct{}{}
+	}
+	for _, term := range extras {
+		if term == "" {
+			continue
+		}
+		key := strings.ToLower(term)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		base = append(base, term)
+	}
+	return base
 }
 
 func normalizeProbability(p float64) float64 {
