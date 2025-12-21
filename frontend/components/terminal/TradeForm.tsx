@@ -52,6 +52,7 @@ import { calculateDisplayPrice } from "@/lib/price-utils";
 
 interface TradeFormProps {
   market: Market;
+  selectedOutcomeIndex?: number;
   onOutcomeChange?: (index: number) => void;
 }
 
@@ -147,7 +148,11 @@ const parseOutcomeLabels = (outcomes?: string | null): string[] => {
   return OUTCOME_FALLBACKS;
 };
 
-export function TradeForm({ market, onOutcomeChange }: TradeFormProps) {
+export function TradeForm({
+  market,
+  selectedOutcomeIndex: controlledOutcomeIndex,
+  onOutcomeChange,
+}: TradeFormProps) {
   const { getToken } = useAuth();
   const { user, eoaAddress, isAuthenticated, refreshUser } = useWallet();
   const { data: balanceData, isLoading: isBalanceLoading } = useBalance();
@@ -238,7 +243,7 @@ export function TradeForm({ market, onOutcomeChange }: TradeFormProps) {
   const [isSubmittingBatch, setIsSubmittingBatch] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [selectedOutcomeIndex, setSelectedOutcomeIndex] = useState(0);
+  const [localOutcomeIndex, setLocalOutcomeIndex] = useState(0);
   const [batchOrders, setBatchOrders] = useState<PreparedBatchOrder[]>([]);
 
   const outcomeLabels = useMemo(
@@ -294,6 +299,10 @@ export function TradeForm({ market, onOutcomeChange }: TradeFormProps) {
     outcomeLabels,
   ]);
 
+  const selectedOutcomeIndex =
+    typeof controlledOutcomeIndex === "number"
+      ? controlledOutcomeIndex
+      : localOutcomeIndex;
   const selectedOutcome =
     outcomeOptions[selectedOutcomeIndex] ?? outcomeOptions[0];
   const selectedOutcomeLabel = selectedOutcome?.label ?? "Outcome";
@@ -343,13 +352,21 @@ export function TradeForm({ market, onOutcomeChange }: TradeFormProps) {
   }, [orderType, gtdExpiration]);
 
   // Pre-fill price based on market data when switching sides or loading
-  useEffect(() => {
-    setSelectedOutcomeIndex(0);
-  }, [market?.condition_id]);
+  const updateOutcomeIndex = useCallback(
+    (nextIndex: number) => {
+      if (typeof controlledOutcomeIndex === "number") {
+        onOutcomeChange?.(nextIndex);
+        return;
+      }
+      setLocalOutcomeIndex(nextIndex);
+      onOutcomeChange?.(nextIndex);
+    },
+    [controlledOutcomeIndex, onOutcomeChange]
+  );
 
   useEffect(() => {
-    onOutcomeChange?.(selectedOutcomeIndex);
-  }, [onOutcomeChange, selectedOutcomeIndex]);
+    updateOutcomeIndex(0);
+  }, [market?.condition_id, updateOutcomeIndex]);
 
   useEffect(() => {
     if (!selectedOutcome) {
@@ -936,7 +953,7 @@ export function TradeForm({ market, onOutcomeChange }: TradeFormProps) {
                     key={`${option.label}-${idx}`}
                     type="button"
                     disabled={disabled}
-                    onClick={() => setSelectedOutcomeIndex(idx)}
+                    onClick={() => updateOutcomeIndex(idx)}
                     className={cn(
                       "rounded-md border px-3 py-2 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2",
                       isSelected

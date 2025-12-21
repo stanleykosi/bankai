@@ -108,8 +108,9 @@ export default function MarketDetailPage() {
 
   const marketData = liveMarket ?? market;
   const activeOutcome = activeOutcomeIndex === 0 ? "YES" : "NO";
-  const activeTokenId =
-    activeOutcomeIndex === 0 ? marketData.token_id_yes : marketData.token_id_no;
+  const handleOutcomeChange = (outcome: "YES" | "NO") => {
+    setActiveOutcomeIndex(outcome === "YES" ? 0 : 1);
+  };
 
   const outcomes = (() => {
     if (!marketData.outcomes) {
@@ -163,8 +164,10 @@ export default function MarketDetailPage() {
 
           <OrderBook
             marketId={marketData.condition_id}
-            tokenId={activeTokenId}
-            outcome={activeOutcome}
+            tokenYesId={marketData.token_id_yes}
+            tokenNoId={marketData.token_id_no}
+            activeOutcome={activeOutcome}
+            onOutcomeChange={handleOutcomeChange}
             className="h-[340px]"
           />
 
@@ -222,6 +225,7 @@ export default function MarketDetailPage() {
             <CardContent className="p-4">
               <TradeForm
                 market={marketData}
+                selectedOutcomeIndex={activeOutcomeIndex}
                 onOutcomeChange={setActiveOutcomeIndex}
               />
             </CardContent>

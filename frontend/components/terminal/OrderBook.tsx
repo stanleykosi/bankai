@@ -11,7 +11,7 @@
 
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 
@@ -39,7 +39,10 @@ interface ParsedLevel {
 interface OrderBookProps {
   marketId: string;
   tokenId?: string | null;
-  outcome: "YES" | "NO";
+  activeOutcome?: "YES" | "NO";
+  tokenYesId?: string | null;
+  tokenNoId?: string | null;
+  onOutcomeChange?: (outcome: "YES" | "NO") => void;
   className?: string;
 }
 
@@ -71,22 +74,41 @@ const formatNumber = (value: number, decimals: number) => {
 export function OrderBook({
   marketId,
   tokenId,
-  outcome,
+  activeOutcome,
+  tokenYesId,
+  tokenNoId,
+  onOutcomeChange,
   className,
 }: OrderBookProps) {
+  const [localOutcome, setLocalOutcome] = useState<"YES" | "NO">("YES");
+  const resolvedOutcome = activeOutcome ?? localOutcome;
+  const resolvedTokenId =
+    tokenId ??
+    (resolvedOutcome === "YES" ? tokenYesId ?? null : tokenNoId ?? null);
+  const showOutcomeToggle = Boolean(tokenYesId && tokenNoId);
+
+  const handleOutcomeChange = (next: "YES" | "NO") => {
+    if (!activeOutcome) {
+      setLocalOutcome(next);
+    }
+    onOutcomeChange?.(next);
+  };
+
   const { data, isLoading, isError, isFetching } = useQuery({
-    queryKey: ["orderbook", marketId, tokenId],
+    queryKey: ["orderbook", marketId, resolvedTokenId],
     queryFn: async () => {
-      if (!tokenId) return null;
+      if (!resolvedTokenId) return null;
       const res = await fetch(
-        `https://clob.polymarket.com/book?token_id=${encodeURIComponent(tokenId)}`
+        `https://clob.polymarket.com/book?token_id=${encodeURIComponent(
+          resolvedTokenId
+        )}`
       );
       if (!res.ok) {
         throw new Error("Failed to fetch order book");
       }
       return (await res.json()) as OrderBookResponse;
     },
-    enabled: Boolean(tokenId),
+    enabled: Boolean(resolvedTokenId),
     refetchInterval: 2000,
   });
 
@@ -133,7 +155,7 @@ export function OrderBook({
     return Math.max(bidMax, askMax, 1);
   }, [asks, bids]);
 
-  if (!tokenId) {
+  if (!resolvedTokenId) {
     return (
       <Card
         className={cn(
@@ -165,17 +187,43 @@ export function OrderBook({
           <span
             className={cn(
               "h-2 w-2 rounded-full",
-              outcome === "YES" ? "bg-constructive" : "bg-destructive"
+              resolvedOutcome === "YES" ? "bg-constructive" : "bg-destructive"
             )}
           />
-          Order Book ({outcome})
+          Order Book
         </CardTitle>
-        {isFetching && (
-          <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-        )}
+        <div className="flex items-center gap-2">
+          {showOutcomeToggle && (
+            <div className="flex items-center rounded-full border border-border bg-background/50 p-0.5 text-[10px] font-mono">
+              {(["YES", "NO"] as const).map((label) => {
+                const isActive = resolvedOutcome === label;
+                return (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() => handleOutcomeChange(label)}
+                    className={cn(
+                      "rounded-full px-2.5 py-1 uppercase tracking-wide transition-colors",
+                      isActive
+                        ? label === "YES"
+                          ? "bg-constructive text-black"
+                          : "bg-destructive text-white"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {isFetching && (
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+          )}
+        </div>
       </CardHeader>
 
-      <CardContent className="flex flex-1 flex-col p-0">
+      <CardContent className="flex min-h-0 flex-1 flex-col p-0">
         <div className="grid grid-cols-3 border-b border-border/50 bg-background/40 px-4 py-1 text-[10px] font-mono uppercase text-muted-foreground">
           <div className="text-left">Size</div>
           <div className="text-center">Price</div>
@@ -187,11 +235,11 @@ export function OrderBook({
             Failed to load order book
           </div>
         ) : (
-          <div className="flex flex-1 flex-col overflow-hidden">
-            <div className="flex flex-1 flex-col justify-end overflow-hidden">
-              <div className="flex flex-col-reverse overflow-y-auto">
+          <div className="grid flex-1 min-h-0 grid-rows-[minmax(0,1fr)_auto_minmax(0,1fr)]">
+            <div className="min-h-0 overflow-hidden">
+              <div className="custom-scrollbar flex h-full flex-col-reverse overflow-y-auto">
                 {asks.length === 0 ? (
-                  <div className="py-4 text-center text-[10px] text-muted-foreground">
+                  <div className="flex h-full items-center justify-center text-[10px] text-muted-foreground">
                     {isLoading ? "Loading asks..." : "No asks available"}
                   </div>
                 ) : (
@@ -212,7 +260,9 @@ export function OrderBook({
               <div className="flex items-center gap-1 text-muted-foreground">
                 <span>Spread</span>
                 <span className="text-[10px] text-muted-foreground/60">
-                  {spreadPercent === null ? "--" : `(${spreadPercent.toFixed(2)}%)`}
+                  {spreadPercent === null
+                    ? "--"
+                    : `(${spreadPercent.toFixed(2)}%)`}
                 </span>
               </div>
               <div
@@ -227,10 +277,10 @@ export function OrderBook({
               </div>
             </div>
 
-            <div className="flex flex-1 flex-col overflow-hidden">
-              <div className="overflow-y-auto">
+            <div className="min-h-0 overflow-hidden">
+              <div className="custom-scrollbar h-full overflow-y-auto">
                 {bids.length === 0 ? (
-                  <div className="py-4 text-center text-[10px] text-muted-foreground">
+                  <div className="flex h-full items-center justify-center text-[10px] text-muted-foreground">
                     {isLoading ? "Loading bids..." : "No bids available"}
                   </div>
                 ) : (
