@@ -74,7 +74,7 @@ export function ChartContainer({
 
   const liveMarket = useMemo(() => {
     if (market) {
-      return augmentMarket(market);
+      return market;
     }
 
     const stubMarket = {
@@ -91,12 +91,26 @@ export function ChartContainer({
   useEffect(() => {
     if (!historyData) return;
     const base = transformHistoryData(historyData);
-    setChartDataYes(() => (latestTick ? mergeLiveTick(base, latestTick) : base));
+    if (!latestTick) {
+      setChartDataYes(base);
+      return;
+    }
+    const lastPoint = base[base.length - 1];
+    const lastTime = lastPoint && typeof lastPoint.time === "number" ? lastPoint.time : undefined;
+    const adjustedTick =
+      typeof lastTime === "number" && latestTick.time < lastTime
+        ? { ...latestTick, time: lastTime }
+        : latestTick;
+    if (adjustedTick.time !== latestTick.time) {
+      setLatestTick(adjustedTick);
+    }
+    setChartDataYes(mergeLiveTick(base, adjustedTick));
   }, [historyData, latestTick]);
 
   useEffect(() => {
     setLatestTick(null);
   }, [marketId]);
+
 
   useEffect(() => {
     if (!liveMarket) return;

@@ -111,7 +111,8 @@ export default function TVChart({
       color: yesColor,
       lineWidth: 2,
       crosshairMarkerVisible: true,
-      priceLineVisible: true,
+      priceLineVisible: false,
+      lastValueVisible: true,
       title: "YES",
     });
     yesSeriesRef.current = yesSeries;
@@ -121,6 +122,7 @@ export default function TVChart({
       lineWidth: 2,
       crosshairMarkerVisible: true,
       priceLineVisible: false,
+      lastValueVisible: true,
       lineStyle: LineStyle.Solid,
       title: "NO",
       visible: false,
