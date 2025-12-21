@@ -127,26 +127,33 @@ export function ChartContainer({
       yes_price_updated?: string;
     };
 
-    if (typeof currentPrice !== "number" || !updatedAt) {
+    if (typeof currentPrice !== "number") {
       return;
     }
 
-    let tsMs = Date.parse(updatedAt);
-    if (Number.isNaN(tsMs)) {
+    let tsMs = updatedAt ? Date.parse(updatedAt) : Number.NaN;
+    if (Number.isNaN(tsMs) && updatedAt) {
       const numericTs = Number(updatedAt);
       if (Number.isFinite(numericTs)) {
         tsMs = numericTs > 1e12 ? numericTs : numericTs * 1000;
       }
     }
-    if (Number.isNaN(tsMs)) {
-      return;
-    }
 
-    const tickTime = Math.floor(tsMs / 1000);
+    const lastPoint = chartDataYes[chartDataYes.length - 1];
+    const lastSeriesTime =
+      lastPoint && typeof lastPoint.time === "number" ? lastPoint.time : undefined;
+    const fallbackMs =
+      typeof lastSeriesTime === "number"
+        ? lastSeriesTime * 1000
+        : latestTick
+          ? latestTick.time * 1000
+          : Date.now();
+    const effectiveMs = Number.isNaN(tsMs) ? fallbackMs : tsMs;
+    const tickTime = Math.floor(effectiveMs / 1000);
     const tick = { time: tickTime, price: currentPrice };
     setLatestTick(tick);
     setChartDataYes((prev) => mergeLiveTick(prev, tick));
-  }, [liveMarket]);
+  }, [liveMarket, chartDataYes, latestTick]);
 
   const chartDataNo = useMemo(() => deriveInverseSeries(chartDataYes), [chartDataYes]);
 

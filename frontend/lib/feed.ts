@@ -36,7 +36,7 @@ export function transformHistoryData(history: HistoryPoint[]): ChartDataPoint[] 
 
   const sorted = [...validPoints].sort((a, b) => a.t - b.t);
 
-  return sorted
+  const mapped = sorted
     .map((point) => {
       const value = clampPrice(point.p);
       if (value === null) return null;
@@ -46,6 +46,19 @@ export function transformHistoryData(history: HistoryPoint[]): ChartDataPoint[] 
       };
     })
     .filter((point): point is ChartDataPoint => point !== null && isValidNumber(point.value));
+
+  // De-dupe by timestamp to avoid vertical spikes from duplicate points.
+  const deduped: ChartDataPoint[] = [];
+  for (const point of mapped) {
+    const last = deduped[deduped.length - 1];
+    if (last && last.time === point.time) {
+      deduped[deduped.length - 1] = point;
+    } else {
+      deduped.push(point);
+    }
+  }
+
+  return deduped;
 }
 
 /**
