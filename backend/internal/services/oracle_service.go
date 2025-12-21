@@ -656,8 +656,8 @@ func buildSearchQuery(market *models.Market) string {
 	}
 
 	titleTerms := extractSearchTerms(title, fillerWords, 0)
-	descTerms := extractSearchTerms(desc, fillerWords, 12)
-	rulesTerms := extractSearchTerms(rules, fillerWords, 8)
+	descTerms := extractSearchTerms(desc, fillerWords, 25)
+	rulesTerms := extractSearchTerms(rules, fillerWords, 15)
 
 	// If we filtered out too much from the title, fall back to the cleaned title
 	if len(titleTerms) < 2 && title != "" {
