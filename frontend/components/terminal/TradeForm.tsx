@@ -52,6 +52,7 @@ import { calculateDisplayPrice } from "@/lib/price-utils";
 
 interface TradeFormProps {
   market: Market;
+  onOutcomeChange?: (index: number) => void;
 }
 
 type OrderSide = "BUY" | "SELL";
@@ -146,7 +147,7 @@ const parseOutcomeLabels = (outcomes?: string | null): string[] => {
   return OUTCOME_FALLBACKS;
 };
 
-export function TradeForm({ market }: TradeFormProps) {
+export function TradeForm({ market, onOutcomeChange }: TradeFormProps) {
   const { getToken } = useAuth();
   const { user, eoaAddress, isAuthenticated, refreshUser } = useWallet();
   const { data: balanceData, isLoading: isBalanceLoading } = useBalance();
@@ -345,6 +346,10 @@ export function TradeForm({ market }: TradeFormProps) {
   useEffect(() => {
     setSelectedOutcomeIndex(0);
   }, [market?.condition_id]);
+
+  useEffect(() => {
+    onOutcomeChange?.(selectedOutcomeIndex);
+  }, [onOutcomeChange, selectedOutcomeIndex]);
 
   useEffect(() => {
     if (!selectedOutcome) {

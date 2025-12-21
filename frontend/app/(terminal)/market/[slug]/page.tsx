@@ -3,18 +3,18 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, ArrowLeft, RefreshCcw } from "lucide-react";
 
 import { TradeForm } from "@/components/terminal/TradeForm";
 import { OrdersPanel } from "@/components/terminal/OrdersPanel";
+import { OrderBook } from "@/components/terminal/OrderBook";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ChartContainer } from "@/components/charts/ChartContainer";
 import { fetchMarketBySlug, requestMarketStream } from "@/lib/market-data";
 import { usePriceStream } from "@/hooks/usePriceStream";
 import { useTerminalStore } from "@/lib/store";
-import { cn } from "@/lib/utils";
 
 export default function MarketDetailPage() {
   const params = useParams<{ slug: string }>();
@@ -22,6 +22,7 @@ export default function MarketDetailPage() {
   const streamRequestedRef = useRef<string | null>(null);
   const { augmentMarket } = usePriceStream();
   const { setActiveMarket } = useTerminalStore();
+  const [activeOutcomeIndex, setActiveOutcomeIndex] = useState(0);
 
   const {
     data: market,
@@ -43,6 +44,12 @@ export default function MarketDetailPage() {
     }
     return () => setActiveMarket(null);
   }, [market, setActiveMarket]);
+
+  useEffect(() => {
+    if (market?.condition_id) {
+      setActiveOutcomeIndex(0);
+    }
+  }, [market?.condition_id]);
 
   useEffect(() => {
     const conditionId = market?.condition_id;
@@ -100,6 +107,9 @@ export default function MarketDetailPage() {
   }
 
   const marketData = liveMarket ?? market;
+  const activeOutcome = activeOutcomeIndex === 0 ? "YES" : "NO";
+  const activeTokenId =
+    activeOutcomeIndex === 0 ? marketData.token_id_yes : marketData.token_id_no;
 
   const outcomes = (() => {
     if (!marketData.outcomes) {
@@ -149,6 +159,13 @@ export default function MarketDetailPage() {
             tokenNoId={marketData.token_id_no}
             initialHeight={420}
             market={marketData}
+          />
+
+          <OrderBook
+            marketId={marketData.condition_id}
+            tokenId={activeTokenId}
+            outcome={activeOutcome}
+            className="h-[340px]"
           />
 
           <Card className="border-border bg-card/60 backdrop-blur">
@@ -203,7 +220,10 @@ export default function MarketDetailPage() {
         <div className="space-y-4">
           <Card className="border-border bg-card/70 backdrop-blur">
             <CardContent className="p-4">
-              <TradeForm market={marketData} />
+              <TradeForm
+                market={marketData}
+                onOutcomeChange={setActiveOutcomeIndex}
+              />
             </CardContent>
           </Card>
           <OrdersPanel />
