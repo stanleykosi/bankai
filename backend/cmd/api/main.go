@@ -18,6 +18,7 @@ package main
 
 import (
 	"os"
+	"strings"
 
 	"github.com/bankai-project/backend/internal/api"
 	"github.com/bankai-project/backend/internal/config"
@@ -63,19 +64,28 @@ func main() {
 	app.Use(fiberLogger.New())    // Request logging
 	
 	// CORS Configuration
-	// By default, allow all origins (useful for local testing and development)
-	// Set FRONTEND_URL in production if you want to restrict to a specific domain
-	allowedOrigins := "*"
-	if frontendURL := os.Getenv("FRONTEND_URL"); frontendURL != "" {
-		// If FRONTEND_URL is set, use it (but still allow localhost for testing)
-		allowedOrigins = frontendURL
+	// By default, allow all origins (useful for local testing and development).
+	// Set FRONTEND_URL in production to restrict to specific origins (comma-separated).
+	allowCredentials := true
+	allowedOrigins := []string{"http://localhost:3000", "http://127.0.0.1:3000"}
+	if frontendURL := strings.TrimSpace(os.Getenv("FRONTEND_URL")); frontendURL != "" {
+		for _, origin := range strings.Split(frontendURL, ",") {
+			origin = strings.TrimSpace(origin)
+			if origin != "" {
+				allowedOrigins = append(allowedOrigins, origin)
+			}
+		}
+	} else {
+		allowedOrigins = []string{"*"}
+		// Browsers reject credentials with wildcard origins.
+		allowCredentials = false
 	}
-	
+
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:     allowedOrigins,
+		AllowOrigins:     strings.Join(dedupeStrings(allowedOrigins), ","),
 		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
 		AllowMethods:     "GET, POST, PUT, DELETE, OPTIONS",
-		AllowCredentials: true,
+		AllowCredentials: allowCredentials,
 	}))
 
 	// 5. Setup Routes
@@ -89,3 +99,18 @@ func main() {
 	}
 }
 
+func dedupeStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}

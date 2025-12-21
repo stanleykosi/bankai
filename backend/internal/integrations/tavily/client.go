@@ -27,7 +27,7 @@ import (
 
 const (
 	BaseURL        = "https://api.tavily.com/search"
-	requestTimeout = 15 * time.Second
+	requestTimeout = 30 * time.Second
 )
 
 type Client struct {
