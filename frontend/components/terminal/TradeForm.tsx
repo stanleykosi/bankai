@@ -58,6 +58,7 @@ interface TradeFormProps {
 
 type OrderSide = "BUY" | "SELL";
 type OrderTypeValue = "GTC" | "GTD" | "FOK" | "FAK";
+type ExecutionType = "LIMIT" | "MARKET";
 
 const OUTCOME_FALLBACKS = ["Yes", "No"];
 const MIN_GTD_BUFFER_SECONDS = 90; // Polymarket enforces ~60s security threshold, keep 90s for safety.
@@ -71,34 +72,6 @@ type OutcomeOption = {
   accent: "constructive" | "destructive";
 };
 
-type OrderTypeOption = {
-  value: OrderTypeValue;
-  label: string;
-  description: string;
-};
-
-const ORDER_TYPE_OPTIONS: OrderTypeOption[] = [
-  {
-    value: "GTC",
-    label: "GTC",
-    description: "Rest on book until cancelled.",
-  },
-  {
-    value: "GTD",
-    label: "GTD",
-    description: "Set an explicit expiration timestamp.",
-  },
-  {
-    value: "FOK",
-    label: "FOK",
-    description: "Fill the entire size immediately or cancel.",
-  },
-  {
-    value: "FAK",
-    label: "FAK",
-    description: "Fill what you can immediately, cancel remainder.",
-  },
-];
 
 const toDateTimeLocalValue = (date: Date) => {
   const tzOffsetMs = date.getTimezoneOffset() * 60 * 1000;
@@ -131,6 +104,13 @@ const formatPriceLabel = (value?: number) => {
     return "--";
   }
   return `${(value * 100).toFixed(1)}¢`;
+};
+
+const formatUsd = (value?: number) => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "--";
+  }
+  return `$${value.toFixed(2)}`;
 };
 
 const parseOutcomeLabels = (outcomes?: string | null): string[] => {
@@ -233,6 +213,8 @@ export function TradeForm({
 
   const [side, setSide] = useState<OrderSide>("BUY");
   const [orderType, setOrderType] = useState<OrderTypeValue>("GTC");
+  const [executionType, setExecutionType] = useState<ExecutionType>("LIMIT");
+  const [limitExpires, setLimitExpires] = useState(false);
   const [gtdExpiration, setGtdExpiration] = useState<string>("");
   const [price, setPrice] = useState<string>("");
   const [shares, setShares] = useState<string>("");
@@ -351,6 +333,14 @@ export function TradeForm({
     }
   }, [orderType, gtdExpiration]);
 
+  useEffect(() => {
+    if (executionType === "MARKET") {
+      setOrderType("FAK");
+      return;
+    }
+    setOrderType(limitExpires ? "GTD" : "GTC");
+  }, [executionType, limitExpires]);
+
   // Pre-fill price based on market data when switching sides or loading
   const updateOutcomeIndex = useCallback(
     (nextIndex: number) => {
@@ -396,42 +386,27 @@ export function TradeForm({
     }
   }, [side, selectedOutcome]);
 
-  const numericPrice = parseFloat(price) || 0;
-  const isLimitOrderType = orderType === "GTC" || orderType === "GTD";
-  const isImmediateOrderType = orderType === "FOK" || orderType === "FAK";
-  const roiPrice = useMemo(() => {
+  const rawPrice = parseFloat(price) || 0;
+  const isLimitOrderType = executionType === "LIMIT";
+  const isMarketOrderType = executionType === "MARKET";
+  const marketReferencePrice = useMemo(() => {
     const last = selectedOutcome?.lastPrice ?? 0;
-    if (isLimitOrderType) {
-      return numericPrice > 0 ? numericPrice : last;
-    }
     if (side === "BUY") {
       if (typeof selectedOutcome?.bestAsk === "number" && selectedOutcome.bestAsk > 0) {
         return selectedOutcome.bestAsk;
       }
-    } else {
-      if (typeof selectedOutcome?.bestBid === "number" && selectedOutcome.bestBid > 0) {
-        return selectedOutcome.bestBid;
-      }
+    } else if (typeof selectedOutcome?.bestBid === "number" && selectedOutcome.bestBid > 0) {
+      return selectedOutcome.bestBid;
     }
     return last;
-  }, [
-    isLimitOrderType,
-    numericPrice,
-    selectedOutcome?.bestAsk,
-    selectedOutcome?.bestBid,
-    selectedOutcome?.lastPrice,
-    side,
-  ]);
+  }, [selectedOutcome?.bestAsk, selectedOutcome?.bestBid, selectedOutcome?.lastPrice, side]);
+  const conversionPrice = isLimitOrderType ? rawPrice : marketReferencePrice;
   const numericShares =
     amountMode === "shares"
       ? parseFloat(shares) || 0
-      : numericPrice > 0
-        ? (parseFloat(dollarAmount) || 0) / numericPrice
+      : conversionPrice > 0
+        ? (parseFloat(dollarAmount) || 0) / conversionPrice
         : 0;
-  const totalCost =
-    amountMode === "dollars"
-      ? parseFloat(dollarAmount) || 0
-      : numericPrice * numericShares;
 
   const currentBalance = parseFloat(balanceData?.balance ?? "0") / 1_000_000;
   const vaultAddress = user?.vault_address;
@@ -461,25 +436,68 @@ export function TradeForm({
     enabled: depthEnabled,
     staleTime: 10_000,
   });
-  const depthHeadline =
-    side === "BUY" ? "Estimated Cost" : "Estimated Proceeds";
   const depthFillPercent = depthEstimate?.requestedSize
     ? Math.min(
       (depthEstimate.fillableSize / depthEstimate.requestedSize) * 100,
       100
     )
     : 0;
-  const leadDepthLevel = depthEstimate?.levels?.[0];
+  const executionPrice = useMemo(() => {
+    if (isLimitOrderType) {
+      return rawPrice;
+    }
+    if (typeof depthEstimate?.estimatedAveragePrice === "number" && depthEstimate.estimatedAveragePrice > 0) {
+      return depthEstimate.estimatedAveragePrice;
+    }
+    return marketReferencePrice;
+  }, [depthEstimate?.estimatedAveragePrice, isLimitOrderType, marketReferencePrice, rawPrice]);
+  const numericPrice = executionPrice;
+  const inputDollars = parseFloat(dollarAmount) || 0;
+  const totalCost =
+    amountMode === "dollars" ? inputDollars : numericPrice * numericShares;
+  const displayPrice = useMemo(() => {
+    if (isLimitOrderType) {
+      return rawPrice > 0 ? rawPrice : marketReferencePrice;
+    }
+    return numericPrice;
+  }, [isLimitOrderType, marketReferencePrice, numericPrice, rawPrice]);
+  const roiPrice = numericPrice > 0 ? numericPrice : marketReferencePrice;
+  const payoutShares =
+    amountMode === "shares"
+      ? numericShares
+      : numericPrice > 0
+        ? inputDollars / numericPrice
+        : 0;
+  const potentialWin = useMemo(() => {
+    if (payoutShares <= 0 || roiPrice <= 0) return 0;
+    if (side === "BUY") {
+      return (1 - roiPrice) * payoutShares;
+    }
+    return roiPrice * payoutShares;
+  }, [payoutShares, roiPrice, side]);
+  const conversionHint = useMemo(() => {
+    if (!conversionPrice || conversionPrice <= 0 || numericShares <= 0) {
+      return amountMode === "shares"
+        ? "Enter shares to preview cost."
+        : "Enter USD to preview shares.";
+    }
+    if (amountMode === "shares") {
+      return `≈ ${formatUsd(conversionPrice * numericShares)} @ $${conversionPrice.toFixed(3)}`;
+    }
+    return `≈ ${numericShares.toFixed(2)} shares @ $${conversionPrice.toFixed(3)}`;
+  }, [amountMode, conversionPrice, numericShares]);
+  const executionLabel = executionType === "LIMIT" ? "Limit" : "Market";
 
   // Validation
   const insufficientBalance =
     side === "BUY" && totalCost > currentBalance && currentBalance > 0;
 
   const onTick = useMemo(() => {
-    if (!numericPrice || tickSize <= 0) return true;
-    const steps = numericPrice / tickSize;
+    if (!isLimitOrderType) return true;
+    if (!rawPrice || tickSize <= 0) return true;
+    const steps = rawPrice / tickSize;
     return Math.abs(steps - Math.round(steps)) < 1e-6;
-  }, [numericPrice, tickSize]);
+  }, [isLimitOrderType, rawPrice, tickSize]);
 
   const sizeTooSmall = useMemo(() => {
     return numericShares > 0 && numericShares < minSize;
@@ -616,10 +634,14 @@ export function TradeForm({
       } else {
         // Create market order using SDK (handles signing and submission)
         // For BUY orders: amount is in $$$, for SELL orders: amount is in shares
+        const buyAmount =
+          amountMode === "dollars"
+            ? parseFloat(dollarAmount) || numericPrice * numericShares
+            : numericPrice * numericShares;
         const marketOrder: UserMarketOrder = {
           tokenID: tokenId,
           price: numericPrice > 0 ? numericPrice : undefined, // Optional for market orders
-          amount: side === "BUY" ? numericPrice * numericShares : numericShares,
+          amount: side === "BUY" ? buyAmount : numericShares,
           side: sdkSide,
           feeRateBps: 0,
           taker: "0x0000000000000000000000000000000000000000",
@@ -889,7 +911,7 @@ export function TradeForm({
         ) : (
           <>
             <Send className="mr-2 h-4 w-4" />
-            {`${side} ${selectedOutcomeLabel} • ${orderType}`}
+            {`${side} ${selectedOutcomeLabel} • ${executionLabel}`}
           </>
         )}
       </Button>
@@ -899,7 +921,7 @@ export function TradeForm({
     eoaAddress,
     isAuthenticated,
     isPlacingOrder,
-    orderType,
+    executionLabel,
     selectedOutcome?.tokenId,
     selectedOutcomeLabel,
     side,
@@ -974,108 +996,120 @@ export function TradeForm({
             </div>
           </div>
 
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
               Order Type
             </label>
-            <div className="grid grid-cols-2 gap-2">
-              {ORDER_TYPE_OPTIONS.map((option) => {
-                const isSelected = option.value === orderType;
-                return (
-                  <button
-                    type="button"
-                    key={option.value}
-                    onClick={() => setOrderType(option.value)}
-                    className={cn(
-                      "rounded-md border px-3 py-2 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2",
-                      isSelected
-                        ? "border-primary bg-primary/10 text-foreground"
-                        : "border-border bg-background/40 text-muted-foreground hover:border-primary/40 hover:text-foreground"
-                    )}
-                  >
-                    <span className="text-[11px] font-mono uppercase tracking-wide block">
-                      {option.label}
-                    </span>
-                    <span className="text-[10px] text-muted-foreground block">
-                      {option.description}
-                    </span>
-                  </button>
-                );
-              })}
+            <div className="flex rounded-md border border-border bg-background/40 p-1 text-[10px] font-mono uppercase tracking-wide">
+              <button
+                type="button"
+                onClick={() => setExecutionType("LIMIT")}
+                className={cn(
+                  "flex-1 rounded-sm px-3 py-2 transition-colors",
+                  executionType === "LIMIT"
+                    ? "bg-primary/20 text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                Limit
+              </button>
+              <button
+                type="button"
+                onClick={() => setExecutionType("MARKET")}
+                className={cn(
+                  "flex-1 rounded-sm px-3 py-2 transition-colors",
+                  executionType === "MARKET"
+                    ? "bg-primary/20 text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                Market
+              </button>
             </div>
-            {isLimitOrderType && (
-              <p className="text-[10px] text-muted-foreground font-mono">
-                Good-til orders rest on the book at your limit price until filled or cancelled.
-              </p>
-            )}
-            {isImmediateOrderType && (
-              <p className="text-[10px] text-muted-foreground font-mono">
-                {orderType} sweeps available liquidity instantly—size depends on the current depth.
-              </p>
+            <div className="flex items-center justify-between text-[10px] font-mono text-muted-foreground">
+              <span>
+                {executionType === "LIMIT"
+                  ? "Posts to the book at your price."
+                  : "Executes against live liquidity."}
+              </span>
+              {executionType === "LIMIT" && (
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={limitExpires}
+                    onChange={(e) => setLimitExpires(e.target.checked)}
+                    className="h-3 w-3 accent-primary"
+                  />
+                  <span>Set expiry</span>
+                </label>
+              )}
+            </div>
+            {executionType === "LIMIT" && limitExpires && (
+              <div className="space-y-1.5">
+                <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
+                  Expiration (UTC)
+                </label>
+                <Input
+                  type="datetime-local"
+                  min={toDateTimeLocalValue(
+                    new Date(Date.now() + MIN_GTD_BUFFER_SECONDS * 1000)
+                  )}
+                  value={gtdExpiration}
+                  onChange={(e) => setGtdExpiration(e.target.value)}
+                  className="font-mono text-right border-border bg-background/60"
+                />
+                {gtdExpirationError ? (
+                  <p className="text-[10px] text-destructive font-mono">
+                    {gtdExpirationError}
+                  </p>
+                ) : (
+                  <p className="text-[10px] text-muted-foreground">
+                    Pick a time at least {MIN_GTD_BUFFER_SECONDS} seconds out.
+                  </p>
+                )}
+              </div>
             )}
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
-            {isLimitOrderType && (
-              <div className="space-y-2 rounded border border-border/50 bg-background/60 p-3">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
-                    Limit Price ({selectedOutcomeLabel})
-                  </label>
-                  <Input
-                    type="number"
-                    step="0.01"
-                    min="0.01"
-                    max="0.99"
-                    placeholder="0.00"
-                    className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
-                    value={price}
-                    onChange={(e) => setPrice(e.target.value)}
-                  />
-                </div>
-                <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
-                  <span>Min $0.01</span>
-                  <span>Max $0.99</span>
-                </div>
-                {orderType === "GTD" && (
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
-                      Expiration (UTC)
-                    </label>
-                    <Input
-                      type="datetime-local"
-                      min={toDateTimeLocalValue(
-                        new Date(Date.now() + MIN_GTD_BUFFER_SECONDS * 1000)
-                      )}
-                      value={gtdExpiration}
-                      onChange={(e) => setGtdExpiration(e.target.value)}
-                      className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
-                    />
-                    {gtdExpirationError ? (
-                      <p className="text-[10px] text-destructive font-mono">
-                        {gtdExpirationError}
-                      </p>
-                    ) : (
-                      <p className="text-[10px] text-muted-foreground">
-                        Pick a time at least {MIN_GTD_BUFFER_SECONDS} seconds out.
-                      </p>
-                    )}
-                  </div>
-                )}
+            <div className="space-y-2 rounded border border-border/50 bg-background/60 p-3">
+              <div className="space-y-1.5">
+                <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
+                  {isLimitOrderType ? "Limit Price" : "Market Price"} ({selectedOutcomeLabel})
+                </label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  max="0.99"
+                  placeholder="0.00"
+                  readOnly={isMarketOrderType}
+                  className={cn(
+                    "font-mono text-right border-border bg-background/60",
+                    isMarketOrderType && "text-muted-foreground"
+                  )}
+                  value={
+                    isMarketOrderType
+                      ? displayPrice > 0
+                        ? displayPrice.toFixed(3)
+                        : ""
+                      : price
+                  }
+                  onChange={(e) => setPrice(e.target.value)}
+                />
               </div>
-            )}
+              <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
+                <span>Min $0.01</span>
+                <span>{isMarketOrderType ? "Live book" : "Max $0.99"}</span>
+              </div>
+            </div>
 
-            <div
-              className={cn(
-                "space-y-2 rounded border border-border/50 bg-background/60 p-3",
-                !isLimitOrderType && "sm:col-span-2"
-              )}
-            >
+            <div className="space-y-2 rounded border border-border/50 bg-background/60 p-3">
               <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wide">
                 <span>Depth Snapshot</span>
                 {depthEnabled ? (
                   isDepthLoading ? (
-                    <span className="text-muted-foreground">Syncing...</span>
+                    <span className="text-muted-foreground">Updating</span>
                   ) : (
                     <span className="text-foreground">{depthFillPercent.toFixed(0)}% cover</span>
                   )
@@ -1086,82 +1120,66 @@ export function TradeForm({
               {depthEstimate ? (
                 <>
                   <div className="flex justify-between text-xs font-mono">
-                    <span className="text-muted-foreground">{depthHeadline}</span>
-                    <span className="font-semibold">
-                      ${depthEstimate.estimatedTotalValue.toFixed(2)}
+                    <span className="text-muted-foreground">Est. fill</span>
+                    <span className="font-semibold text-foreground">
+                      ${depthEstimate.estimatedAveragePrice.toFixed(3)}
                     </span>
-                  </div>
-                  <div className="h-2 w-full rounded bg-muted">
-                    <div
-                      className={cn(
-                        "h-2 rounded transition-all",
-                        depthEstimate.insufficientLiquidity ? "bg-destructive" : "bg-primary"
-                      )}
-                      style={{ width: `${depthFillPercent}%` }}
-                    />
                   </div>
                   <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
                     <span>
-                      {depthEstimate.fillableSize.toFixed(0)}/{depthEstimate.requestedSize.toFixed(0)}{" "}
-                      shares
+                      {depthEstimate.fillableSize.toFixed(0)}/{depthEstimate.requestedSize.toFixed(0)} shares
                     </span>
-                    <span>VWAP {depthEstimate.estimatedAveragePrice.toFixed(3)}</span>
+                    <span>
+                      {side === "BUY" ? "Cost" : "Proceeds"} ${depthEstimate.estimatedTotalValue.toFixed(2)}
+                    </span>
                   </div>
-                  {leadDepthLevel && (
-                    <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
-                      <span>Top level</span>
-                      <span>
-                        @ {leadDepthLevel.price.toFixed(3)} • {leadDepthLevel.used.toFixed(0)}/
-                        {leadDepthLevel.available.toFixed(0)}
-                      </span>
-                    </div>
-                  )}
                   {depthEstimate.insufficientLiquidity && (
-                    <p className="text-[10px] text-destructive font-mono">
-                      Only {depthEstimate.fillableSize.toFixed(0)} shares currently available.
-                    </p>
-                  )}
-                  {isImmediateOrderType && (
-                    <p className="text-[10px] text-muted-foreground font-mono">
-                      {orderType} submits against these levels immediately.
+                    <p className="text-[10px] text-amber-400 font-mono">
+                      Partial fill likely at this size.
                     </p>
                   )}
                 </>
               ) : depthEnabled ? (
                 <p className="text-[10px] text-muted-foreground font-mono">
-                  Order book snapshot unavailable. Retrying shortly.
+                  Pulling order book pricing...
                 </p>
               ) : (
                 <p className="text-[10px] text-muted-foreground font-mono">
-                  Set a share size to preview liquidity.
+                  Enter size to preview fill price.
                 </p>
               )}
             </div>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 items-start">
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
-                <span>{amountMode === "shares" ? "Shares" : "Dollars"}</span>
-                <div className="flex gap-1 text-[10px]">
-                  <Button
+                <span>Size</span>
+                <div className="flex rounded-md border border-border bg-background/40 p-0.5 text-[10px]">
+                  <button
                     type="button"
-                    variant={amountMode === "shares" ? "default" : "ghost"}
-                    size="sm"
-                    className="h-5 px-2 text-[10px]"
                     onClick={() => setAmountMode("shares")}
+                    className={cn(
+                      "rounded-sm px-2.5 py-1 transition-colors",
+                      amountMode === "shares"
+                        ? "bg-primary/20 text-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
                   >
                     Shares
-                  </Button>
-                  <Button
+                  </button>
+                  <button
                     type="button"
-                    variant={amountMode === "dollars" ? "default" : "ghost"}
-                    size="sm"
-                    className="h-5 px-2 text-[10px]"
                     onClick={() => setAmountMode("dollars")}
+                    className={cn(
+                      "rounded-sm px-2.5 py-1 transition-colors",
+                      amountMode === "dollars"
+                        ? "bg-primary/20 text-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
                   >
                     USD
-                  </Button>
+                  </button>
                 </div>
               </div>
               {amountMode === "shares" ? (
@@ -1170,7 +1188,7 @@ export function TradeForm({
                   step="1"
                   min="1"
                   placeholder="0"
-                  className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
+                  className="font-mono text-right border-border bg-background/60"
                   value={shares}
                   onChange={(e) => setShares(e.target.value)}
                 />
@@ -1180,17 +1198,22 @@ export function TradeForm({
                   step="0.01"
                   min="1"
                   placeholder="0"
-                  className="font-mono text-right border-border bg-background/50 focus:bg-background transition-colors"
+                  className="font-mono text-right border-border bg-background/60"
                   value={dollarAmount}
                   onChange={(e) => setDollarAmount(e.target.value)}
                 />
               )}
+              <p className="text-[10px] text-muted-foreground font-mono">
+                {conversionHint}
+              </p>
             </div>
 
             <div className="p-3 rounded bg-muted/20 border border-border/50 space-y-2">
               <div className="flex justify-between text-xs font-mono">
-                <span className="text-muted-foreground">Est. Total</span>
-                <span className="text-foreground font-semibold">${totalCost.toFixed(2)}</span>
+                <span className="text-muted-foreground">Potential Win</span>
+                <span className="text-foreground font-semibold">
+                  {formatUsd(potentialWin)}
+                </span>
               </div>
               {side === "BUY" && (
                 <div className="flex justify-between text-xs font-mono">
@@ -1294,7 +1317,11 @@ export function TradeForm({
                     </span>
                     <span className="text-[10px] text-muted-foreground">
                       {entry.summary.shares} @{" "}
-                      {(entry.summary.price || 0).toFixed(2)} • {entry.orderParams.orderType}
+                      {(entry.summary.price || 0).toFixed(2)} •{" "}
+                      {entry.orderParams.orderType === OrderType.GTC ||
+                      entry.orderParams.orderType === OrderType.GTD
+                        ? "Limit"
+                        : "Market"}
                     </span>
                   </div>
                   <Button
