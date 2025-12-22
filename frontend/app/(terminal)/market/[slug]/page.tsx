@@ -143,38 +143,39 @@ export default function MarketDetailPage() {
 
       <div className="grid gap-6 lg:grid-cols-[2fr,1fr]">
         <div className="space-y-4">
-          <ChartContainer
-            marketId={marketData.condition_id}
-            tokenYesId={marketData.token_id_yes}
-            tokenNoId={marketData.token_id_no}
-            initialHeight={420}
-            market={marketData}
-          />
-
-          <OrderBook
-            marketId={marketData.condition_id}
-            tokenYesId={marketData.token_id_yes}
-            tokenNoId={marketData.token_id_no}
-            className="h-[340px]"
-          />
-
           <Card className="border-border bg-card/60 backdrop-blur">
             <CardContent className="p-6 space-y-4">
-              <div className="space-y-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  {marketData.tags?.slice(0, 4).map((tag) => (
-                    <span
-                      key={tag}
-                      className="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono uppercase tracking-wide text-muted-foreground"
-                    >
-                      {tag}
-                    </span>
-                  ))}
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+                {marketData.image_url || marketData.icon_url ? (
+                  <div className="h-20 w-20 shrink-0 overflow-hidden rounded-md border border-border/40 bg-background/40 sm:h-24 sm:w-24">
+                    <img
+                      src={marketData.image_url || marketData.icon_url || ""}
+                      alt={marketData.title}
+                      className="h-full w-full object-cover"
+                      loading="lazy"
+                    />
+                  </div>
+                ) : null}
+                <div className="flex-1 space-y-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {marketData.tags?.slice(0, 4).map((tag) => (
+                      <span
+                        key={tag}
+                        className="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono uppercase tracking-wide text-muted-foreground"
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="space-y-2">
+                    <h1 className="text-2xl font-semibold leading-tight text-foreground">
+                      {marketData.title}
+                    </h1>
+                    <p className="text-sm text-muted-foreground">
+                      {marketData.description}
+                    </p>
+                  </div>
                 </div>
-                <h1 className="text-2xl font-semibold leading-tight text-foreground">
-                  {marketData.title}
-                </h1>
-                <p className="text-sm text-muted-foreground">{marketData.description}</p>
               </div>
 
               <div className="grid gap-4 sm:grid-cols-3 font-mono text-xs text-muted-foreground">
@@ -205,6 +206,21 @@ export default function MarketDetailPage() {
               </div>
             </CardContent>
           </Card>
+
+          <ChartContainer
+            marketId={marketData.condition_id}
+            tokenYesId={marketData.token_id_yes}
+            tokenNoId={marketData.token_id_no}
+            initialHeight={420}
+            market={marketData}
+          />
+
+          <OrderBook
+            marketId={marketData.condition_id}
+            tokenYesId={marketData.token_id_yes}
+            tokenNoId={marketData.token_id_no}
+            className="h-[340px]"
+          />
         </div>
 
         <div className="space-y-4">
