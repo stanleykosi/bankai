@@ -10,7 +10,6 @@
 
 import { createConfig, http } from "wagmi";
 import { polygon } from "wagmi/chains";
-import { injected, walletConnect } from "wagmi/connectors";
 
 const walletConnectProjectId =
   process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || "";
@@ -20,22 +19,31 @@ const walletConnectProjectId =
 const polygonRpcUrl = process.env.NEXT_PUBLIC_POLYGON_RPC_URL ||
   "https://polygon-rpc.com";
 
+const getConnectors = () => {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  const { injected, walletConnect } = require("wagmi/connectors") as typeof import("wagmi/connectors");
+  const connectors = [injected({ shimDisconnect: true })];
+
+  if (walletConnectProjectId) {
+    connectors.push(
+      walletConnect({
+        projectId: walletConnectProjectId,
+        showQrModal: true,
+      })
+    );
+  }
+
+  return connectors;
+};
+
 export const config = createConfig({
   chains: [polygon],
   transports: {
     [polygon.id]: http(polygonRpcUrl),
   },
-  connectors: [
-    injected({ shimDisconnect: true }),
-    ...(walletConnectProjectId
-      ? [
-        walletConnect({
-          projectId: walletConnectProjectId,
-          showQrModal: true,
-        }),
-      ]
-      : []),
-  ],
+  connectors: getConnectors(),
   ssr: true,
 });
-

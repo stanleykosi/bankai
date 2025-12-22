@@ -85,6 +85,11 @@
   }
 }
 
+[data-debug-click-blocker="true"] {
+  outline: 2px solid #fbbf24;
+  outline-offset: 2px;
+}
+
 /* Custom Scrollbar for Terminal Look */
 ::-webkit-scrollbar {
   width: 8px;
