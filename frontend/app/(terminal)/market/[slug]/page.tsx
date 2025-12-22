@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Loader2, ArrowLeft, RefreshCcw } from "lucide-react";
 
 import { TradeForm } from "@/components/terminal/TradeForm";
@@ -22,7 +22,6 @@ export default function MarketDetailPage() {
   const streamRequestedRef = useRef<string | null>(null);
   const { augmentMarket } = usePriceStream();
   const { setActiveMarket } = useTerminalStore();
-  const [activeOutcomeIndex, setActiveOutcomeIndex] = useState(0);
 
   const {
     data: market,
@@ -44,12 +43,6 @@ export default function MarketDetailPage() {
     }
     return () => setActiveMarket(null);
   }, [market, setActiveMarket]);
-
-  useEffect(() => {
-    if (market?.condition_id) {
-      setActiveOutcomeIndex(0);
-    }
-  }, [market?.condition_id]);
 
   useEffect(() => {
     const conditionId = market?.condition_id;
@@ -107,10 +100,6 @@ export default function MarketDetailPage() {
   }
 
   const marketData = liveMarket ?? market;
-  const activeOutcome = activeOutcomeIndex === 0 ? "YES" : "NO";
-  const handleOutcomeChange = (outcome: "YES" | "NO") => {
-    setActiveOutcomeIndex(outcome === "YES" ? 0 : 1);
-  };
 
   const outcomes = (() => {
     if (!marketData.outcomes) {
@@ -166,8 +155,6 @@ export default function MarketDetailPage() {
             marketId={marketData.condition_id}
             tokenYesId={marketData.token_id_yes}
             tokenNoId={marketData.token_id_no}
-            activeOutcome={activeOutcome}
-            onOutcomeChange={handleOutcomeChange}
             className="h-[340px]"
           />
 
@@ -225,8 +212,6 @@ export default function MarketDetailPage() {
             <CardContent className="p-4">
               <TradeForm
                 market={marketData}
-                selectedOutcomeIndex={activeOutcomeIndex}
-                onOutcomeChange={setActiveOutcomeIndex}
               />
             </CardContent>
           </Card>

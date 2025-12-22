@@ -13,7 +13,6 @@
 
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -94,7 +93,7 @@ export function OrderBook({
     onOutcomeChange?.(next);
   };
 
-  const { data, isLoading, isError, isFetching } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: ["orderbook", marketId, resolvedTokenId],
     queryFn: async () => {
       if (!resolvedTokenId) return null;
@@ -192,35 +191,30 @@ export function OrderBook({
           />
           Order Book
         </CardTitle>
-        <div className="flex items-center gap-2">
-          {showOutcomeToggle && (
-            <div className="flex items-center rounded-full border border-border bg-background/50 p-0.5 text-[10px] font-mono">
-              {(["YES", "NO"] as const).map((label) => {
-                const isActive = resolvedOutcome === label;
-                return (
-                  <button
-                    key={label}
-                    type="button"
-                    onClick={() => handleOutcomeChange(label)}
-                    className={cn(
-                      "rounded-full px-2.5 py-1 uppercase tracking-wide transition-colors",
-                      isActive
-                        ? label === "YES"
-                          ? "bg-constructive text-black"
-                          : "bg-destructive text-white"
-                        : "text-muted-foreground hover:text-foreground"
-                    )}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          {isFetching && (
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-          )}
-        </div>
+        {showOutcomeToggle && (
+          <div className="flex items-center rounded-full border border-border bg-background/50 p-0.5 text-[10px] font-mono">
+            {(["YES", "NO"] as const).map((label) => {
+              const isActive = resolvedOutcome === label;
+              return (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => handleOutcomeChange(label)}
+                  className={cn(
+                    "rounded-full px-2.5 py-1 uppercase tracking-wide transition-colors",
+                    isActive
+                      ? label === "YES"
+                        ? "bg-constructive text-black"
+                        : "bg-destructive text-white"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </CardHeader>
 
       <CardContent className="flex min-h-0 flex-1 flex-col p-0">
