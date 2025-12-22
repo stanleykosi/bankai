@@ -34,6 +34,8 @@ const (
 	DefaultTimeout        = 10 * time.Second
 	pricesHistoryEndpoint = "/prices-history"
 	lastTradeEndpoint     = "/last-trade-price"
+	midpointEndpoint      = "/midpoint"
+	spreadsEndpoint       = "/spreads"
 )
 
 type Client struct {
@@ -196,6 +198,44 @@ func (c *Client) GetLastTradePrice(ctx context.Context, tokenID string) (float64
 	return parseLastTradePriceResponse(raw)
 }
 
+// GetMidpoint fetches the midpoint price for a token from the CLOB API.
+// GET /midpoint?token_id={tokenId}
+func (c *Client) GetMidpoint(ctx context.Context, tokenID string) (float64, error) {
+	tokenID = strings.TrimSpace(tokenID)
+	if tokenID == "" {
+		return 0, fmt.Errorf("tokenID is required")
+	}
+
+	values := url.Values{}
+	values.Set("token_id", tokenID)
+	path := fmt.Sprintf("%s?%s", midpointEndpoint, values.Encode())
+
+	var raw json.RawMessage
+	if err := c.sendRequestDecode(ctx, http.MethodGet, path, nil, &raw, nil); err != nil {
+		return 0, err
+	}
+
+	return parseMidpointResponse(raw)
+}
+
+// GetSpread fetches the bid-ask spread for a token from the CLOB API.
+// POST /spreads
+func (c *Client) GetSpread(ctx context.Context, tokenID string) (float64, error) {
+	tokenID = strings.TrimSpace(tokenID)
+	if tokenID == "" {
+		return 0, fmt.Errorf("tokenID is required")
+	}
+
+	req := []map[string]string{{"token_id": tokenID}}
+
+	var raw json.RawMessage
+	if err := c.sendRequestDecode(ctx, http.MethodPost, spreadsEndpoint, req, &raw, nil); err != nil {
+		return 0, err
+	}
+
+	return parseSpreadResponse(raw, tokenID)
+}
+
 func parseLastTradePriceResponse(raw json.RawMessage) (float64, string, error) {
 	var num float64
 	if err := json.Unmarshal(raw, &num); err == nil && num > 0 {
@@ -247,6 +287,62 @@ func parseLastTradePriceResponse(raw json.RawMessage) (float64, string, error) {
 	}
 
 	return 0, "", fmt.Errorf("unexpected last-trade-price response: %s", string(raw))
+}
+
+func parseMidpointResponse(raw json.RawMessage) (float64, error) {
+	var num float64
+	if err := json.Unmarshal(raw, &num); err == nil && num > 0 {
+		return num, nil
+	}
+
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		if parsed, perr := strconv.ParseFloat(str, 64); perr == nil && parsed > 0 {
+			return parsed, nil
+		}
+	}
+
+	var obj struct {
+		Mid string `json:"mid"`
+	}
+	if err := json.Unmarshal(raw, &obj); err == nil && obj.Mid != "" {
+		if parsed, perr := strconv.ParseFloat(obj.Mid, 64); perr == nil && parsed > 0 {
+			return parsed, nil
+		}
+	}
+
+	return 0, fmt.Errorf("unexpected midpoint response: %s", string(raw))
+}
+
+func parseSpreadResponse(raw json.RawMessage, tokenID string) (float64, error) {
+	var strMap map[string]string
+	if err := json.Unmarshal(raw, &strMap); err == nil {
+		if value, ok := strMap[tokenID]; ok {
+			if parsed, perr := strconv.ParseFloat(value, 64); perr == nil {
+				return parsed, nil
+			}
+		}
+	}
+
+	var ifaceMap map[string]interface{}
+	if err := json.Unmarshal(raw, &ifaceMap); err == nil {
+		if value, ok := ifaceMap[tokenID]; ok {
+			switch v := value.(type) {
+			case float64:
+				return v, nil
+			case json.Number:
+				if parsed, perr := v.Float64(); perr == nil {
+					return parsed, nil
+				}
+			case string:
+				if parsed, perr := strconv.ParseFloat(v, 64); perr == nil {
+					return parsed, nil
+				}
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("unexpected spreads response: %s", string(raw))
 }
 
 // DeriveAPIKey requests (or creates) the user API credentials using the L1 ClobAuth signature.

@@ -57,7 +57,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	oracleService := services.NewOracleService(marketService, tavilyClient, openaiClient)
 
 	// Social & Intelligence Services
-	profileService := services.NewProfileService(dataAPIClient, gammaClient, rdb)
+	profileService := services.NewProfileService(dataAPIClient, gammaClient, clobClient, rdb)
 	socialService := services.NewSocialService(db, gammaClient)
 	watchlistService := services.NewWatchlistService(db)
 	notificationService := services.NewNotificationService(db, socialService)
@@ -174,4 +174,3 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	// Internal sync route (secured via JOB_SYNC_SECRET header) for background workers
 	app.Post("/api/v1/trade/sync/internal", tradeHandler.SyncOrdersInternal)
 }
-

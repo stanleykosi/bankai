@@ -59,7 +59,28 @@ type ClosedPosition struct {
 	Winner        bool      `json:"winner"`
 }
 
-// Holder represents a token holder from the /holders endpoint
+// RawHolder represents a holder entry from the Data API /holders response.
+// This matches the Data API schema and is mapped into Holder for the frontend.
+type RawHolder struct {
+	ProxyWallet           string      `json:"proxyWallet"`
+	Bio                   string      `json:"bio"`
+	Asset                 string      `json:"asset"`
+	Pseudonym             string      `json:"pseudonym"`
+	Amount                interface{} `json:"amount"`
+	DisplayUsernamePublic bool        `json:"displayUsernamePublic"`
+	OutcomeIndex          interface{} `json:"outcomeIndex"`
+	Name                  string      `json:"name"`
+	ProfileImage          string      `json:"profileImage"`
+	ProfileImageOptimized string      `json:"profileImageOptimized"`
+}
+
+// MetaHolder represents the token group returned by /holders.
+type MetaHolder struct {
+	Token   string      `json:"token"`
+	Holders []RawHolder `json:"holders"`
+}
+
+// Holder represents a normalized token holder returned to the frontend.
 type Holder struct {
 	Address      string  `json:"address"`
 	ProxyAddress string  `json:"proxyAddress"`

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/bankai-project/backend/internal/logger"
+	"github.com/bankai-project/backend/internal/polymarket/clob"
 	"github.com/bankai-project/backend/internal/polymarket/data_api"
 	"github.com/bankai-project/backend/internal/polymarket/gamma"
 	"github.com/redis/go-redis/v9"
@@ -39,14 +40,16 @@ const (
 type ProfileService struct {
 	dataAPIClient *data_api.Client
 	gammaClient   *gamma.Client
+	clobClient    *clob.Client
 	redis         *redis.Client
 }
 
 // NewProfileService creates a new ProfileService
-func NewProfileService(dataAPIClient *data_api.Client, gammaClient *gamma.Client, rdb *redis.Client) *ProfileService {
+func NewProfileService(dataAPIClient *data_api.Client, gammaClient *gamma.Client, clobClient *clob.Client, rdb *redis.Client) *ProfileService {
 	return &ProfileService{
 		dataAPIClient: dataAPIClient,
 		gammaClient:   gammaClient,
+		clobClient:    clobClient,
 		redis:         rdb,
 	}
 }
@@ -320,7 +323,7 @@ func (s *ProfileService) GetMarketHolders(ctx context.Context, conditionID, toke
 		logger.Error("ProfileService: Holders cache error: %v", err)
 	}
 	if cached != nil {
-		return *cached, nil
+		return s.applyHolderValues(ctx, conditionID, tokenID, *cached), nil
 	}
 
 	holders, err := s.dataAPIClient.GetHolders(ctx, conditionID, tokenID, limit)
@@ -333,5 +336,60 @@ func (s *ProfileService) GetMarketHolders(ctx context.Context, conditionID, toke
 		logger.Error("ProfileService: Failed to cache holders: %v", err)
 	}
 
-	return holders, nil
+	return s.applyHolderValues(ctx, conditionID, tokenID, holders), nil
+}
+
+func (s *ProfileService) applyHolderValues(ctx context.Context, conditionID, tokenID string, holders []data_api.Holder) []data_api.Holder {
+	if len(holders) == 0 {
+		return holders
+	}
+
+	price, ok := s.getDisplayPrice(ctx, conditionID, tokenID)
+	if !ok {
+		return holders
+	}
+
+	for i := range holders {
+		holders[i].Value = holders[i].Size * price
+	}
+
+	return holders
+}
+
+func (s *ProfileService) getDisplayPrice(ctx context.Context, conditionID, tokenID string) (float64, bool) {
+	if conditionID != "" && tokenID != "" && s.redis != nil {
+		key := fmt.Sprintf("price:%s:%s", conditionID, tokenID)
+		result, err := s.redis.HGetAll(ctx, key).Result()
+		if err == nil && len(result) > 0 {
+			bestBid := parseStringFloat(result["best_bid"])
+			bestAsk := parseStringFloat(result["best_ask"])
+			lastTradePrice := parseStringFloat(result["last_trade_price"])
+			if price, ok := calculateDisplayPrice(bestBid, bestAsk, lastTradePrice); ok {
+				return price, true
+			}
+		}
+	}
+
+	if s.clobClient == nil || tokenID == "" {
+		return 0, false
+	}
+
+	midpoint, midErr := s.clobClient.GetMidpoint(ctx, tokenID)
+	spread, spreadErr := s.clobClient.GetSpread(ctx, tokenID)
+	if midErr == nil && midpoint > 0 {
+		if spreadErr == nil && spread > maxDisplaySpread {
+			lastTradePrice, _, err := s.clobClient.GetLastTradePrice(ctx, tokenID)
+			if err == nil && lastTradePrice > 0 {
+				return lastTradePrice, true
+			}
+		}
+		return midpoint, true
+	}
+
+	lastTradePrice, _, err := s.clobClient.GetLastTradePrice(ctx, tokenID)
+	if err == nil && lastTradePrice > 0 {
+		return lastTradePrice, true
+	}
+
+	return 0, false
 }

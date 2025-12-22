@@ -157,7 +157,7 @@ func (c *Client) GetClosedPositions(ctx context.Context, address string, limit, 
 }
 
 // GetHolders fetches top holders for a market token
-// GET /holders?market={conditionId}&tokenId={tokenId}
+// GET /holders?market={conditionId}
 func (c *Client) GetHolders(ctx context.Context, conditionID, tokenID string, limit int) ([]Holder, error) {
 	if conditionID == "" {
 		return nil, fmt.Errorf("conditionID is required")
@@ -170,9 +170,6 @@ func (c *Client) GetHolders(ctx context.Context, conditionID, tokenID string, li
 
 	q := u.Query()
 	q.Set("market", conditionID)
-	if tokenID != "" {
-		q.Set("tokenId", tokenID)
-	}
 	if limit > 0 {
 		q.Set("limit", strconv.Itoa(limit))
 	} else {
@@ -195,12 +192,74 @@ func (c *Client) GetHolders(ctx context.Context, conditionID, tokenID string, li
 		return nil, fmt.Errorf("data api error: status %d", resp.StatusCode)
 	}
 
-	var holders []Holder
-	if err := json.NewDecoder(resp.Body).Decode(&holders); err != nil {
+	var metaHolders []MetaHolder
+	if err := json.NewDecoder(resp.Body).Decode(&metaHolders); err != nil {
 		return nil, err
 	}
 
-	return holders, nil
+	return normalizeHolders(metaHolders, tokenID), nil
+}
+
+func normalizeHolders(meta []MetaHolder, tokenID string) []Holder {
+	if len(meta) == 0 {
+		return []Holder{}
+	}
+
+	var selected *MetaHolder
+	if tokenID != "" {
+		for i := range meta {
+			if strings.EqualFold(meta[i].Token, tokenID) {
+				selected = &meta[i]
+				break
+			}
+		}
+		if selected == nil {
+			return []Holder{}
+		}
+	} else {
+		selected = &meta[0]
+	}
+
+	holders := make([]Holder, 0, len(selected.Holders))
+	total := 0.0
+	for _, raw := range selected.Holders {
+		size := parseFloatSafe(raw.Amount)
+		total += size
+
+		holders = append(holders, Holder{
+			Address:      strings.ToLower(raw.ProxyWallet),
+			ProxyAddress: raw.ProxyWallet,
+			Size:         size,
+			Value:        0,
+			ProfileName:  resolveHolderName(raw),
+			ProfileImage: resolveHolderImage(raw),
+		})
+	}
+
+	if total > 0 {
+		for i := range holders {
+			holders[i].Percentage = (holders[i].Size / total) * 100
+		}
+	}
+
+	return holders
+}
+
+func resolveHolderName(raw RawHolder) string {
+	if raw.DisplayUsernamePublic && raw.Name != "" {
+		return raw.Name
+	}
+	if raw.Pseudonym != "" {
+		return raw.Pseudonym
+	}
+	return raw.Name
+}
+
+func resolveHolderImage(raw RawHolder) string {
+	if raw.ProfileImageOptimized != "" {
+		return raw.ProfileImageOptimized
+	}
+	return raw.ProfileImage
 }
 
 // GetTrades fetches trades for an address
