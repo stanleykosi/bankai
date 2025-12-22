@@ -412,6 +412,7 @@ export function TradeForm({
   const vaultAddress = user?.vault_address;
   const isBusy = isPlacingOrder || isAddingToBatch;
   const depthEnabled =
+    isMarketOrderType &&
     Boolean(selectedOutcome?.tokenId) &&
     numericShares > 0 &&
     Number.isFinite(numericShares);
@@ -1026,133 +1027,143 @@ export function TradeForm({
                 Market
               </button>
             </div>
-            <div className="flex items-center justify-between text-[10px] font-mono text-muted-foreground">
-              <span>
-                {executionType === "LIMIT"
-                  ? "Posts to the book at your price."
-                  : "Executes against live liquidity."}
-              </span>
-              {executionType === "LIMIT" && (
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={limitExpires}
-                    onChange={(e) => setLimitExpires(e.target.checked)}
-                    className="h-3 w-3 accent-primary"
-                  />
-                  <span>Set expiry</span>
-                </label>
-              )}
-            </div>
-            {executionType === "LIMIT" && limitExpires && (
-              <div className="space-y-1.5">
-                <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
-                  Expiration (UTC)
-                </label>
-                <Input
-                  type="datetime-local"
-                  min={toDateTimeLocalValue(
-                    new Date(Date.now() + MIN_GTD_BUFFER_SECONDS * 1000)
-                  )}
-                  value={gtdExpiration}
-                  onChange={(e) => setGtdExpiration(e.target.value)}
-                  className="font-mono text-right border-border bg-background/60"
-                />
-                {gtdExpirationError ? (
-                  <p className="text-[10px] text-destructive font-mono">
-                    {gtdExpirationError}
-                  </p>
-                ) : (
-                  <p className="text-[10px] text-muted-foreground">
-                    Pick a time at least {MIN_GTD_BUFFER_SECONDS} seconds out.
-                  </p>
-                )}
-              </div>
-            )}
+            <p className="text-[10px] font-mono text-muted-foreground">
+              {executionType === "LIMIT"
+                ? "Posts to the book at your price."
+                : "Executes against live liquidity."}
+            </p>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-3">
             <div className="space-y-2 rounded border border-border/50 bg-background/60 p-3">
-              <div className="space-y-1.5">
-                <label className="text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
+              <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wide">
+                <span>
                   {isLimitOrderType ? "Limit Price" : "Market Price"} ({selectedOutcomeLabel})
-                </label>
-                <Input
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  max="0.99"
-                  placeholder="0.00"
-                  readOnly={isMarketOrderType}
-                  className={cn(
-                    "font-mono text-right border-border bg-background/60",
-                    isMarketOrderType && "text-muted-foreground"
-                  )}
-                  value={
-                    isMarketOrderType
-                      ? displayPrice > 0
-                        ? displayPrice.toFixed(3)
-                        : ""
-                      : price
-                  }
-                  onChange={(e) => setPrice(e.target.value)}
-                />
+                </span>
+                {isLimitOrderType && (
+                  <label className="flex items-center gap-2 text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={limitExpires}
+                      onChange={(e) => setLimitExpires(e.target.checked)}
+                      className="h-3 w-3 accent-primary"
+                    />
+                    <span>Expires</span>
+                  </label>
+                )}
               </div>
+              <Input
+                type="number"
+                step="0.01"
+                min="0.01"
+                max="0.99"
+                placeholder="0.00"
+                readOnly={isMarketOrderType}
+                className={cn(
+                  "font-mono text-right border-border bg-background/60",
+                  isMarketOrderType && "text-muted-foreground"
+                )}
+                value={
+                  isMarketOrderType
+                    ? displayPrice > 0
+                      ? displayPrice.toFixed(3)
+                      : ""
+                    : price
+                }
+                onChange={(e) => setPrice(e.target.value)}
+              />
               <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
                 <span>Min $0.01</span>
                 <span>{isMarketOrderType ? "Live book" : "Max $0.99"}</span>
               </div>
-            </div>
-
-            <div className="space-y-2 rounded border border-border/50 bg-background/60 p-3">
-              <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wide">
-                <span>Depth Snapshot</span>
-                {depthEnabled ? (
-                  isDepthLoading ? (
-                    <span className="text-muted-foreground">Updating</span>
+              {isLimitOrderType && limitExpires && (
+                <div className="space-y-1.5">
+                  <Input
+                    type="datetime-local"
+                    min={toDateTimeLocalValue(
+                      new Date(Date.now() + MIN_GTD_BUFFER_SECONDS * 1000)
+                    )}
+                    value={gtdExpiration}
+                    onChange={(e) => setGtdExpiration(e.target.value)}
+                    className="font-mono text-right border-border bg-background/60"
+                  />
+                  {gtdExpirationError ? (
+                    <p className="text-[10px] text-destructive font-mono">
+                      {gtdExpirationError}
+                    </p>
                   ) : (
-                    <span className="text-foreground">{depthFillPercent.toFixed(0)}% cover</span>
-                  )
-                ) : (
-                  <span className="text-muted-foreground">Enter size</span>
-                )}
-              </div>
-              {depthEstimate ? (
-                <>
-                  <div className="flex justify-between text-xs font-mono">
-                    <span className="text-muted-foreground">Est. fill</span>
-                    <span className="font-semibold text-foreground">
-                      ${depthEstimate.estimatedAveragePrice.toFixed(3)}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
-                    <span>
-                      {depthEstimate.fillableSize.toFixed(0)}/{depthEstimate.requestedSize.toFixed(0)} shares
-                    </span>
-                    <span>
-                      {side === "BUY" ? "Cost" : "Proceeds"} ${depthEstimate.estimatedTotalValue.toFixed(2)}
-                    </span>
-                  </div>
-                  {depthEstimate.insufficientLiquidity && (
-                    <p className="text-[10px] text-amber-400 font-mono">
-                      Partial fill likely at this size.
+                    <p className="text-[10px] text-muted-foreground">
+                      Pick a time at least {MIN_GTD_BUFFER_SECONDS} seconds out.
                     </p>
                   )}
-                </>
-              ) : depthEnabled ? (
-                <p className="text-[10px] text-muted-foreground font-mono">
-                  Pulling order book pricing...
-                </p>
-              ) : (
-                <p className="text-[10px] text-muted-foreground font-mono">
-                  Enter size to preview fill price.
-                </p>
+                </div>
               )}
             </div>
-          </div>
 
-          <div className="grid gap-3 sm:grid-cols-2 items-start">
-            <div className="space-y-2">
+            {isMarketOrderType && (
+              <div className="space-y-2 rounded border border-border/50 bg-background/60 p-3">
+                <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wide">
+                  <span>Depth Snapshot</span>
+                  {depthEnabled ? (
+                    isDepthLoading ? (
+                      <span className="text-muted-foreground">Updating</span>
+                    ) : (
+                      <span className="text-foreground">
+                        {depthFillPercent.toFixed(0)}% cover
+                      </span>
+                    )
+                  ) : (
+                    <span className="text-muted-foreground">Enter size</span>
+                  )}
+                </div>
+                {depthEstimate ? (
+                  <>
+                    <div className="flex justify-between text-xs font-mono">
+                      <span className="text-muted-foreground">Est. fill</span>
+                      <span className="font-semibold text-foreground">
+                        ${depthEstimate.estimatedAveragePrice.toFixed(3)}
+                      </span>
+                    </div>
+                    <div className="h-1.5 w-full rounded bg-muted/60">
+                      <div
+                        className={cn(
+                          "h-1.5 rounded",
+                          depthEstimate.insufficientLiquidity
+                            ? "bg-amber-500"
+                            : "bg-primary"
+                        )}
+                        style={{ width: `${depthFillPercent}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
+                      <span>
+                        {depthEstimate.fillableSize.toFixed(0)}/
+                        {depthEstimate.requestedSize.toFixed(0)} shares
+                      </span>
+                      <span>
+                        {side === "BUY" ? "Cost" : "Proceeds"} $
+                        {depthEstimate.estimatedTotalValue.toFixed(2)}
+                      </span>
+                    </div>
+                    {depthEstimate.insufficientLiquidity && (
+                      <p className="text-[10px] text-amber-400 font-mono">
+                        Partial fill likely at this size.
+                      </p>
+                    )}
+                  </>
+                ) : depthEnabled ? (
+                  <p className="text-[10px] text-muted-foreground font-mono">
+                    Pulling order book pricing...
+                  </p>
+                ) : (
+                  <p className="text-[10px] text-muted-foreground font-mono">
+                    Enter size to preview fill price.
+                  </p>
+                )}
+              </div>
+            )}
+
+            <div className="space-y-2 rounded border border-border/50 bg-background/60 p-3">
               <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
                 <span>Size</span>
                 <div className="flex rounded-md border border-border bg-background/40 p-0.5 text-[10px]">
