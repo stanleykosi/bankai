@@ -10,6 +10,7 @@
  * - backend/internal/services
  * - backend/internal/polymarket/gamma
  * - backend/internal/polymarket/relayer
+ * - backend/internal/polymarket/data_api
  */
 
 package api
@@ -22,6 +23,7 @@ import (
 	"github.com/bankai-project/backend/internal/integrations/tavily"
 	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/polymarket/clob"
+	"github.com/bankai-project/backend/internal/polymarket/data_api"
 	"github.com/bankai-project/backend/internal/polymarket/gamma"
 	"github.com/bankai-project/backend/internal/polymarket/relayer"
 	"github.com/bankai-project/backend/internal/services"
@@ -46,12 +48,19 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	clobClient := clob.NewClient(cfg)
 	tavilyClient := tavily.NewClient(cfg)
 	openaiClient := openai.NewClient(cfg)
+	dataAPIClient := data_api.NewClient(cfg)
 
 	// 3. Initialize Services
 	marketService := services.NewMarketService(db, rdb, gammaClient, clobClient)
 	walletManager := services.NewWalletManager(db, relayerClient, gammaClient)
 	tradeService := services.NewTradeService(db, clobClient)
 	oracleService := services.NewOracleService(marketService, tavilyClient, openaiClient)
+
+	// Social & Intelligence Services
+	profileService := services.NewProfileService(dataAPIClient, gammaClient, rdb)
+	socialService := services.NewSocialService(db, gammaClient)
+	watchlistService := services.NewWatchlistService(db)
+	notificationService := services.NewNotificationService(db, socialService)
 
 	// Initialize Blockchain Service
 	blockchainService, err := services.NewBlockchainService(cfg)
@@ -68,13 +77,19 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	tradeHandler := handlers.NewTradeHandler(tradeService, cfg, db)
 	oracleHandler := handlers.NewOracleHandler(oracleService)
 
+	// Social & Intelligence Handlers
+	profileHandler := handlers.NewProfileHandler(profileService, socialService)
+	socialHandler := handlers.NewSocialHandler(db, socialService, notificationService)
+	watchlistHandler := handlers.NewWatchlistHandler(db, watchlistService)
+	holdersHandler := handlers.NewHoldersHandler(profileService)
+
 	// 5. Define Routes
 	// Root route for easy health checks
 	app.Get("/", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
 			"status":  "ok",
 			"service": "Bankai Trading Terminal API",
-			"version": "1.0.0",
+			"version": "1.1.0",
 			"health":  "/api/v1/health",
 		})
 	})
@@ -96,12 +111,21 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	markets.Get("/stream", marketHandler.StreamPriceUpdates)
 	markets.Get("/:condition_id/history", marketHandler.GetPriceHistory)
 	markets.Get("/:condition_id/depth", marketHandler.GetDepthEstimate)
+	markets.Get("/:condition_id/holders", holdersHandler.GetMarketHolders) // Whale Table
 	markets.Post("/:condition_id/stream", marketHandler.RequestMarketStream)
 	markets.Get("/:slug", marketHandler.GetMarketBySlug)
 
 	// Oracle Routes (Public for now, can be protected)
 	oracle := v1.Group("/oracle")
 	oracle.Get("/analyze/:condition_id", oracleHandler.AnalyzeMarket)
+
+	// Profile Routes (Public - trader profiles are public)
+	profile := v1.Group("/profile")
+	profile.Get("/:address", profileHandler.GetTraderProfile)
+	profile.Get("/:address/stats", profileHandler.GetTraderStats)
+	profile.Get("/:address/positions", profileHandler.GetTraderPositions)
+	profile.Get("/:address/activity", profileHandler.GetActivityHeatmap)
+	profile.Get("/:address/trades", profileHandler.GetRecentTrades)
 
 	// User Routes (Protected)
 	user := v1.Group("/user", middleware.Protected())
@@ -128,6 +152,26 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	trade.Post("/cancel/batch", tradeHandler.CancelOrders)
 	trade.Post("/sync", tradeHandler.SyncOrders) // Persist Polymarket orders/trades from SDK ingestion
 
+	// Social Routes (Protected)
+	social := v1.Group("/social", middleware.Protected())
+	social.Post("/follow", socialHandler.FollowTrader)
+	social.Delete("/follow/:address", socialHandler.UnfollowTrader)
+	social.Get("/following", socialHandler.GetFollowing)
+	social.Get("/following/:address", socialHandler.CheckIsFollowing)
+	social.Get("/notifications", socialHandler.GetNotifications)
+	social.Post("/notifications/:id/read", socialHandler.MarkNotificationRead)
+	social.Post("/notifications/read-all", socialHandler.MarkAllNotificationsRead)
+
+	// Watchlist Routes (Protected)
+	watchlist := v1.Group("/watchlist", middleware.Protected())
+	watchlist.Get("/", watchlistHandler.GetWatchlist)
+	watchlist.Get("", watchlistHandler.GetWatchlist)
+	watchlist.Post("/bookmark", watchlistHandler.BookmarkMarket)
+	watchlist.Post("/toggle", watchlistHandler.ToggleBookmark)
+	watchlist.Delete("/:market_id", watchlistHandler.RemoveBookmark)
+	watchlist.Get("/check/:market_id", watchlistHandler.CheckIsBookmarked)
+
 	// Internal sync route (secured via JOB_SYNC_SECRET header) for background workers
 	app.Post("/api/v1/trade/sync/internal", tradeHandler.SyncOrdersInternal)
 }
+

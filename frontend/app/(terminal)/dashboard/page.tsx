@@ -18,6 +18,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 
 import { MarketTicker } from "@/components/terminal/MarketTicker";
+import { WatchlistSidebar } from "@/components/watchlist/WatchlistSidebar";
 import { usePriceStream } from "@/hooks/usePriceStream";
 import { fetchMarketLanes } from "@/lib/market-data";
 import type { MarketLaneResponse } from "@/lib/market-data";
@@ -172,14 +173,25 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <MarketTicker
-        freshDrops={hydratedFreshDrops}
-        highVelocity={highVelocityMarkets}
-        deepLiquidity={deepLiquidityMarkets}
-        newCounts={newCounts}
-      />
+      {/* Main content grid with watchlist sidebar */}
+      <div className="grid gap-6 lg:grid-cols-[1fr,280px]">
+        <div className="space-y-6">
+          <MarketTicker
+            freshDrops={hydratedFreshDrops}
+            highVelocity={highVelocityMarkets}
+            deepLiquidity={deepLiquidityMarkets}
+            newCounts={newCounts}
+          />
+        </div>
 
-      {/* Additional widgets in future */}
+        {/* Watchlist Sidebar */}
+        <aside className="hidden lg:block">
+          <div className="sticky top-20">
+            <WatchlistSidebar />
+          </div>
+        </aside>
+      </div>
     </div>
   );
 }
+

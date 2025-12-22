@@ -172,3 +172,37 @@ export const requestMarketStream = async (conditionId: string): Promise<void> =>
   }
 };
 
+import type { HoldersResponse } from "@/types";
+
+/**
+ * Fetch top holders for a market (whale table)
+ */
+export const fetchMarketHolders = async (
+  conditionId: string,
+  tokenId?: string,
+  limit = 10
+): Promise<HoldersResponse> => {
+  if (!conditionId) {
+    throw new Error("conditionId is required");
+  }
+
+  try {
+    const params: Record<string, string | number> = { limit };
+    if (tokenId) {
+      params.token_id = tokenId;
+    }
+
+    const { data } = await api.get<HoldersResponse>(
+      `/markets/${encodeURIComponent(conditionId)}/holders`,
+      { params }
+    );
+    return data;
+  } catch (error) {
+    console.error("Failed to fetch market holders:", error);
+    return {
+      holders: [],
+      count: 0,
+      condition_id: conditionId,
+    };
+  }
+};

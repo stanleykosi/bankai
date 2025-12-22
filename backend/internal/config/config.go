@@ -53,6 +53,7 @@ type RedisConfig struct {
 type PolymarketConfig struct {
 	ClobURL       string
 	GammaURL      string
+	DataAPIURL    string // Polymarket Data API for positions, holders, trades
 	BuilderAPIKey string
 	BuilderSecret string
 	BuilderPass   string

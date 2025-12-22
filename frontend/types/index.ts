@@ -158,3 +158,194 @@ export interface DepthEstimate {
   insufficientLiquidity: boolean;
   levels: DepthEstimateLevel[];
 }
+
+// ===== Social & Intelligence Layer Types =====
+
+// Trader Profile
+export interface TraderStats {
+  win_rate: number;
+  total_volume: number;
+  realized_pnl: number;
+  total_trades: number;
+  winning_trades: number;
+  losing_trades: number;
+  open_positions: number;
+  closed_positions: number;
+  avg_trade_size: number;
+}
+
+export interface TraderProfile {
+  address: string;
+  proxy_wallet?: string;
+  profile_name?: string;
+  profile_image?: string;
+  bio?: string;
+  is_verified?: boolean;
+  ens_name?: string;
+  lens_handle?: string;
+  joined_at?: string;
+  stats?: TraderStats;
+}
+
+export interface TraderProfileResponse {
+  profile: TraderProfile;
+  follower_count: number;
+}
+
+// Positions
+export interface Position {
+  asset: string;
+  conditionId: string;
+  tokenId: string;
+  outcome: string;
+  size: number;
+  avgPrice: number;
+  curPrice: number;
+  initialValue: number;
+  currentValue: number;
+  cashPnl: number;
+  percentPnl: number;
+  totalBought: number;
+  totalSold: number;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  slug: string;
+  question: string;
+  proxyWallet: string;
+  owner: string;
+}
+
+export interface PositionsResponse {
+  positions: Position[];
+  count: number;
+}
+
+// Activity Heatmap
+export interface ActivityDataPoint {
+  date: string;
+  trade_count: number;
+  volume: number;
+  level: number; // 0-4 intensity
+}
+
+export interface ActivityResponse {
+  activity: ActivityDataPoint[];
+}
+
+// Trades
+export interface Trade {
+  id: string;
+  conditionId: string;
+  tokenId: string;
+  outcome: string;
+  side: "BUY" | "SELL";
+  price: number;
+  size: number;
+  value: number;
+  maker: string;
+  taker: string;
+  slug: string;
+  question: string;
+  timestamp: string;
+  transactionHash: string;
+}
+
+export interface TradesResponse {
+  trades: Trade[];
+  count: number;
+}
+
+// Holders (Whale Table)
+export interface Holder {
+  address: string;
+  proxyAddress?: string;
+  size: number;
+  value: number;
+  percentage: number;
+  profileName?: string;
+  profileImage?: string;
+}
+
+export interface HoldersResponse {
+  holders: Holder[];
+  count: number;
+  condition_id: string;
+  token_id?: string;
+}
+
+// Follow System
+export interface Follow {
+  id: string;
+  follower_id: string;
+  target_address: string;
+  created_at: string;
+  profile_name?: string;
+  profile_image?: string;
+  is_verified?: boolean;
+}
+
+export interface FollowingResponse {
+  following: Follow[];
+  count: number;
+}
+
+export interface FollowStatusResponse {
+  is_following: boolean;
+  target: string;
+}
+
+export interface FollowActionResponse {
+  success: boolean;
+  following: boolean;
+  target: string;
+}
+
+// Notifications
+export type NotificationType = "TRADE_ALERT" | "FOLLOWED" | "SYSTEM";
+
+export interface Notification {
+  id: string;
+  user_id: string;
+  type: NotificationType;
+  title: string;
+  message: string;
+  data?: string; // JSON string with additional data
+  read: boolean;
+  created_at: string;
+}
+
+export interface NotificationsResponse {
+  notifications: Notification[];
+  unread_count: number;
+  count: number;
+}
+
+// Watchlist
+export interface WatchlistItem {
+  id: string;
+  user_id: string;
+  market_id: string;
+  created_at: string;
+  title: string;
+  image_url?: string;
+  yes_price: number;
+  no_price: number;
+  volume_24h: number;
+  one_day_change: number;
+}
+
+export interface WatchlistResponse {
+  watchlist: WatchlistItem[];
+  count: number;
+}
+
+export interface BookmarkStatusResponse {
+  is_bookmarked: boolean;
+  market_id: string;
+}
+
+export interface BookmarkActionResponse {
+  success: boolean;
+  bookmarked: boolean;
+  market_id: string;
+}

@@ -12,6 +12,8 @@ import { OrderBook } from "@/components/terminal/OrderBook";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ChartContainer } from "@/components/charts/ChartContainer";
+import { BookmarkButton } from "@/components/watchlist/BookmarkButton";
+import { WhaleTable } from "@/components/market/WhaleTable";
 import { fetchMarketBySlug, requestMarketStream } from "@/lib/market-data";
 import { usePriceStream } from "@/hooks/usePriceStream";
 import { useTerminalStore } from "@/lib/store";
@@ -168,9 +170,12 @@ export default function MarketDetailPage() {
                     ))}
                   </div>
                   <div className="space-y-2">
-                    <h1 className="text-2xl font-semibold leading-tight text-foreground">
-                      {marketData.title}
-                    </h1>
+                    <div className="flex items-start justify-between gap-2">
+                      <h1 className="text-2xl font-semibold leading-tight text-foreground">
+                        {marketData.title}
+                      </h1>
+                      <BookmarkButton marketId={marketData.condition_id} />
+                    </div>
                     <p className="text-sm text-muted-foreground">
                       {marketData.description}
                     </p>
@@ -182,7 +187,7 @@ export default function MarketDetailPage() {
                 <div>
                   <p className="uppercase tracking-wide text-[10px]">Ends</p>
                   <p className="text-foreground">
-                  {marketData.end_date
+                    {marketData.end_date
                       ? new Date(marketData.end_date).toLocaleString()
                       : "--"}
                   </p>
@@ -192,8 +197,8 @@ export default function MarketDetailPage() {
                   <p className="text-foreground">
                     {marketData.liquidity
                       ? `$${marketData.liquidity.toLocaleString(undefined, {
-                          maximumFractionDigits: 0,
-                        })}`
+                        maximumFractionDigits: 0,
+                      })}`
                       : "$0"}
                   </p>
                 </div>
@@ -220,6 +225,13 @@ export default function MarketDetailPage() {
             tokenYesId={marketData.token_id_yes}
             tokenNoId={marketData.token_id_no}
             className="h-[340px]"
+          />
+
+          {/* Whale Table - Top Holders */}
+          <WhaleTable
+            conditionId={marketData.condition_id}
+            tokenYesId={marketData.token_id_yes}
+            tokenNoId={marketData.token_id_no}
           />
         </div>
 

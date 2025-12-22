@@ -16,6 +16,7 @@ import { Activity, BarChart2, LayoutDashboard, ShieldCheck, Wallet } from "lucid
 import { Button } from "@/components/ui/button";
 import { WalletConnectButton } from "@/components/wallet/WalletConnectButton";
 import { DepositWithdrawModal } from "@/components/wallet/DepositWithdrawModal";
+import { NotificationBell } from "@/components/social/NotificationBell";
 import { useWallet } from "@/hooks/useWallet";
 import { useVaultDeployment } from "@/hooks/useVaultDeployment";
 import { useBalance } from "@/hooks/useBalance";
@@ -201,12 +202,12 @@ export function Header() {
                                 ? truncateAddress(vaultAddress)
                                 : vaultStatusText}
                             </span>
-                          {hasVault && (
-                            <span className="flex items-center gap-0.5 text-[8px] uppercase text-constructive whitespace-nowrap shrink-0">
-                              <ShieldCheck className="h-2.5 w-2.5" />
-                              Active
-                            </span>
-                          )}
+                            {hasVault && (
+                              <span className="flex items-center gap-0.5 text-[8px] uppercase text-constructive whitespace-nowrap shrink-0">
+                                <ShieldCheck className="h-2.5 w-2.5" />
+                                Active
+                              </span>
+                            )}
                           </div>
                           {!hasVault && deploymentMessage && (
                             <span className="font-mono text-[9px] text-muted-foreground truncate">
@@ -224,6 +225,9 @@ export function Header() {
                   )}
                 </button>
               )}
+
+              {/* Notification Bell */}
+              <NotificationBell />
 
               <UserButton
                 afterSignOutUrl="/"
