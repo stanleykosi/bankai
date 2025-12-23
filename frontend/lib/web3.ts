@@ -24,8 +24,14 @@ const getConnectors = () => {
     return [];
   }
 
-  const { injected, walletConnect } = require("wagmi/connectors") as typeof import("wagmi/connectors");
-  const connectors = [injected({ shimDisconnect: true })];
+  const { injected, walletConnect } =
+    require("wagmi/connectors") as typeof import("wagmi/connectors");
+  type ConnectorInstance =
+    | ReturnType<typeof injected>
+    | ReturnType<typeof walletConnect>;
+  const connectors: ConnectorInstance[] = [
+    injected({ shimDisconnect: true }),
+  ];
 
   if (walletConnectProjectId) {
     connectors.push(
