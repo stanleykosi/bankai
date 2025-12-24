@@ -43,6 +43,7 @@ export function LinkClickInterceptor() {
       }
 
       const href = `${url.pathname}${url.search}${url.hash}`;
+      const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
       lastNavRef.current = href;
       const debug = window.localStorage.getItem(DEBUG_KEY) === "1";
       const wasPrevented = event.defaultPrevented;
@@ -59,10 +60,17 @@ export function LinkClickInterceptor() {
       }
 
       window.setTimeout(() => {
-        if (window.location.pathname + window.location.search + window.location.hash === href) {
+        const now = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+        if (now === current) {
+          if (debug) {
+            console.warn("[debug] router push stalled, hard navigating", {
+              from: current,
+              to: href,
+            });
+          }
           window.location.assign(url.toString());
         }
-      }, 150);
+      }, 250);
     };
 
     window.addEventListener("click", handleClick, true);
