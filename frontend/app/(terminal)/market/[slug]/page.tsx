@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, ArrowLeft, RefreshCcw } from "lucide-react";
 
 import { TradeForm } from "@/components/terminal/TradeForm";
@@ -14,6 +14,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { ChartContainer } from "@/components/charts/ChartContainer";
 import { BookmarkButton } from "@/components/watchlist/BookmarkButton";
 import { WhaleTable } from "@/components/market/WhaleTable";
+import { TopHoldersOverlay } from "@/components/market/TopHoldersOverlay";
 import { fetchMarketBySlug, requestMarketStream } from "@/lib/market-data";
 import { usePriceStream } from "@/hooks/usePriceStream";
 import { useTerminalStore } from "@/lib/store";
@@ -22,6 +23,7 @@ export default function MarketDetailPage() {
   const params = useParams<{ slug: string }>();
   const slug = params?.slug;
   const streamRequestedRef = useRef<string | null>(null);
+  const [holdersOpen, setHoldersOpen] = useState(false);
   const { augmentMarket } = usePriceStream();
   const { setActiveMarket } = useTerminalStore();
 
@@ -232,6 +234,8 @@ export default function MarketDetailPage() {
             conditionId={marketData.condition_id}
             tokenYesId={marketData.token_id_yes}
             tokenNoId={marketData.token_id_no}
+            onExpand={() => setHoldersOpen(true)}
+            expandLabel="Live view"
           />
         </div>
 
@@ -246,6 +250,15 @@ export default function MarketDetailPage() {
           <OrdersPanel />
         </div>
       </div>
+
+      <TopHoldersOverlay
+        open={holdersOpen}
+        onOpenChange={setHoldersOpen}
+        marketTitle={marketData.title}
+        conditionId={marketData.condition_id}
+        tokenYesId={marketData.token_id_yes}
+        tokenNoId={marketData.token_id_no}
+      />
     </div>
   );
 }

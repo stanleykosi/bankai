@@ -19,6 +19,8 @@ interface WhaleTableProps {
   conditionId: string;
   tokenYesId?: string;
   tokenNoId?: string;
+  onExpand?: () => void;
+  expandLabel?: string;
 }
 
 function formatCurrency(value: number): string {
@@ -146,7 +148,13 @@ function HoldersTable({
   );
 }
 
-export function WhaleTable({ conditionId, tokenYesId, tokenNoId }: WhaleTableProps) {
+export function WhaleTable({
+  conditionId,
+  tokenYesId,
+  tokenNoId,
+  onExpand,
+  expandLabel = "Full view",
+}: WhaleTableProps) {
   const [activeOutcome, setActiveOutcome] = useState<"YES" | "NO">("YES");
 
   const activeTokenId = activeOutcome === "YES" ? tokenYesId : tokenNoId;
@@ -166,25 +174,37 @@ export function WhaleTable({ conditionId, tokenYesId, tokenNoId }: WhaleTablePro
             <Users className="h-4 w-4 text-primary" />
             Top Holders
           </CardTitle>
-          <div className="flex gap-1">
-            <Button
-              variant={activeOutcome === "YES" ? "default" : "outline"}
-              size="sm"
-              onClick={() => setActiveOutcome("YES")}
-              className={`text-xs ${activeOutcome === "YES" ? "bg-green-500 hover:bg-green-600" : ""
-                }`}
-            >
-              YES
-            </Button>
-            <Button
-              variant={activeOutcome === "NO" ? "default" : "outline"}
-              size="sm"
-              onClick={() => setActiveOutcome("NO")}
-              className={`text-xs ${activeOutcome === "NO" ? "bg-red-500 hover:bg-red-600" : ""
-                }`}
-            >
-              NO
-            </Button>
+          <div className="flex items-center gap-2">
+            {onExpand && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onExpand}
+                className="text-xs"
+              >
+                {expandLabel}
+              </Button>
+            )}
+            <div className="flex gap-1">
+              <Button
+                variant={activeOutcome === "YES" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setActiveOutcome("YES")}
+                className={`text-xs ${activeOutcome === "YES" ? "bg-green-500 hover:bg-green-600" : ""
+                  }`}
+              >
+                YES
+              </Button>
+              <Button
+                variant={activeOutcome === "NO" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setActiveOutcome("NO")}
+                className={`text-xs ${activeOutcome === "NO" ? "bg-red-500 hover:bg-red-600" : ""
+                  }`}
+              >
+                NO
+              </Button>
+            </div>
           </div>
         </div>
       </CardHeader>
