@@ -14,7 +14,7 @@ export function LinkClickInterceptor() {
 
   useEffect(() => {
     const handleClick = (event: MouseEvent) => {
-      if (event.defaultPrevented || event.button !== 0 || isModifiedClick(event)) {
+      if (event.button !== 0 || isModifiedClick(event)) {
         return;
       }
 
@@ -45,11 +45,12 @@ export function LinkClickInterceptor() {
       const href = `${url.pathname}${url.search}${url.hash}`;
       lastNavRef.current = href;
       const debug = window.localStorage.getItem(DEBUG_KEY) === "1";
+      const wasPrevented = event.defaultPrevented;
       event.preventDefault();
       try {
         router.push(href);
         if (debug) {
-          console.info("[debug] router.push", href);
+          console.info("[debug] router.push", href, { defaultPrevented: wasPrevented });
         }
       } catch (error) {
         if (debug) {
