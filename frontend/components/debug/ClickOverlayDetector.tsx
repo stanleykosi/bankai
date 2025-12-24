@@ -24,6 +24,9 @@ type HitInfo = {
   defaultPrevented?: boolean;
   defaultPreventedFinal?: boolean;
   panelHit?: boolean;
+  preventDefaultType?: string;
+  preventDefaultTarget?: StackEntry;
+  preventDefaultStack?: string;
 };
 
 const MAX_STACK = 6;
@@ -58,6 +61,11 @@ export function ClickOverlayDetector() {
   const [enabled, setEnabled] = useState(false);
   const [lastHit, setLastHit] = useState<HitInfo | null>(null);
   const lastHighlightRef = useRef<HTMLElement | null>(null);
+  const lastPreventedRef = useRef<{
+    type: string;
+    target?: StackEntry;
+    stack?: string;
+  } | null>(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -94,11 +102,17 @@ export function ClickOverlayDetector() {
         const type = this.type;
         if ((type === "click" || type === "pointerdown" || type === "mousedown") && !seen.has(this)) {
           seen.add(this);
+          const stack = new Error("preventDefault stack").stack;
+          lastPreventedRef.current = {
+            type,
+            target: toEntry(this.target as Element | null),
+            stack,
+          };
           console.warn("[debug] preventDefault", {
             type,
             target: toEntry(this.target as Element | null),
           });
-          console.warn(new Error("preventDefault stack").stack);
+          console.warn(stack);
         }
       }
       return originalPreventDefault.apply(this, args as any);
@@ -144,6 +158,9 @@ export function ClickOverlayDetector() {
           .filter(Boolean) as StackEntry[],
         blocked,
         panelHit,
+        preventDefaultType: lastPreventedRef.current?.type,
+        preventDefaultTarget: lastPreventedRef.current?.target,
+        preventDefaultStack: lastPreventedRef.current?.stack,
       });
 
       if (blocked) {
@@ -229,7 +246,17 @@ export function ClickOverlayDetector() {
           defaultPreventedFinal: {lastHit?.defaultPreventedFinal ? "yes" : "no"}
         </div>
         <div>panel hit: {lastHit?.panelHit ? "yes" : "no"}</div>
+        <div>preventDefault type: {lastHit?.preventDefaultType ?? "none"}</div>
+        <div>preventDefault target: {formatEntry(lastHit?.preventDefaultTarget)}</div>
       </div>
+      {lastHit?.preventDefaultStack ? (
+        <div className="pt-2 font-mono text-[10px] text-yellow-200/70">
+          preventDefault stack:
+          <pre className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap text-[9px] text-yellow-100/80">
+            {lastHit.preventDefaultStack}
+          </pre>
+        </div>
+      ) : null}
       <div className="pt-2 text-[10px] text-yellow-200/70">
         Stack (top →):
       </div>
