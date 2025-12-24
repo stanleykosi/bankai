@@ -22,6 +22,7 @@ type HitInfo = {
   stack: StackEntry[];
   blocked: boolean;
   defaultPrevented?: boolean;
+  defaultPreventedFinal?: boolean;
   panelHit?: boolean;
 };
 
@@ -165,11 +166,23 @@ export function ClickOverlayDetector() {
       });
     };
 
+    const onClickBubble = (event: MouseEvent) => {
+      setLastHit((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          defaultPreventedFinal: event.defaultPrevented,
+        };
+      });
+    };
+
     window.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("click", onClick, true);
+    window.addEventListener("click", onClickBubble, false);
     return () => {
       window.removeEventListener("pointerdown", onPointerDown, true);
       window.removeEventListener("click", onClick, true);
+      window.removeEventListener("click", onClickBubble, false);
       Event.prototype.preventDefault = originalPreventDefault;
       if (lastHighlightRef.current) {
         lastHighlightRef.current.removeAttribute("data-debug-click-blocker");
@@ -211,6 +224,9 @@ export function ClickOverlayDetector() {
         <div>blocked: {lastHit?.blocked ? "yes" : "no"}</div>
         <div>
           defaultPrevented: {lastHit?.defaultPrevented ? "yes" : "no"}
+        </div>
+        <div>
+          defaultPreventedFinal: {lastHit?.defaultPreventedFinal ? "yes" : "no"}
         </div>
         <div>panel hit: {lastHit?.panelHit ? "yes" : "no"}</div>
       </div>

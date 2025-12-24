@@ -1,13 +1,16 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 
 const isModifiedClick = (event: MouseEvent) =>
   event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
 
+const DEBUG_KEY = "bankai:debug:clicks";
+
 export function LinkClickInterceptor() {
   const router = useRouter();
+  const lastNavRef = useRef<string | null>(null);
 
   useEffect(() => {
     const handleClick = (event: MouseEvent) => {
@@ -39,8 +42,26 @@ export function LinkClickInterceptor() {
         return;
       }
 
+      const href = `${url.pathname}${url.search}${url.hash}`;
+      lastNavRef.current = href;
+      const debug = window.localStorage.getItem(DEBUG_KEY) === "1";
       event.preventDefault();
-      router.push(`${url.pathname}${url.search}${url.hash}`);
+      try {
+        router.push(href);
+        if (debug) {
+          console.info("[debug] router.push", href);
+        }
+      } catch (error) {
+        if (debug) {
+          console.error("[debug] router.push failed", error);
+        }
+      }
+
+      window.setTimeout(() => {
+        if (window.location.pathname + window.location.search + window.location.hash === href) {
+          window.location.assign(url.toString());
+        }
+      }, 150);
     };
 
     window.addEventListener("click", handleClick, true);
