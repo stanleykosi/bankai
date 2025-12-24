@@ -11,7 +11,6 @@ import { WagmiProvider } from "wagmi";
 import { config } from "@/lib/web3";
 import { useEffect, useState } from "react";
 import { installLogRedaction } from "@/lib/logRedaction";
-import { ClickOverlayDetector } from "@/components/debug/ClickOverlayDetector";
 import { LinkClickInterceptor } from "@/components/debug/LinkClickInterceptor";
 
 export function Providers({ children }: { children: React.ReactNode }) {
@@ -38,7 +37,6 @@ export function Providers({ children }: { children: React.ReactNode }) {
       <QueryClientProvider client={queryClient}>
         {children}
         <LinkClickInterceptor />
-        <ClickOverlayDetector />
       </QueryClientProvider>
     </WagmiProvider>
   );

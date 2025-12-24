@@ -15,15 +15,15 @@
 import React from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
+import { Loader2, Star } from "lucide-react";
 
 import { MarketTicker } from "@/components/terminal/MarketTicker";
-import { WatchlistSidebar } from "@/components/watchlist/WatchlistSidebar";
 import { usePriceStream } from "@/hooks/usePriceStream";
 import { fetchMarketLanes } from "@/lib/market-data";
 import type { MarketLaneResponse } from "@/lib/market-data";
 import { Button } from "@/components/ui/button";
 import type { Market } from "@/types";
+import { useWatchlist } from "@/hooks/useWatchlist";
 
 export const dynamic = "force-dynamic";
 
@@ -79,6 +79,7 @@ const mergeLanes = (prev: MarketLaneResponse, next: MarketLaneResponse): MarketL
 
 export default function DashboardPage() {
   const { hydrateMarkets } = usePriceStream();
+  const { data: watchlistData } = useWatchlist();
 
   const { data: laneData, isLoading: isLoadingLanes } = useQuery({
     queryKey: ["markets", "lanes"],
@@ -166,32 +167,37 @@ export default function DashboardPage() {
         <p className="text-muted-foreground">
           Real-time scanning of Polymarket liquidity events and fresh listings.
         </p>
-        <div>
+        <div className="flex flex-wrap items-center gap-3">
           <Button asChild size="sm" variant="outline" className="font-mono text-xs tracking-wide">
             <Link href="/markets">Browse All Markets ↗</Link>
+          </Button>
+          <Button
+            asChild
+            size="sm"
+            variant="secondary"
+            className="font-mono text-xs tracking-wide"
+          >
+            <Link href="/watchlist" className="flex items-center gap-2">
+              <Star className="h-4 w-4 text-yellow-400" />
+              Watchlist
+              {watchlistData && (
+                <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full border border-primary/30 bg-primary/10 px-1.5 text-[10px] text-primary">
+                  {watchlistData.count}
+                </span>
+              )}
+            </Link>
           </Button>
         </div>
       </div>
 
-      {/* Main content grid with watchlist sidebar */}
-      <div className="grid gap-6 lg:grid-cols-[1fr,280px]">
-        <div className="space-y-6">
-          <MarketTicker
-            freshDrops={hydratedFreshDrops}
-            highVelocity={highVelocityMarkets}
-            deepLiquidity={deepLiquidityMarkets}
-            newCounts={newCounts}
-          />
-        </div>
-
-        {/* Watchlist Sidebar */}
-        <aside className="hidden lg:block">
-          <div className="sticky top-20">
-            <WatchlistSidebar />
-          </div>
-        </aside>
+      <div className="space-y-6">
+        <MarketTicker
+          freshDrops={hydratedFreshDrops}
+          highVelocity={highVelocityMarkets}
+          deepLiquidity={deepLiquidityMarkets}
+          newCounts={newCounts}
+        />
       </div>
     </div>
   );
 }
-
