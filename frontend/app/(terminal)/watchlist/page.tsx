@@ -88,15 +88,15 @@ function WatchlistCard({ item }: { item: WatchlistItem }) {
           </div>
 
           <div className="flex min-w-0 flex-1 flex-col gap-2">
-            <div className="flex flex-wrap items-start justify-between gap-2">
-              <div className="min-w-0 space-y-1">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 space-y-1 pr-2">
                 <Link
                   href={marketHref}
-                  className="block truncate text-sm font-semibold text-foreground transition-colors group-hover:text-primary"
+                  className="block line-clamp-2 text-sm font-semibold leading-snug text-foreground transition-colors group-hover:text-primary"
                 >
                   {item.title}
                 </Link>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-xs text-muted-foreground truncate">
                   Added {formatDate(item.created_at)}
                 </p>
               </div>
@@ -162,7 +162,7 @@ function WatchlistCard({ item }: { item: WatchlistItem }) {
 }
 
 export default function WatchlistPage() {
-  const { isSignedIn } = useAuth();
+  const { isSignedIn, isLoaded } = useAuth();
   const { data, isLoading } = useWatchlist();
   const [search, setSearch] = React.useState("");
   const [sortBy, setSortBy] = React.useState<SortKey>("recent");
@@ -216,6 +216,18 @@ export default function WatchlistPage() {
 
     return sorted;
   }, [filterBy, search, sortBy, watchlist]);
+
+  if (!isLoaded) {
+    return (
+      <div className="container max-w-[1200px] py-10">
+        <Card className="border-border/60 bg-card/60">
+          <CardContent className="flex min-h-[220px] items-center justify-center">
+            <Loader2 className="h-6 w-6 animate-spin text-primary" />
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   if (!isSignedIn) {
     return (
@@ -351,7 +363,7 @@ export default function WatchlistPage() {
               </CardContent>
             </Card>
           ) : (
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid auto-rows-fr gap-4 md:grid-cols-2">
               {visibleItems.map((item) => (
                 <WatchlistCard key={item.id} item={item} />
               ))}

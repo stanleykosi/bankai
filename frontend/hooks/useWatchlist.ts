@@ -22,12 +22,12 @@ import {
  * Hook for checking if a market is bookmarked
  */
 export function useIsBookmarked(marketId: string | undefined) {
-  const { getToken, isSignedIn } = useAuth();
+  const { getToken, isSignedIn, isLoaded } = useAuth();
 
   return useQuery({
     queryKey: ["is-bookmarked", marketId],
     queryFn: () => checkIsBookmarked(marketId!, getToken),
-    enabled: Boolean(marketId) && isSignedIn,
+    enabled: Boolean(marketId) && isLoaded && isSignedIn,
     staleTime: 30_000,
   });
 }
@@ -36,12 +36,12 @@ export function useIsBookmarked(marketId: string | undefined) {
  * Hook for getting user's watchlist
  */
 export function useWatchlist() {
-  const { getToken, isSignedIn } = useAuth();
+  const { getToken, isSignedIn, isLoaded } = useAuth();
 
   return useQuery({
     queryKey: ["watchlist"],
     queryFn: () => fetchWatchlist(getToken),
-    enabled: isSignedIn,
+    enabled: isLoaded && isSignedIn,
     staleTime: 30_000,
     refetchInterval: 30_000, // Refresh prices every 30 seconds
   });
