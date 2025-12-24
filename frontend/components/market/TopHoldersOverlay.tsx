@@ -100,10 +100,10 @@ function HolderRow({ holder, rank }: { holder: Holder; rank: number }) {
       <td className="py-2.5 text-center font-mono text-muted-foreground">
         {rank}
       </td>
-      <td className="py-2.5">
+      <td className="py-2.5 pr-2">
         <Link
           href={`/profile/${holder.address}`}
-          className="flex items-center gap-2 group"
+          className="flex min-w-0 items-center gap-2 group"
         >
           {holder.profileImage ? (
             <img
@@ -119,7 +119,7 @@ function HolderRow({ holder, rank }: { holder: Holder; rank: number }) {
               </span>
             </div>
           )}
-          <span className="text-sm font-medium text-foreground group-hover:text-primary transition-colors line-clamp-1">
+          <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground group-hover:text-primary transition-colors">
             {displayName}
           </span>
           <ArrowUpRight className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -159,7 +159,14 @@ function HoldersTable({
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+      <table className="w-full table-fixed text-sm">
+        <colgroup>
+          <col className="w-10" />
+          <col className="w-[44%]" />
+          <col className="w-[18%]" />
+          <col className="w-[18%]" />
+          <col className="w-[10%]" />
+        </colgroup>
         <thead>
           <tr className="border-b border-border/50 text-xs uppercase tracking-wide text-muted-foreground">
             <th className="w-12 pb-2 text-center">#</th>
