@@ -107,6 +107,7 @@ func (s *WatchlistService) GetWatchlist(ctx context.Context, userID uuid.UUID) (
 		items = append(items, models.WatchlistItem{
 			MarketBookmark: b,
 			Title:          market.Title,
+			Slug:           market.Slug,
 			ImageURL:       market.ImageURL,
 			YesPrice:       yesPrice,
 			NoPrice:        noPrice,

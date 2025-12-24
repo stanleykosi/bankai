@@ -23,10 +23,11 @@ function formatChange(change: number): string {
 
 function WatchlistMarketItem({ item }: { item: WatchlistItem }) {
   const isPriceUp = item.one_day_change >= 0;
+  const marketHref = `/market/${item.slug || item.market_id}`;
 
   return (
     <Link
-      href={`/market/${item.market_id}`}
+      href={marketHref}
       className="flex items-start gap-3 p-3 rounded-lg hover:bg-muted/50 transition-colors group"
     >
       {/* Image */}

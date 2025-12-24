@@ -327,6 +327,7 @@ export interface WatchlistItem {
   market_id: string;
   created_at: string;
   title: string;
+  slug?: string;
   image_url?: string;
   yes_price: number;
   no_price: number;

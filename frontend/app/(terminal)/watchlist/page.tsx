@@ -66,10 +66,11 @@ const formatDate = (value?: string) => {
 
 function WatchlistCard({ item }: { item: WatchlistItem }) {
   const isUp = item.one_day_change >= 0;
+  const marketHref = `/market/${item.slug || item.market_id}`;
 
   return (
-    <Card className="group border-border/60 bg-card/70 transition hover:border-primary/40 hover:shadow-xl hover:shadow-black/20">
-      <CardContent className="p-4">
+    <Card className="group h-full w-full border-border/60 bg-card/70 transition hover:border-primary/40 hover:shadow-xl hover:shadow-black/20">
+      <CardContent className="flex h-full flex-col gap-4 p-4">
         <div className="flex items-start gap-3">
           <div className="h-12 w-12 shrink-0 overflow-hidden rounded-md border border-border/50 bg-background/40">
             {item.image_url ? (
@@ -86,11 +87,11 @@ function WatchlistCard({ item }: { item: WatchlistItem }) {
             )}
           </div>
 
-          <div className="flex-1 space-y-3">
-            <div className="flex items-start justify-between gap-3">
+          <div className="flex min-w-0 flex-1 flex-col gap-2">
+            <div className="flex flex-wrap items-start justify-between gap-2">
               <div className="min-w-0 space-y-1">
                 <Link
-                  href={`/market/${item.market_id}`}
+                  href={marketHref}
                   className="block truncate text-sm font-semibold text-foreground transition-colors group-hover:text-primary"
                 >
                   {item.title}
@@ -99,7 +100,7 @@ function WatchlistCard({ item }: { item: WatchlistItem }) {
                   Added {formatDate(item.created_at)}
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <span
                   className={cn(
                     "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-mono",
@@ -123,37 +124,37 @@ function WatchlistCard({ item }: { item: WatchlistItem }) {
                 />
               </div>
             </div>
-
-            <div className="grid gap-2 sm:grid-cols-3">
-              <div className="rounded-md border border-border/40 bg-background/40 px-3 py-2">
-                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Yes</p>
-                <p className="font-mono text-sm text-emerald-400">
-                  {formatPrice(item.yes_price)}
-                </p>
-              </div>
-              <div className="rounded-md border border-border/40 bg-background/40 px-3 py-2">
-                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">No</p>
-                <p className="font-mono text-sm text-rose-400">
-                  {formatPrice(item.no_price)}
-                </p>
-              </div>
-              <div className="rounded-md border border-border/40 bg-background/40 px-3 py-2">
-                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">24h Volume</p>
-                <p className="font-mono text-sm text-foreground">
-                  {formatVolume(item.volume_24h)}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span className="font-mono">Market activity synced live</span>
-              <Button asChild size="sm" variant="ghost" className="h-8 px-2 text-xs">
-                <Link href={`/market/${item.market_id}`} className="flex items-center gap-1">
-                  View market <ArrowUpRight className="h-3 w-3" />
-                </Link>
-              </Button>
-            </div>
           </div>
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-3">
+          <div className="rounded-md border border-border/40 bg-background/40 px-3 py-2">
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Yes</p>
+            <p className="font-mono text-sm text-emerald-400">
+              {formatPrice(item.yes_price)}
+            </p>
+          </div>
+          <div className="rounded-md border border-border/40 bg-background/40 px-3 py-2">
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">No</p>
+            <p className="font-mono text-sm text-rose-400">
+              {formatPrice(item.no_price)}
+            </p>
+          </div>
+          <div className="rounded-md border border-border/40 bg-background/40 px-3 py-2">
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">24h Volume</p>
+            <p className="font-mono text-sm text-foreground">
+              {formatVolume(item.volume_24h)}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between text-xs text-muted-foreground">
+          <span className="font-mono">Market activity synced live</span>
+          <Button asChild size="sm" variant="ghost" className="h-8 px-2 text-xs">
+            <Link href={marketHref} className="flex items-center gap-1">
+              View market <ArrowUpRight className="h-3 w-3" />
+            </Link>
+          </Button>
         </div>
       </CardContent>
     </Card>
@@ -369,13 +370,14 @@ export default function WatchlistPage() {
               ) : (
                 movers.map((item) => {
                   const isUp = item.one_day_change >= 0;
+                  const marketHref = `/market/${item.slug || item.market_id}`;
                   return (
                     <div
                       key={item.id}
                       className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/40 px-3 py-2"
                     >
                       <Link
-                        href={`/market/${item.market_id}`}
+                        href={marketHref}
                         className="truncate text-sm font-medium text-foreground hover:text-primary"
                       >
                         {item.title}
@@ -411,7 +413,7 @@ export default function WatchlistPage() {
                     className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/40 px-3 py-2"
                   >
                     <Link
-                      href={`/market/${item.market_id}`}
+                      href={`/market/${item.slug || item.market_id}`}
                       className="truncate text-sm font-medium text-foreground hover:text-primary"
                     >
                       {item.title}

@@ -111,10 +111,10 @@ type FollowWithProfile struct {
 type WatchlistItem struct {
 	MarketBookmark
 	Title          string  `json:"title"`
+	Slug           string  `json:"slug"`
 	ImageURL       string  `json:"image_url"`
 	YesPrice       float64 `json:"yes_price"`
 	NoPrice        float64 `json:"no_price"`
 	Volume24h      float64 `json:"volume_24h"`
 	OneDayChange   float64 `json:"one_day_change"`
 }
-
