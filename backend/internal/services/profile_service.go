@@ -59,6 +59,41 @@ func cacheKey(prefix, address string) string {
 	return fmt.Sprintf("profile:%s:%s", prefix, strings.ToLower(address))
 }
 
+func normalizeAddress(address string) string {
+	return strings.ToLower(strings.TrimSpace(address))
+}
+
+func matchProfile(address string, profiles []gamma.Profile) *gamma.Profile {
+	normalized := normalizeAddress(address)
+	for i := range profiles {
+		if profiles[i].ProxyWallet != "" && strings.EqualFold(profiles[i].ProxyWallet, normalized) {
+			return &profiles[i]
+		}
+		if profiles[i].BaseAddress != "" && strings.EqualFold(profiles[i].BaseAddress, normalized) {
+			return &profiles[i]
+		}
+	}
+	return nil
+}
+
+func (s *ProfileService) resolveProfileAddress(ctx context.Context, address string) string {
+	normalized := normalizeAddress(address)
+	if normalized == "" || s.gammaClient == nil {
+		return normalized
+	}
+
+	profiles, err := s.gammaClient.SearchProfiles(ctx, normalized, 5)
+	if err != nil || len(profiles) == 0 {
+		return normalized
+	}
+
+	if match := matchProfile(normalized, profiles); match != nil && match.ProxyWallet != "" {
+		return strings.ToLower(match.ProxyWallet)
+	}
+
+	return normalized
+}
+
 // getFromCache attempts to get data from Redis cache
 func getFromCache[T any](ctx context.Context, rdb *redis.Client, key string) (*T, error) {
 	if rdb == nil {
@@ -96,7 +131,7 @@ func setInCache(ctx context.Context, rdb *redis.Client, key string, data interfa
 
 // GetTraderProfile fetches complete trader profile with stats
 func (s *ProfileService) GetTraderProfile(ctx context.Context, address string) (*data_api.TraderProfile, error) {
-	address = strings.ToLower(strings.TrimSpace(address))
+	address = normalizeAddress(address)
 	if address == "" {
 		return nil, nil
 	}
@@ -116,17 +151,18 @@ func (s *ProfileService) GetTraderProfile(ctx context.Context, address string) (
 	}
 
 	// Try to get profile from Gamma search
-	profiles, err := s.gammaClient.SearchProfiles(ctx, address, 1)
+	profiles, err := s.gammaClient.SearchProfiles(ctx, address, 5)
 	if err == nil && len(profiles) > 0 {
-		p := profiles[0]
-		profile.ProxyWallet = p.ProxyWallet
-		profile.ProfileName = p.Name
-		if profile.ProfileName == "" {
-			profile.ProfileName = p.Pseudonym
+		if match := matchProfile(address, profiles); match != nil {
+			profile.ProxyWallet = match.ProxyWallet
+			profile.ProfileName = match.Name
+			if profile.ProfileName == "" {
+				profile.ProfileName = match.Pseudonym
+			}
+			profile.ProfileImage = match.ProfileImage
+			profile.Bio = match.Bio
+			profile.JoinedAt = match.CreatedAt
 		}
-		profile.ProfileImage = p.ProfileImage
-		profile.Bio = p.Bio
-		profile.JoinedAt = p.CreatedAt
 	}
 
 	// Get stats
@@ -147,7 +183,8 @@ func (s *ProfileService) GetTraderProfile(ctx context.Context, address string) (
 
 // GetTraderStats calculates performance metrics for a trader
 func (s *ProfileService) GetTraderStats(ctx context.Context, address string) (*data_api.TraderStats, error) {
-	address = strings.ToLower(strings.TrimSpace(address))
+	address = normalizeAddress(address)
+	profileAddress := s.resolveProfileAddress(ctx, address)
 
 	// Check cache first
 	key := cacheKey("stats", address)
@@ -162,7 +199,7 @@ func (s *ProfileService) GetTraderStats(ctx context.Context, address string) (*d
 	stats := &data_api.TraderStats{}
 
 	// Get PnL data (this also gets positions internally)
-	pnlData, err := s.dataAPIClient.GetPnL(ctx, address)
+	pnlData, err := s.dataAPIClient.GetPnL(ctx, profileAddress)
 	if err != nil {
 		logger.Error("ProfileService: Failed to get PnL: %v", err)
 	} else {
@@ -173,32 +210,32 @@ func (s *ProfileService) GetTraderStats(ctx context.Context, address string) (*d
 		stats.TotalTrades = pnlData.WinningTrades + pnlData.LosingTrades
 	}
 
-	// Get traded stats for volume
-	tradedStats, err := s.dataAPIClient.GetTradedStats(ctx, address)
+	// Compute volume stats from trades
+	tradeVolume, avgTradeSize, tradeCount, err := s.aggregateTradeVolume(ctx, profileAddress)
 	if err != nil {
-		logger.Error("ProfileService: Failed to get traded stats: %v", err)
+		logger.Error("ProfileService: Failed to aggregate trade volume: %v", err)
 	} else {
-		stats.TotalVolume = tradedStats.TotalVolume
-		stats.AvgTradeSize = tradedStats.AvgTradeSize
-		if tradedStats.TotalTrades > 0 {
-			stats.TotalTrades = tradedStats.TotalTrades
+		stats.TotalVolume = tradeVolume
+		stats.AvgTradeSize = avgTradeSize
+		if tradeCount > 0 {
+			stats.TotalTrades = tradeCount
 		}
 	}
 
 	// Get open positions count
-	positions, err := s.dataAPIClient.GetPositions(ctx, address, &data_api.PositionsParams{Limit: 100})
+	openCount, err := s.countOpenPositions(ctx, profileAddress)
 	if err != nil {
-		logger.Error("ProfileService: Failed to get positions: %v", err)
+		logger.Error("ProfileService: Failed to count positions: %v", err)
 	} else {
-		stats.OpenPositions = len(positions)
+		stats.OpenPositions = openCount
 	}
 
 	// Get closed positions count
-	closedPositions, err := s.dataAPIClient.GetClosedPositions(ctx, address, 100, 0)
+	closedCount, err := s.countClosedPositions(ctx, profileAddress)
 	if err != nil {
-		logger.Error("ProfileService: Failed to get closed positions: %v", err)
+		logger.Error("ProfileService: Failed to count closed positions: %v", err)
 	} else {
-		stats.ClosedPositions = len(closedPositions)
+		stats.ClosedPositions = closedCount
 	}
 
 	// Cache the result
@@ -211,7 +248,8 @@ func (s *ProfileService) GetTraderStats(ctx context.Context, address string) (*d
 
 // GetOpenPositions fetches current open positions for "Positions Spy"
 func (s *ProfileService) GetOpenPositions(ctx context.Context, address string, limit, offset int) ([]data_api.Position, error) {
-	address = strings.ToLower(strings.TrimSpace(address))
+	address = normalizeAddress(address)
+	profileAddress := s.resolveProfileAddress(ctx, address)
 
 	if limit <= 0 {
 		limit = 50
@@ -229,7 +267,7 @@ func (s *ProfileService) GetOpenPositions(ctx context.Context, address string, l
 		}
 	}
 
-	positions, err := s.dataAPIClient.GetPositions(ctx, address, &data_api.PositionsParams{
+	positions, err := s.dataAPIClient.GetPositions(ctx, profileAddress, &data_api.PositionsParams{
 		Limit:         limit,
 		Offset:        offset,
 		SortBy:        "SIZE",
@@ -252,7 +290,8 @@ func (s *ProfileService) GetOpenPositions(ctx context.Context, address string, l
 
 // GetActivityHeatmap fetches trade activity for GitHub-style heatmap
 func (s *ProfileService) GetActivityHeatmap(ctx context.Context, address string) ([]data_api.ActivityDataPoint, error) {
-	address = strings.ToLower(strings.TrimSpace(address))
+	address = normalizeAddress(address)
+	profileAddress := s.resolveProfileAddress(ctx, address)
 
 	// Check Redis cache first
 	key := cacheKey("activity", address)
@@ -266,7 +305,7 @@ func (s *ProfileService) GetActivityHeatmap(ctx context.Context, address string)
 	}
 
 	// Cache miss - fetch from API
-	activity, err := s.dataAPIClient.GetActivityHeatmap(ctx, address)
+	activity, err := s.dataAPIClient.GetActivityHeatmap(ctx, profileAddress)
 	if err != nil {
 		return nil, err
 	}
@@ -281,7 +320,8 @@ func (s *ProfileService) GetActivityHeatmap(ctx context.Context, address string)
 
 // GetRecentTrades fetches recent trades for a trader
 func (s *ProfileService) GetRecentTrades(ctx context.Context, address string, limit int) ([]data_api.Trade, error) {
-	address = strings.ToLower(strings.TrimSpace(address))
+	address = normalizeAddress(address)
+	profileAddress := s.resolveProfileAddress(ctx, address)
 
 	if limit <= 0 {
 		limit = 20
@@ -297,7 +337,7 @@ func (s *ProfileService) GetRecentTrades(ctx context.Context, address string, li
 		return *cached, nil
 	}
 
-	trades, err := s.dataAPIClient.GetTrades(ctx, address, &data_api.TradesParams{Limit: limit})
+	trades, err := s.dataAPIClient.GetTrades(ctx, profileAddress, &data_api.TradesParams{Limit: limit})
 	if err != nil {
 		return nil, err
 	}
@@ -308,6 +348,111 @@ func (s *ProfileService) GetRecentTrades(ctx context.Context, address string, li
 	}
 
 	return trades, nil
+}
+
+func (s *ProfileService) aggregateTradeVolume(ctx context.Context, address string) (float64, float64, int, error) {
+	const limit = 1000
+	const maxOffset = 10000
+
+	totalVolume := 0.0
+	totalTrades := 0
+	offset := 0
+
+	for {
+		trades, err := s.dataAPIClient.GetTrades(ctx, address, &data_api.TradesParams{
+			Limit:  limit,
+			Offset: offset,
+		})
+		if err != nil {
+			return totalVolume, 0, totalTrades, err
+		}
+
+		if len(trades) == 0 {
+			break
+		}
+
+		for _, trade := range trades {
+			value := trade.Value
+			if value == 0 && trade.Price > 0 && trade.Size > 0 {
+				value = trade.Price * trade.Size
+			}
+			totalVolume += value
+		}
+		totalTrades += len(trades)
+
+		if len(trades) < limit {
+			break
+		}
+
+		offset += limit
+		if offset > maxOffset {
+			break
+		}
+	}
+
+	avgTradeSize := 0.0
+	if totalTrades > 0 {
+		avgTradeSize = totalVolume / float64(totalTrades)
+	}
+
+	return totalVolume, avgTradeSize, totalTrades, nil
+}
+
+func (s *ProfileService) countOpenPositions(ctx context.Context, address string) (int, error) {
+	const limit = 500
+	const maxOffset = 10000
+
+	total := 0
+	offset := 0
+
+	for {
+		positions, err := s.dataAPIClient.GetPositions(ctx, address, &data_api.PositionsParams{
+			Limit:  limit,
+			Offset: offset,
+		})
+		if err != nil {
+			return total, err
+		}
+
+		total += len(positions)
+		if len(positions) < limit {
+			break
+		}
+
+		offset += limit
+		if offset > maxOffset {
+			break
+		}
+	}
+
+	return total, nil
+}
+
+func (s *ProfileService) countClosedPositions(ctx context.Context, address string) (int, error) {
+	const limit = 500
+	const maxOffset = 10000
+
+	total := 0
+	offset := 0
+
+	for {
+		positions, err := s.dataAPIClient.GetClosedPositions(ctx, address, limit, offset)
+		if err != nil {
+			return total, err
+		}
+
+		total += len(positions)
+		if len(positions) < limit {
+			break
+		}
+
+		offset += limit
+		if offset > maxOffset {
+			break
+		}
+	}
+
+	return total, nil
 }
 
 // GetMarketHolders fetches top holders for a market

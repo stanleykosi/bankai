@@ -33,8 +33,8 @@ type Position struct {
 	UnrealizedPnL    float64 `json:"unrealizedPnl"`
 	PctUnrealizedPnL float64 `json:"pctUnrealizedPnl"`
 	PctRealizedPnL   float64 `json:"pctRealizedPnl"`
-	MarketSlug       string  `json:"slug"`
-	MarketQuestion   string  `json:"question"`
+	Slug             string  `json:"slug"`
+	Title            string  `json:"title"`
 	ProxyWallet      string  `json:"proxyWallet"`
 	Owner            string  `json:"owner"`
 }
@@ -52,8 +52,8 @@ type ClosedPosition struct {
 	ExitValue     float64   `json:"exitValue"`
 	RealizedPnL   float64   `json:"realizedPnl"`
 	PctPnL        float64   `json:"pctPnl"`
-	MarketSlug    string    `json:"slug"`
-	MarketQuestion string   `json:"question"`
+	Slug          string    `json:"slug"`
+	Title         string    `json:"title"`
 	ClosedAt      time.Time `json:"closedAt"`
 	Resolved      bool      `json:"resolved"`
 	Winner        bool      `json:"winner"`
@@ -106,21 +106,16 @@ type Trade struct {
 	Taker         string    `json:"taker"`
 	MakerIsBuyer  bool      `json:"makerIsBuyer"`
 	TradeOwner    string    `json:"tradeOwner"`
-	MarketSlug    string    `json:"slug"`
-	MarketQuestion string   `json:"question"`
-	Timestamp     time.Time `json:"timestamp"`
+	Slug          string    `json:"slug"`
+	Title         string    `json:"title"`
+	Timestamp     int64     `json:"timestamp"`
 	TxHash        string    `json:"transactionHash"`
 }
 
-// TradedStats represents trading volume stats from /traded endpoint
-type TradedStats struct {
-	TotalVolume    float64 `json:"totalVolume"`
-	TotalTrades    int     `json:"totalTrades"`
-	AvgTradeSize   float64 `json:"avgTradeSize"`
-	BuyVolume      float64 `json:"buyVolume"`
-	SellVolume     float64 `json:"sellVolume"`
-	FirstTradeDate string  `json:"firstTradeDate"`
-	LastTradeDate  string  `json:"lastTradeDate"`
+// TradedCount represents the total markets traded response from /traded
+type TradedCount struct {
+	User   string `json:"user"`
+	Traded int    `json:"traded"`
 }
 
 // PnLData represents profit/loss data from /{user}/pnl endpoint

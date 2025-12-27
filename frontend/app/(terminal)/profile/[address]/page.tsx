@@ -15,8 +15,14 @@ import { ProfileHeader } from "@/components/profile/ProfileHeader";
 import { StatsCards } from "@/components/profile/StatsCards";
 import { ActivityHeatmap } from "@/components/profile/ActivityHeatmap";
 import { PositionsSpy } from "@/components/profile/PositionsSpy";
+import { RecentTrades } from "@/components/profile/RecentTrades";
 
-import { useTraderProfile, useTraderPositions, useActivityHeatmap } from "@/hooks/useTraderProfile";
+import {
+  useTraderProfile,
+  useTraderPositions,
+  useActivityHeatmap,
+  useRecentTrades,
+} from "@/hooks/useTraderProfile";
 
 export default function TraderProfilePage() {
   const params = useParams<{ address: string }>();
@@ -39,6 +45,11 @@ export default function TraderProfilePage() {
     data: activityData,
     isLoading: isLoadingActivity,
   } = useActivityHeatmap(address);
+
+  const {
+    data: tradesData,
+    isLoading: isLoadingTrades,
+  } = useRecentTrades(address, 15);
 
   const isLoading = isLoadingProfile || !address;
 
@@ -82,48 +93,74 @@ export default function TraderProfilePage() {
   const { profile, follower_count } = profileData;
 
   return (
-    <div className="container max-w-6xl py-6 space-y-6">
-      {/* Back Button */}
-      <div className="flex items-center justify-between">
-        <Button asChild variant="ghost" className="font-mono text-xs gap-2">
-          <Link href="/dashboard">
-            <ArrowLeft className="h-4 w-4" />
-            Dashboard
-          </Link>
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          className="font-mono text-xs"
-          onClick={() => refetchProfile()}
-          disabled={isFetchingProfile}
-        >
-          {isFetchingProfile ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <RefreshCcw className="h-4 w-4" />
-          )}
-          <span className="ml-2">Refresh</span>
-        </Button>
+    <div className="relative">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(41,121,255,0.12),_transparent_55%)]" />
+      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:48px_48px] opacity-20" />
+      <div className="relative container max-w-6xl py-8 space-y-8">
+        {/* Back Button */}
+        <div className="flex items-center justify-between">
+          <Button asChild variant="ghost" className="font-mono text-xs gap-2">
+            <Link href="/dashboard">
+              <ArrowLeft className="h-4 w-4" />
+              Dashboard
+            </Link>
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="font-mono text-xs"
+            onClick={() => refetchProfile()}
+            disabled={isFetchingProfile}
+          >
+            {isFetchingProfile ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCcw className="h-4 w-4" />
+            )}
+            <span className="ml-2">Refresh</span>
+          </Button>
+        </div>
+
+        <section className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-700">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
+              Trader profile
+            </p>
+            <h2 className="text-xl font-semibold text-foreground">Profile Overview</h2>
+          </div>
+          <ProfileHeader profile={profile} followerCount={follower_count} />
+        </section>
+
+        <section className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-700 delay-100">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
+              Performance
+            </p>
+            <h2 className="text-xl font-semibold text-foreground">Trading Snapshot</h2>
+          </div>
+          <StatsCards stats={profile.stats} isLoading={isLoadingProfile} />
+        </section>
+
+        <section className="grid gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+          <div className="space-y-6">
+            <div className="animate-in fade-in slide-in-from-bottom-2 duration-700 delay-150">
+              <PositionsSpy
+                positions={positionsData?.positions}
+                isLoading={isLoadingPositions}
+              />
+            </div>
+            <div className="animate-in fade-in slide-in-from-bottom-2 duration-700 delay-200">
+              <ActivityHeatmap
+                activity={activityData?.activity}
+                isLoading={isLoadingActivity}
+              />
+            </div>
+          </div>
+          <div className="animate-in fade-in slide-in-from-bottom-2 duration-700 delay-250">
+            <RecentTrades trades={tradesData?.trades} isLoading={isLoadingTrades} />
+          </div>
+        </section>
       </div>
-
-      {/* Profile Header */}
-      <ProfileHeader profile={profile} followerCount={follower_count} />
-
-      {/* Stats Cards */}
-      <StatsCards stats={profile.stats} isLoading={false} />
-
-      {/* Activity Heatmap */}
-      <ActivityHeatmap
-        activity={activityData?.activity}
-        isLoading={isLoadingActivity}
-      />
-
-      {/* Positions Spy */}
-      <PositionsSpy
-        positions={positionsData?.positions}
-        isLoading={isLoadingPositions}
-      />
     </div>
   );
 }

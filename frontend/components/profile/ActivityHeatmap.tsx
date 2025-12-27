@@ -7,6 +7,7 @@
  */
 
 import { useMemo } from "react";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import type { ActivityDataPoint } from "@/types";
 
 interface ActivityHeatmapProps {
@@ -45,11 +46,11 @@ function generateDateGrid(): string[][] {
 }
 
 const LEVEL_COLORS = [
-  "bg-muted/30",           // Level 0 - no activity
-  "bg-green-500/30",       // Level 1
-  "bg-green-500/50",       // Level 2
-  "bg-green-500/70",       // Level 3
-  "bg-green-500",          // Level 4 - max activity
+  "bg-muted/30",     // Level 0 - no activity
+  "bg-primary/10",   // Level 1
+  "bg-primary/20",   // Level 2
+  "bg-primary/30",   // Level 3
+  "bg-primary/50",   // Level 4 - max activity
 ];
 
 const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -60,6 +61,23 @@ export function ActivityHeatmap({ activity, isLoading }: ActivityHeatmapProps) {
   const activityMap = useMemo(() => {
     if (!activity) return new Map<string, ActivityDataPoint>();
     return new Map(activity.map((dp) => [dp.date, dp]));
+  }, [activity]);
+
+  const summary = useMemo(() => {
+    if (!activity || activity.length === 0) {
+      return { activeDays: 0, totalTrades: 0, totalVolume: 0 };
+    }
+    let activeDays = 0;
+    let totalTrades = 0;
+    let totalVolume = 0;
+    for (const dp of activity) {
+      totalTrades += dp.trade_count;
+      totalVolume += dp.volume;
+      if (dp.trade_count > 0) {
+        activeDays += 1;
+      }
+    }
+    return { activeDays, totalTrades, totalVolume };
   }, [activity]);
 
   // Calculate month labels
@@ -81,18 +99,34 @@ export function ActivityHeatmap({ activity, isLoading }: ActivityHeatmapProps) {
 
   if (isLoading) {
     return (
-      <div className="rounded-lg border border-border/50 bg-card/60 p-4">
-        <div className="mb-2 h-4 w-32 animate-pulse rounded bg-muted/50" />
-        <div className="h-[120px] animate-pulse rounded bg-muted/30" />
-      </div>
+      <Card className="border-border/60 bg-card/70">
+        <CardHeader className="pb-3">
+          <div className="h-4 w-40 animate-pulse rounded bg-muted/50" />
+        </CardHeader>
+        <CardContent className="pt-0">
+          <div className="h-[140px] animate-pulse rounded bg-muted/30" />
+        </CardContent>
+      </Card>
     );
   }
 
   return (
-    <div className="rounded-lg border border-border/50 bg-card/60 p-4">
-      <h3 className="mb-4 text-sm font-medium text-muted-foreground">
-        Trading Activity (Last 52 Weeks)
-      </h3>
+    <Card className="border-border/60 bg-card/70">
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
+              Trading cadence
+            </p>
+            <h3 className="text-lg font-semibold text-foreground">Activity Heatmap</h3>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+            <span className="font-mono">{summary.activeDays} active days</span>
+            <span className="font-mono">{summary.totalTrades.toLocaleString()} trades</span>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="pt-0">
 
       {/* Month labels */}
       <div className="mb-1 flex text-xs text-muted-foreground">
@@ -140,7 +174,7 @@ export function ActivityHeatmap({ activity, isLoading }: ActivityHeatmapProps) {
                 return (
                   <div
                     key={date}
-                    className={`h-[10px] w-[10px] rounded-sm ${LEVEL_COLORS[level]} cursor-pointer hover:ring-1 hover:ring-primary transition-all`}
+                    className={`h-[10px] w-[10px] rounded-sm ${LEVEL_COLORS[level]} cursor-pointer hover:ring-1 hover:ring-primary/70 transition-all`}
                     title={`${date}: ${tradeCount} trades`}
                   />
                 );
@@ -151,7 +185,7 @@ export function ActivityHeatmap({ activity, isLoading }: ActivityHeatmapProps) {
       </div>
 
       {/* Legend */}
-      <div className="mt-4 flex items-center justify-end gap-2 text-xs text-muted-foreground">
+      <div className="mt-4 flex items-center justify-end gap-2 text-[10px] text-muted-foreground">
         <span>Less</span>
         {LEVEL_COLORS.map((color, i) => (
           <div
@@ -161,6 +195,7 @@ export function ActivityHeatmap({ activity, isLoading }: ActivityHeatmapProps) {
         ))}
         <span>More</span>
       </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }

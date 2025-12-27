@@ -6,7 +6,6 @@
  * Displays Win Rate, Total Volume, Realized PnL, and other stats.
  */
 
-import { TrendingUp, TrendingDown, DollarSign, Target, BarChart3, Award } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import type { TraderStats } from "@/types";
 
@@ -16,6 +15,9 @@ interface StatsCardsProps {
 }
 
 function formatCurrency(value: number): string {
+  if (Math.abs(value) >= 1_000_000_000) {
+    return `$${(value / 1_000_000_000).toFixed(2)}B`;
+  }
   if (Math.abs(value) >= 1_000_000) {
     return `$${(value / 1_000_000).toFixed(2)}M`;
   }
@@ -33,37 +35,30 @@ interface StatCardProps {
   title: string;
   value: string;
   subtitle?: string;
-  icon: React.ReactNode;
-  trend?: "up" | "down" | "neutral";
-  color?: string;
+  tone?: "positive" | "negative" | "neutral";
 }
 
-function StatCard({ title, value, subtitle, icon, trend, color }: StatCardProps) {
-  const trendColor =
-    trend === "up"
-      ? "text-green-500"
-      : trend === "down"
-        ? "text-red-500"
-        : "text-muted-foreground";
+function StatCard({ title, value, subtitle, tone }: StatCardProps) {
+  const toneClass =
+    tone === "positive"
+      ? "text-emerald-400"
+      : tone === "negative"
+        ? "text-rose-400"
+        : "text-foreground";
 
   return (
-    <Card className="border-border/50 bg-card/60 backdrop-blur hover:border-primary/30 transition-colors">
+    <Card className="border-border/60 bg-card/70 backdrop-blur transition-colors hover:border-primary/40">
       <CardContent className="p-4">
-        <div className="flex items-start justify-between">
-          <div className="flex flex-col gap-1">
-            <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              {title}
-            </span>
-            <span className={`text-2xl font-bold ${color || trendColor}`}>
-              {value}
-            </span>
-            {subtitle && (
-              <span className="text-xs text-muted-foreground">{subtitle}</span>
-            )}
-          </div>
-          <div className={`rounded-lg bg-primary/10 p-2 ${color || "text-primary"}`}>
-            {icon}
-          </div>
+        <div className="flex flex-col gap-2">
+          <span className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
+            {title}
+          </span>
+          <span className={`text-2xl font-semibold font-mono ${toneClass}`}>
+            {value}
+          </span>
+          {subtitle && (
+            <span className="text-xs text-muted-foreground">{subtitle}</span>
+          )}
         </div>
       </CardContent>
     </Card>
@@ -73,9 +68,9 @@ function StatCard({ title, value, subtitle, icon, trend, color }: StatCardProps)
 export function StatsCards({ stats, isLoading }: StatsCardsProps) {
   if (isLoading || !stats) {
     return (
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {[...Array(6)].map((_, i) => (
-          <Card key={i} className="border-border/50 bg-card/60 animate-pulse">
+          <Card key={i} className="border-border/60 bg-card/70 animate-pulse">
             <CardContent className="p-4">
               <div className="h-16 rounded bg-muted/50" />
             </CardContent>
@@ -85,59 +80,43 @@ export function StatsCards({ stats, isLoading }: StatsCardsProps) {
     );
   }
 
-  const pnlTrend = stats.realized_pnl >= 0 ? "up" : "down";
-  const pnlColor = stats.realized_pnl >= 0 ? "text-green-500" : "text-red-500";
+  const pnlTone = stats.realized_pnl >= 0 ? "positive" : "negative";
+  const winRateTone = stats.win_rate >= 50 ? "positive" : "negative";
 
   return (
-    <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6">
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
       <StatCard
         title="Win Rate"
         value={formatPercent(stats.win_rate)}
         subtitle={`${stats.winning_trades}W / ${stats.losing_trades}L`}
-        icon={<Target className="h-5 w-5" />}
-        trend={stats.win_rate >= 50 ? "up" : "down"}
+        tone={winRateTone}
       />
       <StatCard
         title="Total Volume"
         value={formatCurrency(stats.total_volume)}
         subtitle={`${stats.total_trades} trades`}
-        icon={<BarChart3 className="h-5 w-5" />}
-        trend="neutral"
-        color="text-blue-500"
+        tone="neutral"
       />
       <StatCard
         title="Realized PnL"
         value={formatCurrency(stats.realized_pnl)}
-        icon={
-          pnlTrend === "up" ? (
-            <TrendingUp className="h-5 w-5" />
-          ) : (
-            <TrendingDown className="h-5 w-5" />
-          )
-        }
-        trend={pnlTrend}
-        color={pnlColor}
+        tone={pnlTone}
       />
       <StatCard
-        title="Avg Trade Size"
+        title="Avg Trade Volume"
         value={formatCurrency(stats.avg_trade_size)}
-        icon={<DollarSign className="h-5 w-5" />}
-        trend="neutral"
-        color="text-purple-500"
+        subtitle="Per trade"
+        tone="neutral"
       />
       <StatCard
         title="Open Positions"
         value={stats.open_positions.toString()}
-        icon={<Award className="h-5 w-5" />}
-        trend="neutral"
-        color="text-orange-500"
+        tone="neutral"
       />
       <StatCard
         title="Closed Positions"
         value={stats.closed_positions.toString()}
-        icon={<Award className="h-5 w-5" />}
-        trend="neutral"
-        color="text-cyan-500"
+        tone="neutral"
       />
     </div>
   );

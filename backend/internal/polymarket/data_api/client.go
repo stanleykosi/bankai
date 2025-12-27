@@ -316,9 +316,9 @@ func (c *Client) GetTrades(ctx context.Context, address string, params *TradesPa
 	return trades, nil
 }
 
-// GetTradedStats fetches trading volume statistics for an address
+// GetTradedCount fetches total markets traded for an address
 // GET /traded?user={address}
-func (c *Client) GetTradedStats(ctx context.Context, address string) (*TradedStats, error) {
+func (c *Client) GetTradedCount(ctx context.Context, address string) (*TradedCount, error) {
 	if address == "" {
 		return nil, fmt.Errorf("address is required")
 	}
@@ -347,7 +347,7 @@ func (c *Client) GetTradedStats(ctx context.Context, address string) (*TradedSta
 		return nil, fmt.Errorf("data api error: status %d", resp.StatusCode)
 	}
 
-	var stats TradedStats
+	var stats TradedCount
 	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
 		return nil, err
 	}
@@ -441,9 +441,23 @@ func (c *Client) GetActivityHeatmap(ctx context.Context, address string) ([]Acti
 
 	// Group trades by day
 	activityMap := make(map[string]*ActivityDataPoint)
-	
+
+	resolveTradeTime := func(timestamp int64) time.Time {
+		if timestamp <= 0 {
+			return time.Time{}
+		}
+		if timestamp > 1_000_000_000_000 {
+			return time.Unix(0, timestamp*int64(time.Millisecond))
+		}
+		return time.Unix(timestamp, 0)
+	}
+
 	for _, trade := range trades {
-		dateKey := trade.Timestamp.Format("2006-01-02")
+		tradeTime := resolveTradeTime(trade.Timestamp)
+		if tradeTime.IsZero() {
+			continue
+		}
+		dateKey := tradeTime.Format("2006-01-02")
 		if _, exists := activityMap[dateKey]; !exists {
 			activityMap[dateKey] = &ActivityDataPoint{
 				Date:       dateKey,
@@ -452,7 +466,11 @@ func (c *Client) GetActivityHeatmap(ctx context.Context, address string) ([]Acti
 			}
 		}
 		activityMap[dateKey].TradeCount++
-		activityMap[dateKey].Volume += trade.Value
+		if trade.Value > 0 {
+			activityMap[dateKey].Volume += trade.Value
+		} else if trade.Price > 0 && trade.Size > 0 {
+			activityMap[dateKey].Volume += trade.Price * trade.Size
+		}
 	}
 
 	// Convert map to slice and calculate levels

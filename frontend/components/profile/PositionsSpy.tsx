@@ -8,7 +8,7 @@
 
 import Link from "next/link";
 import { TrendingUp, TrendingDown, ExternalLink } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import type { Position } from "@/types";
 
 interface PositionsSpyProps {
@@ -34,11 +34,11 @@ function formatPercent(value: number): string {
 export function PositionsSpy({ positions, isLoading }: PositionsSpyProps) {
   if (isLoading) {
     return (
-      <Card className="border-border/50 bg-card/60">
-        <CardHeader>
-          <CardTitle className="text-lg">Open Positions</CardTitle>
+      <Card className="border-border/60 bg-card/70">
+        <CardHeader className="pb-3">
+          <div className="h-4 w-32 animate-pulse rounded bg-muted/50" />
         </CardHeader>
-        <CardContent>
+        <CardContent className="pt-0">
           <div className="space-y-3">
             {[...Array(5)].map((_, i) => (
               <div key={i} className="h-16 animate-pulse rounded bg-muted/30" />
@@ -51,11 +51,16 @@ export function PositionsSpy({ positions, isLoading }: PositionsSpyProps) {
 
   if (!positions || positions.length === 0) {
     return (
-      <Card className="border-border/50 bg-card/60">
-        <CardHeader>
-          <CardTitle className="text-lg">Open Positions</CardTitle>
+      <Card className="border-border/60 bg-card/70">
+        <CardHeader className="pb-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
+              Positions
+            </p>
+            <h3 className="text-lg font-semibold text-foreground">Open Positions</h3>
+          </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="pt-0">
           <p className="text-sm text-muted-foreground">
             This trader has no open positions.
           </p>
@@ -64,21 +69,38 @@ export function PositionsSpy({ positions, isLoading }: PositionsSpyProps) {
     );
   }
 
+  const totalValue = positions.reduce((sum, position) => sum + position.currentValue, 0);
+  const totalPnL = positions.reduce((sum, position) => sum + position.cashPnl, 0);
+  const totalPnLColor = totalPnL >= 0 ? "text-emerald-400" : "text-rose-400";
+
   return (
-    <Card className="border-border/50 bg-card/60">
-      <CardHeader>
-        <CardTitle className="text-lg flex items-center justify-between">
-          <span>Open Positions</span>
-          <span className="text-sm font-normal text-muted-foreground">
-            {positions.length} positions
-          </span>
-        </CardTitle>
+    <Card className="border-border/60 bg-card/70">
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
+              Positions
+            </p>
+            <h3 className="text-lg font-semibold text-foreground">Open Positions</h3>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+            <span className="font-mono">{positions.length} positions</span>
+            <span className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-background/40 px-3 py-1 font-mono">
+              <span className="text-muted-foreground">Total Value</span>
+              <span className="text-foreground">{formatCurrency(totalValue)}</span>
+            </span>
+            <span className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-background/40 px-3 py-1 font-mono">
+              <span className="text-muted-foreground">Unrealized</span>
+              <span className={totalPnLColor}>{formatCurrency(totalPnL)}</span>
+            </span>
+          </div>
+        </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="pt-0">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+              <tr className="border-b border-border/60 text-left text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
                 <th className="pb-2">Market</th>
                 <th className="pb-2">Side</th>
                 <th className="pb-2 text-right">Size</th>
@@ -91,21 +113,23 @@ export function PositionsSpy({ positions, isLoading }: PositionsSpyProps) {
             <tbody className="divide-y divide-border/30">
               {positions.map((position, index) => {
                 const isProfitable = position.cashPnl >= 0;
+                const isYes = position.outcome?.toLowerCase() === "yes";
                 return (
                   <tr key={index} className="hover:bg-muted/20 transition-colors">
                     <td className="py-3">
                       <div className="max-w-[200px]">
                         <p className="truncate font-medium text-foreground">
-                          {position.question || position.slug || "Unknown Market"}
+                          {position.title || position.slug || position.asset || "Unknown Market"}
                         </p>
                       </div>
                     </td>
                     <td className="py-3">
                       <span
-                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${position.outcome === "Yes"
-                            ? "bg-green-500/10 text-green-500"
-                            : "bg-red-500/10 text-red-500"
-                          }`}
+                        className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${
+                          isYes
+                            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+                            : "border-rose-500/30 bg-rose-500/10 text-rose-400"
+                        }`}
                       >
                         {position.outcome}
                       </span>
@@ -122,13 +146,12 @@ export function PositionsSpy({ positions, isLoading }: PositionsSpyProps) {
                     <td className="py-3 text-right">
                       <div className="flex items-center justify-end gap-1">
                         {isProfitable ? (
-                          <TrendingUp className="h-3 w-3 text-green-500" />
+                          <TrendingUp className="h-3 w-3 text-emerald-400" />
                         ) : (
-                          <TrendingDown className="h-3 w-3 text-red-500" />
+                          <TrendingDown className="h-3 w-3 text-rose-400" />
                         )}
                         <span
-                          className={`font-mono ${isProfitable ? "text-green-500" : "text-red-500"
-                            }`}
+                          className={`font-mono ${isProfitable ? "text-emerald-400" : "text-rose-400"}`}
                         >
                           {formatPercent(position.percentPnl)}
                         </span>

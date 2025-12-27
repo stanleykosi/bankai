@@ -210,7 +210,7 @@ export interface Position {
   realizedPnl: number;
   unrealizedPnl: number;
   slug: string;
-  question: string;
+  title?: string;
   proxyWallet: string;
   owner: string;
 }
@@ -245,8 +245,8 @@ export interface Trade {
   maker: string;
   taker: string;
   slug: string;
-  question: string;
-  timestamp: string;
+  title: string;
+  timestamp: number;
   transactionHash: string;
 }
 
