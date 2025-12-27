@@ -118,8 +118,17 @@ func (s *ProfileService) profileFromRecentTrade(ctx context.Context, address str
 	return &data_api.TraderProfile{
 		Address:      address,
 		ProfileName:  name,
-		ProfileImage: t.ProfileImage,
+		ProfileImage: chooseNonEmpty(t.ProfileImageOptimized, t.ProfileImage),
 	}
+}
+
+func chooseNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // getFromCache attempts to get data from Redis cache
@@ -249,6 +258,17 @@ func (s *ProfileService) GetTraderProfile(ctx context.Context, address string) (
 	// If we still lack a name/image, attempt to hydrate from recent trades
 	if profile.ProfileName == "" {
 		if tradeProfile := s.profileFromRecentTrade(ctx, cacheAddr); tradeProfile != nil {
+			if profile.ProfileName == "" {
+				profile.ProfileName = tradeProfile.ProfileName
+			}
+			if profile.ProfileImage == "" {
+				profile.ProfileImage = tradeProfile.ProfileImage
+			}
+		}
+	}
+	// Also hydrate from a recent trade using the raw address if proxy cache missed
+	if profile.ProfileName == "" {
+		if tradeProfile := s.profileFromRecentTrade(ctx, rawAddress); tradeProfile != nil {
 			if profile.ProfileName == "" {
 				profile.ProfileName = tradeProfile.ProfileName
 			}

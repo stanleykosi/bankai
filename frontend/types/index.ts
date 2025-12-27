@@ -179,6 +179,7 @@ export interface TraderProfile {
   proxy_wallet?: string;
   profile_name?: string;
   profile_image?: string;
+  profile_image_optimized?: string;
   bio?: string;
   is_verified?: boolean;
   ens_name?: string;

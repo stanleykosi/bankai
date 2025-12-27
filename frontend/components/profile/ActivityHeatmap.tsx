@@ -28,33 +28,41 @@ function parseDateLocal(value: string): Date {
   return new Date(y, m - 1, d);
 }
 
+function startOfWeekMonday(date: Date): Date {
+  const copy = new Date(date);
+  const day = copy.getDay(); // 0 Sun ... 6 Sat
+  const diff = (day + 6) % 7; // Monday=0
+  copy.setDate(copy.getDate() - diff);
+  return copy;
+}
+
+function endOfWeekSunday(date: Date): Date {
+  const copy = startOfWeekMonday(date);
+  copy.setDate(copy.getDate() + 6);
+  return copy;
+}
+
 // Generate dates for the past 52 weeks ending today, aligned to Mondays
 function generateDateGrid(): string[][] {
   const weeks: string[][] = [];
   const today = new Date();
+  const endWeekEnd = endOfWeekSunday(today);
+
   const startDate = new Date(today);
-  startDate.setDate(startDate.getDate() - 364); // ~52 weeks
+  startDate.setDate(startDate.getDate() - 364); // ~52 weeks back
+  const startWeek = startOfWeekMonday(startDate);
 
-  // Align to Monday (ISO week start)
-  const dayOfWeek = startDate.getDay(); // 0=Sun ... 6=Sat
-  const daysToMonday = (dayOfWeek + 6) % 7; // convert so Monday=0
-  startDate.setDate(startDate.getDate() - daysToMonday);
+  let currentWeekStart = new Date(startWeek);
 
-  let currentDate = new Date(startDate);
-  let currentWeek: string[] = [];
-
-  while (currentDate <= today) {
-    currentWeek.push(formatDateLocal(currentDate));
-    if (currentWeek.length === 7) {
-      weeks.push(currentWeek);
-      currentWeek = [];
+  while (currentWeekStart <= endWeekEnd) {
+    const week: string[] = [];
+    for (let i = 0; i < 7; i++) {
+      const day = new Date(currentWeekStart);
+      day.setDate(currentWeekStart.getDate() + i);
+      week.push(formatDateLocal(day));
     }
-    currentDate.setDate(currentDate.getDate() + 1);
-  }
-
-  // Add trailing week that contains today (no future padding)
-  if (currentWeek.length > 0) {
-    weeks.push(currentWeek);
+    weeks.push(week);
+    currentWeekStart.setDate(currentWeekStart.getDate() + 7);
   }
 
   return weeks;
@@ -110,6 +118,13 @@ export function ActivityHeatmap({ activity, isLoading }: ActivityHeatmapProps) {
         labels.push({ month: MONTH_LABELS[date.getMonth()], weekIndex });
       }
     });
+
+    // Ensure current month label is present at the end
+    const today = new Date();
+    const currentKey = `${today.getFullYear()}-${today.getMonth()}`;
+    if (!seen.has(currentKey)) {
+      labels.push({ month: MONTH_LABELS[today.getMonth()], weekIndex: weeks.length - 1 });
+    }
 
     return labels;
   }, [weeks]);

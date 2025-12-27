@@ -55,9 +55,9 @@ export function ProfileHeader({ profile, followerCount }: ProfileHeaderProps) {
           <div className="flex items-start gap-4">
             {/* Avatar */}
             <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-2xl border border-border/60 bg-background/40">
-              {profile.profile_image ? (
+              {profile.profile_image || profile.profile_image_optimized ? (
                 <Image
-                  src={profile.profile_image}
+                  src={profile.profile_image_optimized || profile.profile_image!}
                   alt={displayName}
                   fill
                   className="object-cover"
