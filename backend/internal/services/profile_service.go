@@ -116,9 +116,10 @@ func (s *ProfileService) profileFromRecentTrade(ctx context.Context, address str
 		return nil
 	}
 	return &data_api.TraderProfile{
-		Address:      address,
-		ProfileName:  name,
-		ProfileImage: chooseNonEmpty(t.ProfileImageOptimized, t.ProfileImage),
+		Address:               address,
+		ProfileName:           name,
+		ProfileImage:          chooseNonEmpty(t.ProfileImageOptimized, t.ProfileImage),
+		ProfileImageOptimized: chooseNonEmpty(t.ProfileImageOptimized, t.ProfileImage),
 	}
 }
 
@@ -197,7 +198,10 @@ func (s *ProfileService) GetTraderProfile(ctx context.Context, address string) (
 			if profile.ProfileName == "" {
 				profile.ProfileName = match.Pseudonym
 			}
-			profile.ProfileImage = match.ProfileImage
+			profile.ProfileImageOptimized = chooseNonEmpty(match.ProfileImageOptimized, match.ProfileImage)
+			if profile.ProfileImage == "" {
+				profile.ProfileImage = profile.ProfileImageOptimized
+			}
 			profile.Bio = match.Bio
 			profile.JoinedAt = match.CreatedAt
 			break
@@ -264,6 +268,9 @@ func (s *ProfileService) GetTraderProfile(ctx context.Context, address string) (
 			if profile.ProfileImage == "" {
 				profile.ProfileImage = tradeProfile.ProfileImage
 			}
+			if profile.ProfileImageOptimized == "" {
+				profile.ProfileImageOptimized = tradeProfile.ProfileImageOptimized
+			}
 		}
 	}
 	// Also hydrate from a recent trade using the raw address if proxy cache missed
@@ -274,6 +281,9 @@ func (s *ProfileService) GetTraderProfile(ctx context.Context, address string) (
 			}
 			if profile.ProfileImage == "" {
 				profile.ProfileImage = tradeProfile.ProfileImage
+			}
+			if profile.ProfileImageOptimized == "" {
+				profile.ProfileImageOptimized = tradeProfile.ProfileImageOptimized
 			}
 		}
 	}

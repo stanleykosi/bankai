@@ -141,6 +141,7 @@ type TraderProfile struct {
 	ProxyWallet    string      `json:"proxy_wallet"`
 	ProfileName    string      `json:"profile_name"`
 	ProfileImage   string      `json:"profile_image"`
+	ProfileImageOptimized string `json:"profile_image_optimized,omitempty"`
 	Bio            string      `json:"bio"`
 	IsVerified     bool        `json:"is_verified"`
 	ENSName        string      `json:"ens_name,omitempty"`
