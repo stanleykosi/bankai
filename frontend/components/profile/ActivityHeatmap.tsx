@@ -15,16 +15,17 @@ interface ActivityHeatmapProps {
   isLoading?: boolean;
 }
 
-// Generate dates for the past 52 weeks
+// Generate dates for the past 52 weeks ending today, aligned to Mondays
 function generateDateGrid(): string[][] {
   const weeks: string[][] = [];
   const today = new Date();
   const startDate = new Date(today);
   startDate.setDate(startDate.getDate() - 364); // ~52 weeks
 
-  // Find the start of the week (Sunday)
-  const dayOfWeek = startDate.getDay();
-  startDate.setDate(startDate.getDate() - dayOfWeek);
+  // Align to Monday (ISO week start)
+  const dayOfWeek = startDate.getDay(); // 0=Sun ... 6=Sat
+  const daysToMonday = (dayOfWeek + 6) % 7; // convert so Monday=0
+  startDate.setDate(startDate.getDate() - daysToMonday);
 
   let currentDate = new Date(startDate);
   let currentWeek: string[] = [];
@@ -38,7 +39,13 @@ function generateDateGrid(): string[][] {
     currentDate.setDate(currentDate.getDate() + 1);
   }
 
+  // Add trailing week that contains today
   if (currentWeek.length > 0) {
+    // Fill forward to Sunday to keep column widths consistent
+    while (currentWeek.length < 7) {
+      currentWeek.push(currentDate.toISOString().split("T")[0]);
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
     weeks.push(currentWeek);
   }
 
@@ -83,16 +90,25 @@ export function ActivityHeatmap({ activity, isLoading }: ActivityHeatmapProps) {
   // Calculate month labels
   const monthLabels = useMemo(() => {
     const labels: { month: string; weekIndex: number }[] = [];
-    let lastKey = "";
+    let seenKeys = new Set<string>();
 
     weeks.forEach((week, weekIndex) => {
-      const date = new Date(week[0]);
+      // place the label at the week that contains the 1st of the month
+      const firstOfMonth = week.find((d) => new Date(d).getDate() === 1);
+      if (!firstOfMonth) return;
+      const date = new Date(firstOfMonth);
       const key = `${date.getFullYear()}-${date.getMonth()}`;
-      if (key !== lastKey) {
-        labels.push({ month: MONTH_LABELS[date.getMonth()], weekIndex });
-        lastKey = key;
-      }
+      if (seenKeys.has(key)) return;
+      seenKeys.add(key);
+      labels.push({ month: MONTH_LABELS[date.getMonth()], weekIndex });
     });
+
+    // Ensure we include the current month label at the end
+    const today = new Date();
+    const currentKey = `${today.getFullYear()}-${today.getMonth()}`;
+    if (!seenKeys.has(currentKey) && weeks.length > 0) {
+      labels.push({ month: MONTH_LABELS[today.getMonth()], weekIndex: weeks.length - 1 });
+    }
 
     return labels;
   }, [weeks]);

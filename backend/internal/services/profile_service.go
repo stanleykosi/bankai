@@ -301,6 +301,19 @@ func (s *ProfileService) GetOpenPositions(ctx context.Context, address string, l
 		return nil, err
 	}
 
+	// Fallback: if proxy lookup failed, retry with the raw address to avoid empty tables
+	if len(positions) == 0 && profileAddress != address {
+		positions, err = s.dataAPIClient.GetPositions(ctx, address, &data_api.PositionsParams{
+			Limit:         limit,
+			Offset:        offset,
+			SortBy:        "SIZE",
+			SortDirection: "DESC",
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	// Cache first page
 	if offset == 0 {
 		cacheAddr := profileAddress
@@ -454,6 +467,25 @@ func (s *ProfileService) countOpenPositions(ctx context.Context, address string)
 		offset += limit
 		if offset > maxOffset {
 			break
+		}
+	}
+
+	// Fallback: if we counted zero on the resolved address, attempt with the raw address
+	if total == 0 {
+		offset = 0
+		for {
+			positions, err := s.dataAPIClient.GetPositions(ctx, address, &data_api.PositionsParams{
+				Limit:  limit,
+				Offset: offset,
+			})
+			if err != nil {
+				return total, err
+			}
+			total += len(positions)
+			if len(positions) < limit || offset > maxOffset {
+				break
+			}
+			offset += limit
 		}
 	}
 
