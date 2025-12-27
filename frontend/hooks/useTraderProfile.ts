@@ -46,7 +46,7 @@ export function useTraderStats(address: string | undefined) {
  */
 export function useTraderPositions(
   address: string | undefined,
-  limit = 50,
+  limit = 200,
   offset = 0
 ) {
   return useQuery({

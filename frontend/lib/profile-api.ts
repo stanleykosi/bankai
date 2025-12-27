@@ -46,7 +46,7 @@ export async function fetchTraderStats(
  */
 export async function fetchTraderPositions(
   address: string,
-  limit = 50,
+  limit = 200,
   offset = 0
 ): Promise<PositionsResponse> {
   const response = await api.get<PositionsResponse>(

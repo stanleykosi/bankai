@@ -108,6 +108,11 @@ type Trade struct {
 	TradeOwner    string    `json:"tradeOwner"`
 	Slug          string    `json:"slug"`
 	Title         string    `json:"title"`
+	Name          string    `json:"name,omitempty"`
+	Pseudonym     string    `json:"pseudonym,omitempty"`
+	ProfileImage  string    `json:"profileImage,omitempty"`
+	ProfileImageOptimized string `json:"profileImageOptimized,omitempty"`
+	DisplayUsernamePublic bool   `json:"displayUsernamePublic,omitempty"`
 	Timestamp     int64     `json:"timestamp"`
 	TxHash        string    `json:"transactionHash"`
 }

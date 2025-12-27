@@ -15,6 +15,19 @@ interface ActivityHeatmapProps {
   isLoading?: boolean;
 }
 
+function formatDateLocal(date: Date): string {
+  const y = date.getFullYear();
+  const m = date.getMonth() + 1;
+  const d = date.getDate();
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  return `${y}-${pad(m)}-${pad(d)}`;
+}
+
+function parseDateLocal(value: string): Date {
+  const [y, m, d] = value.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+
 // Generate dates for the past 52 weeks ending today, aligned to Mondays
 function generateDateGrid(): string[][] {
   const weeks: string[][] = [];
@@ -31,7 +44,7 @@ function generateDateGrid(): string[][] {
   let currentWeek: string[] = [];
 
   while (currentDate <= today) {
-    currentWeek.push(currentDate.toISOString().split("T")[0]);
+    currentWeek.push(formatDateLocal(currentDate));
     if (currentWeek.length === 7) {
       weeks.push(currentWeek);
       currentWeek = [];
@@ -39,13 +52,8 @@ function generateDateGrid(): string[][] {
     currentDate.setDate(currentDate.getDate() + 1);
   }
 
-  // Add trailing week that contains today
+  // Add trailing week that contains today (no future padding)
   if (currentWeek.length > 0) {
-    // Fill forward to Sunday to keep column widths consistent
-    while (currentWeek.length < 7) {
-      currentWeek.push(currentDate.toISOString().split("T")[0]);
-      currentDate.setDate(currentDate.getDate() + 1);
-    }
     weeks.push(currentWeek);
   }
 
@@ -90,25 +98,18 @@ export function ActivityHeatmap({ activity, isLoading }: ActivityHeatmapProps) {
   // Calculate month labels
   const monthLabels = useMemo(() => {
     const labels: { month: string; weekIndex: number }[] = [];
-    let seenKeys = new Set<string>();
+    const seen = new Set<string>();
 
     weeks.forEach((week, weekIndex) => {
-      // place the label at the week that contains the 1st of the month
-      const firstOfMonth = week.find((d) => new Date(d).getDate() === 1);
-      if (!firstOfMonth) return;
-      const date = new Date(firstOfMonth);
+      const firstDay = week[0];
+      if (!firstDay) return;
+      const date = parseDateLocal(firstDay);
       const key = `${date.getFullYear()}-${date.getMonth()}`;
-      if (seenKeys.has(key)) return;
-      seenKeys.add(key);
-      labels.push({ month: MONTH_LABELS[date.getMonth()], weekIndex });
+      if (!seen.has(key)) {
+        seen.add(key);
+        labels.push({ month: MONTH_LABELS[date.getMonth()], weekIndex });
+      }
     });
-
-    // Ensure we include the current month label at the end
-    const today = new Date();
-    const currentKey = `${today.getFullYear()}-${today.getMonth()}`;
-    if (!seenKeys.has(currentKey) && weeks.length > 0) {
-      labels.push({ month: MONTH_LABELS[today.getMonth()], weekIndex: weeks.length - 1 });
-    }
 
     return labels;
   }, [weeks]);
@@ -154,9 +155,10 @@ export function ActivityHeatmap({ activity, isLoading }: ActivityHeatmapProps) {
               className="text-[10px]"
               style={{
                 marginLeft: i === 0 ? `${weekIndex * 12}px` : undefined,
-                width: i < monthLabels.length - 1
-                  ? `${(monthLabels[i + 1].weekIndex - weekIndex) * 12}px`
-                  : undefined,
+                width:
+                  i < monthLabels.length - 1
+                    ? `${(monthLabels[i + 1].weekIndex - weekIndex) * 12}px`
+                    : `${(weeks.length - weekIndex) * 12}px`,
               }}
             >
               {month}
