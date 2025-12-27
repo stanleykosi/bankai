@@ -364,73 +364,60 @@ func (s *ProfileService) GetOpenPositions(ctx context.Context, address string, l
 		limit = 50
 	}
 
-	// Check cache first (only cache first page)
-	if offset == 0 {
-		cacheAddr := profileAddress
-		if cacheAddr == "" {
-			cacheAddr = address
-		}
-		key := cacheKey(fmt.Sprintf("positions:%d", limit), cacheAddr)
-		cached, err := getFromCache[[]data_api.Position](ctx, s.redis, key)
-		if err != nil {
-			logger.Error("ProfileService: Positions cache error: %v", err)
-		}
-		if cached != nil {
-			// If cached result is empty but count suggests otherwise, try a fallback fetch with raw address.
-			if len(*cached) == 0 && !strings.EqualFold(cacheAddr, address) {
-				fallback, err := s.dataAPIClient.GetPositions(ctx, address, &data_api.PositionsParams{
-					Limit:         limit,
-					Offset:        offset,
-					SortBy:        "SIZE",
-					SortDirection: "DESC",
-				})
-				if err == nil && len(fallback) > 0 {
-					if err := setInCache(ctx, s.redis, key, fallback, PositionsCacheTTL); err != nil {
-						logger.Error("ProfileService: Failed to cache fallback positions: %v", err)
-					}
-					return fallback, nil
-				}
+	targets := make([]string, 0, 2)
+	if profileAddress != "" {
+		targets = append(targets, profileAddress)
+	}
+	if address != "" && !strings.EqualFold(address, profileAddress) {
+		targets = append(targets, address)
+	}
+
+	var lastErr error
+	var lastPositions []data_api.Position
+
+	for _, target := range targets {
+		// Cache first page per target
+		if offset == 0 {
+			key := cacheKey(fmt.Sprintf("positions:%d", limit), target)
+			cached, err := getFromCache[[]data_api.Position](ctx, s.redis, key)
+			if err != nil {
+				logger.Error("ProfileService: Positions cache error: %v", err)
 			}
-			return *cached, nil
+			if cached != nil && len(*cached) > 0 {
+				return *cached, nil
+			}
 		}
-	}
 
-	positions, err := s.dataAPIClient.GetPositions(ctx, profileAddress, &data_api.PositionsParams{
-		Limit:         limit,
-		Offset:        offset,
-		SortBy:        "SIZE",
-		SortDirection: "DESC",
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// Fallback: if proxy lookup failed, retry with the raw address to avoid empty tables
-	if len(positions) == 0 && profileAddress != address {
-		positions, err = s.dataAPIClient.GetPositions(ctx, address, &data_api.PositionsParams{
+		positions, err := s.dataAPIClient.GetPositions(ctx, target, &data_api.PositionsParams{
 			Limit:         limit,
 			Offset:        offset,
 			SortBy:        "SIZE",
 			SortDirection: "DESC",
 		})
 		if err != nil {
-			return nil, err
+			lastErr = err
+			continue
 		}
+
+		lastPositions = positions
+		if len(positions) == 0 {
+			// try next target if available
+			continue
+		}
+
+		if offset == 0 {
+			key := cacheKey(fmt.Sprintf("positions:%d", limit), target)
+			if err := setInCache(ctx, s.redis, key, positions, PositionsCacheTTL); err != nil {
+				logger.Error("ProfileService: Failed to cache positions: %v", err)
+			}
+		}
+		return positions, nil
 	}
 
-	// Cache first page
-	if offset == 0 {
-		cacheAddr := profileAddress
-		if cacheAddr == "" {
-			cacheAddr = address
-		}
-		key := cacheKey(fmt.Sprintf("positions:%d", limit), cacheAddr)
-		if err := setInCache(ctx, s.redis, key, positions, PositionsCacheTTL); err != nil {
-			logger.Error("ProfileService: Failed to cache positions: %v", err)
-		}
+	if lastErr != nil {
+		return nil, lastErr
 	}
-
-	return positions, nil
+	return lastPositions, nil
 }
 
 // GetActivityHeatmap fetches trade activity for GitHub-style heatmap
@@ -558,18 +545,23 @@ func (s *ProfileService) countOpenPositions(ctx context.Context, resolvedAddr, r
 		targets = append(targets, rawAddr)
 	}
 
+	var lastErr error
+
 	for _, target := range targets {
 		if target == "" {
 			continue
 		}
 		offset = 0
+		total = 0
+
 		for {
 			positions, err := s.dataAPIClient.GetPositions(ctx, target, &data_api.PositionsParams{
 				Limit:  limit,
 				Offset: offset,
 			})
 			if err != nil {
-				return total, err
+				lastErr = err
+				break
 			}
 
 			total += len(positions)
@@ -583,11 +575,14 @@ func (s *ProfileService) countOpenPositions(ctx context.Context, resolvedAddr, r
 			}
 		}
 
-		if total > 0 {
-			break
+		if lastErr == nil {
+			return total, nil
 		}
 	}
 
+	if lastErr != nil {
+		return 0, lastErr
+	}
 	return total, nil
 }
 
