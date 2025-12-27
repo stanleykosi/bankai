@@ -47,11 +47,12 @@ export async function fetchTraderStats(
 export async function fetchTraderPositions(
   address: string,
   limit = 200,
-  offset = 0
+  offset = 0,
+  sortBy: string = "CASHPNL"
 ): Promise<PositionsResponse> {
   const response = await api.get<PositionsResponse>(
     `/profile/${address}/positions`,
-    { params: { limit, offset } }
+    { params: { limit, offset, sortBy } }
   );
   return response.data;
 }

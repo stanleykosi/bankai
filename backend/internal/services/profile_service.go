@@ -372,28 +372,40 @@ func (s *ProfileService) GetOpenPositions(ctx context.Context, address string, l
 		targets = append(targets, address)
 	}
 
+	sortCandidates := []string{
+		"CASHPNL",
+		"CURRENT",
+		"TOKENS",
+		"INITIAL",
+		"PERCENTPNL",
+		"TITLE",
+		"RESOLVING",
+		"PRICE",
+		"AVGPRICE",
+	}
 	var lastErr error
 	var lastPositions []data_api.Position
 
 	for _, target := range targets {
-		// Cache first page per target
+		if target == "" {
+			continue
+		}
+
+		// Cache first page per target and sort
 		if offset == 0 {
-			key := cacheKey(fmt.Sprintf("positions:%d", limit), target)
-			cached, err := getFromCache[[]data_api.Position](ctx, s.redis, key)
-			if err != nil {
-				logger.Error("ProfileService: Positions cache error: %v", err)
-			}
-			if cached != nil && len(*cached) > 0 {
-				return *cached, nil
+			for _, sortBy := range sortCandidates {
+				key := cacheKey(fmt.Sprintf("positions:%s:%d:%d", sortBy, limit, offset), target)
+				cached, err := getFromCache[[]data_api.Position](ctx, s.redis, key)
+				if err != nil {
+					logger.Error("ProfileService: Positions cache error: %v", err)
+				}
+				if cached != nil && len(*cached) > 0 {
+					return *cached, nil
+				}
 			}
 		}
 
-		positions, err := s.dataAPIClient.GetPositions(ctx, target, &data_api.PositionsParams{
-			Limit:         limit,
-			Offset:        offset,
-			SortBy:        "SIZE",
-			SortDirection: "DESC",
-		})
+		positions, sortUsed, err := s.fetchPositions(ctx, target, limit, offset, sortCandidates)
 		if err != nil {
 			lastErr = err
 			continue
@@ -401,12 +413,11 @@ func (s *ProfileService) GetOpenPositions(ctx context.Context, address string, l
 
 		lastPositions = positions
 		if len(positions) == 0 {
-			// try next target if available
 			continue
 		}
 
-		if offset == 0 {
-			key := cacheKey(fmt.Sprintf("positions:%d", limit), target)
+		if offset == 0 && sortUsed != "" {
+			key := cacheKey(fmt.Sprintf("positions:%s:%d:%d", sortUsed, limit, offset), target)
 			if err := setInCache(ctx, s.redis, key, positions, PositionsCacheTTL); err != nil {
 				logger.Error("ProfileService: Failed to cache positions: %v", err)
 			}
@@ -538,30 +549,41 @@ func (s *ProfileService) countOpenPositions(ctx context.Context, resolvedAddr, r
 	const limit = 500
 	const maxOffset = 10000
 
-	total := 0
-	offset := 0
 	targets := []string{resolvedAddr}
 	if rawAddr != "" && rawAddr != resolvedAddr {
 		targets = append(targets, rawAddr)
 	}
 
 	var lastErr error
+	sortCandidates := []string{
+		"CASHPNL",
+		"CURRENT",
+		"TOKENS",
+		"INITIAL",
+		"PERCENTPNL",
+		"TITLE",
+		"RESOLVING",
+		"PRICE",
+		"AVGPRICE",
+	}
 
 	for _, target := range targets {
 		if target == "" {
 			continue
 		}
-		offset = 0
-		total = 0
+
+		offset := 0
+		total := 0
+		sortUsed := ""
 
 		for {
-			positions, err := s.dataAPIClient.GetPositions(ctx, target, &data_api.PositionsParams{
-				Limit:  limit,
-				Offset: offset,
-			})
+			positions, used, err := s.fetchPositions(ctx, target, limit, offset, sortCandidates)
 			if err != nil {
 				lastErr = err
 				break
+			}
+			if sortUsed == "" {
+				sortUsed = used
 			}
 
 			total += len(positions)
@@ -583,7 +605,25 @@ func (s *ProfileService) countOpenPositions(ctx context.Context, resolvedAddr, r
 	if lastErr != nil {
 		return 0, lastErr
 	}
-	return total, nil
+	return 0, nil
+}
+
+func (s *ProfileService) fetchPositions(ctx context.Context, address string, limit, offset int, sortCandidates []string) ([]data_api.Position, string, error) {
+	var lastErr error
+	for _, sortBy := range sortCandidates {
+		positions, err := s.dataAPIClient.GetPositions(ctx, address, &data_api.PositionsParams{
+			Limit:         limit,
+			Offset:        offset,
+			SortBy:        sortBy,
+			SortDirection: "DESC",
+		})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return positions, sortBy, nil
+	}
+	return nil, "", lastErr
 }
 
 func (s *ProfileService) countClosedPositions(ctx context.Context, address string) (int, error) {

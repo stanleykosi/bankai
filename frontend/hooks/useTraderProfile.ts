@@ -47,11 +47,12 @@ export function useTraderStats(address: string | undefined) {
 export function useTraderPositions(
   address: string | undefined,
   limit = 200,
-  offset = 0
+  offset = 0,
+  sortBy = "CASHPNL"
 ) {
   return useQuery({
-    queryKey: ["trader-positions", address, limit, offset],
-    queryFn: () => fetchTraderPositions(address!, limit, offset),
+    queryKey: ["trader-positions", address, limit, offset, sortBy],
+    queryFn: () => fetchTraderPositions(address!, limit, offset, sortBy),
     enabled: Boolean(address),
     staleTime: 30_000, // 30 seconds
   });

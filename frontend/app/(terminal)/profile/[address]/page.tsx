@@ -39,7 +39,7 @@ export default function TraderProfilePage() {
   const {
     data: positionsData,
     isLoading: isLoadingPositions,
-  } = useTraderPositions(address);
+  } = useTraderPositions(address, 200, 0, "CASHPNL");
 
   const {
     data: activityData,
