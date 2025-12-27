@@ -376,6 +376,21 @@ func (s *ProfileService) GetOpenPositions(ctx context.Context, address string, l
 			logger.Error("ProfileService: Positions cache error: %v", err)
 		}
 		if cached != nil {
+			// If cached result is empty but count suggests otherwise, try a fallback fetch with raw address.
+			if len(*cached) == 0 && !strings.EqualFold(cacheAddr, address) {
+				fallback, err := s.dataAPIClient.GetPositions(ctx, address, &data_api.PositionsParams{
+					Limit:         limit,
+					Offset:        offset,
+					SortBy:        "SIZE",
+					SortDirection: "DESC",
+				})
+				if err == nil && len(fallback) > 0 {
+					if err := setInCache(ctx, s.redis, key, fallback, PositionsCacheTTL); err != nil {
+						logger.Error("ProfileService: Failed to cache fallback positions: %v", err)
+					}
+					return fallback, nil
+				}
+			}
 			return *cached, nil
 		}
 	}
