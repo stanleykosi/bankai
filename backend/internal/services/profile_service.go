@@ -198,7 +198,7 @@ func (s *ProfileService) GetTraderProfile(ctx context.Context, address string) (
 			if profile.ProfileName == "" {
 				profile.ProfileName = match.Pseudonym
 			}
-			profile.ProfileImageOptimized = chooseNonEmpty(match.ProfileImageOptimized, match.ProfileImage)
+			profile.ProfileImageOptimized = chooseNonEmpty(match.ProfileImage)
 			if profile.ProfileImage == "" {
 				profile.ProfileImage = profile.ProfileImageOptimized
 			}
