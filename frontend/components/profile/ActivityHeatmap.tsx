@@ -83,14 +83,14 @@ export function ActivityHeatmap({ activity, isLoading }: ActivityHeatmapProps) {
   // Calculate month labels
   const monthLabels = useMemo(() => {
     const labels: { month: string; weekIndex: number }[] = [];
-    let lastMonth = -1;
+    let lastKey = "";
 
     weeks.forEach((week, weekIndex) => {
       const date = new Date(week[0]);
-      const month = date.getMonth();
-      if (month !== lastMonth) {
-        labels.push({ month: MONTH_LABELS[month], weekIndex });
-        lastMonth = month;
+      const key = `${date.getFullYear()}-${date.getMonth()}`;
+      if (key !== lastKey) {
+        labels.push({ month: MONTH_LABELS[date.getMonth()], weekIndex });
+        lastKey = key;
       }
     });
 

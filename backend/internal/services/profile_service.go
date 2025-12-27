@@ -131,13 +131,18 @@ func setInCache(ctx context.Context, rdb *redis.Client, key string, data interfa
 
 // GetTraderProfile fetches complete trader profile with stats
 func (s *ProfileService) GetTraderProfile(ctx context.Context, address string) (*data_api.TraderProfile, error) {
-	address = normalizeAddress(address)
-	if address == "" {
+	rawAddress := normalizeAddress(address)
+	if rawAddress == "" {
 		return nil, nil
 	}
+	resolvedAddr := s.resolveProfileAddress(ctx, rawAddress)
 
 	// Check cache first
-	key := cacheKey("info", address)
+	cacheAddr := resolvedAddr
+	if cacheAddr == "" {
+		cacheAddr = rawAddress
+	}
+	key := cacheKey("info", cacheAddr)
 	cached, err := getFromCache[data_api.TraderProfile](ctx, s.redis, key)
 	if err != nil {
 		logger.Error("ProfileService: Cache error: %v", err)
@@ -147,14 +152,24 @@ func (s *ProfileService) GetTraderProfile(ctx context.Context, address string) (
 	}
 
 	profile := &data_api.TraderProfile{
-		Address: address,
+		Address:     rawAddress,
+		ProxyWallet: resolvedAddr,
 	}
 
-	// Try to get profile from Gamma search
-	profiles, err := s.gammaClient.SearchProfiles(ctx, address, 5)
-	if err == nil && len(profiles) > 0 {
-		if match := matchProfile(address, profiles); match != nil {
-			profile.ProxyWallet = match.ProxyWallet
+	// Try to get profile from Gamma search using both input and resolved proxy
+	searchAddrs := []string{rawAddress}
+	if resolvedAddr != "" && resolvedAddr != rawAddress {
+		searchAddrs = append([]string{resolvedAddr}, searchAddrs...)
+	}
+	for _, searchAddr := range searchAddrs {
+		profiles, err := s.gammaClient.SearchProfiles(ctx, searchAddr, 5)
+		if err != nil || len(profiles) == 0 {
+			continue
+		}
+		if match := matchProfile(searchAddr, profiles); match != nil {
+			if profile.ProxyWallet == "" {
+				profile.ProxyWallet = match.ProxyWallet
+			}
 			profile.ProfileName = match.Name
 			if profile.ProfileName == "" {
 				profile.ProfileName = match.Pseudonym
@@ -162,11 +177,12 @@ func (s *ProfileService) GetTraderProfile(ctx context.Context, address string) (
 			profile.ProfileImage = match.ProfileImage
 			profile.Bio = match.Bio
 			profile.JoinedAt = match.CreatedAt
+			break
 		}
 	}
 
 	// Get stats
-	stats, err := s.GetTraderStats(ctx, address)
+	stats, err := s.GetTraderStats(ctx, rawAddress)
 	if err != nil {
 		logger.Error("ProfileService: Failed to get trader stats: %v", err)
 	} else {
@@ -187,7 +203,11 @@ func (s *ProfileService) GetTraderStats(ctx context.Context, address string) (*d
 	profileAddress := s.resolveProfileAddress(ctx, address)
 
 	// Check cache first
-	key := cacheKey("stats", address)
+	cacheAddr := profileAddress
+	if cacheAddr == "" {
+		cacheAddr = address
+	}
+	key := cacheKey("stats", cacheAddr)
 	cached, err := getFromCache[data_api.TraderStats](ctx, s.redis, key)
 	if err != nil {
 		logger.Error("ProfileService: Stats cache error: %v", err)
@@ -257,7 +277,11 @@ func (s *ProfileService) GetOpenPositions(ctx context.Context, address string, l
 
 	// Check cache first (only cache first page)
 	if offset == 0 {
-		key := cacheKey(fmt.Sprintf("positions:%d", limit), address)
+		cacheAddr := profileAddress
+		if cacheAddr == "" {
+			cacheAddr = address
+		}
+		key := cacheKey(fmt.Sprintf("positions:%d", limit), cacheAddr)
 		cached, err := getFromCache[[]data_api.Position](ctx, s.redis, key)
 		if err != nil {
 			logger.Error("ProfileService: Positions cache error: %v", err)
@@ -279,7 +303,11 @@ func (s *ProfileService) GetOpenPositions(ctx context.Context, address string, l
 
 	// Cache first page
 	if offset == 0 {
-		key := cacheKey(fmt.Sprintf("positions:%d", limit), address)
+		cacheAddr := profileAddress
+		if cacheAddr == "" {
+			cacheAddr = address
+		}
+		key := cacheKey(fmt.Sprintf("positions:%d", limit), cacheAddr)
 		if err := setInCache(ctx, s.redis, key, positions, PositionsCacheTTL); err != nil {
 			logger.Error("ProfileService: Failed to cache positions: %v", err)
 		}
@@ -328,7 +356,11 @@ func (s *ProfileService) GetRecentTrades(ctx context.Context, address string, li
 	}
 
 	// Check cache first
-	key := cacheKey(fmt.Sprintf("trades:%d", limit), address)
+	cacheAddr := profileAddress
+	if cacheAddr == "" {
+		cacheAddr = address
+	}
+	key := cacheKey(fmt.Sprintf("trades:%d", limit), cacheAddr)
 	cached, err := getFromCache[[]data_api.Trade](ctx, s.redis, key)
 	if err != nil {
 		logger.Error("ProfileService: Trades cache error: %v", err)

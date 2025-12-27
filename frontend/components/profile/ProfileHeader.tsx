@@ -26,7 +26,7 @@ export function ProfileHeader({ profile, followerCount }: ProfileHeaderProps) {
   const [copied, setCopied] = useState(false);
 
   const displayName =
-    profile.profile_name ||
+    (profile.profile_name && profile.profile_name.trim()) ||
     profile.ens_name ||
     `${profile.address.slice(0, 6)}...${profile.address.slice(-4)}`;
 
