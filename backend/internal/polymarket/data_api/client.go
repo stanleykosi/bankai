@@ -27,8 +27,8 @@ import (
 )
 
 const (
-	DefaultTimeout     = 15 * time.Second
-	DefaultDataAPIURL  = "https://data-api.polymarket.com"
+	DefaultTimeout    = 15 * time.Second
+	DefaultDataAPIURL = "https://data-api.polymarket.com"
 )
 
 // Client for Polymarket Data API
@@ -66,7 +66,7 @@ func (c *Client) GetPositions(ctx context.Context, address string, params *Posit
 
 	q := u.Query()
 	q.Set("user", strings.ToLower(address))
-	
+
 	if params != nil {
 		if params.Limit > 0 {
 			q.Set("limit", strconv.Itoa(params.Limit))
@@ -276,7 +276,14 @@ func (c *Client) GetTrades(ctx context.Context, address string, params *TradesPa
 
 	q := u.Query()
 	q.Set("user", strings.ToLower(address))
-	
+
+	// The Data API defaults takerOnly=true; set false unless explicitly provided.
+	takerOnly := false
+	if params != nil && params.TakerOnly != nil {
+		takerOnly = *params.TakerOnly
+	}
+	q.Set("takerOnly", strconv.FormatBool(takerOnly))
+
 	if params != nil {
 		if params.Limit > 0 {
 			q.Set("limit", strconv.Itoa(params.Limit))
@@ -431,9 +438,11 @@ func (c *Client) GetActivityHeatmap(ctx context.Context, address string) ([]Acti
 
 	// Get trades for the past year
 	oneYearAgo := time.Now().AddDate(-1, 0, 0).Format(time.RFC3339)
+	includeMakers := false
 	trades, err := c.GetTrades(ctx, address, &TradesParams{
-		Limit: 5000,
-		After: oneYearAgo,
+		Limit:     5000,
+		After:     oneYearAgo,
+		TakerOnly: &includeMakers,
 	})
 	if err != nil {
 		return nil, err

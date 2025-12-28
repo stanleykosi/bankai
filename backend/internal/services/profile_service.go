@@ -100,7 +100,11 @@ func (s *ProfileService) profileFromRecentTrade(ctx context.Context, address str
 	if address == "" {
 		return nil
 	}
-	trades, err := s.dataAPIClient.GetTrades(ctx, address, &data_api.TradesParams{Limit: 1})
+	takerOnly := false
+	trades, err := s.dataAPIClient.GetTrades(ctx, address, &data_api.TradesParams{
+		Limit:     1,
+		TakerOnly: &takerOnly,
+	})
 	if err != nil || len(trades) == 0 {
 		return nil
 	}
@@ -137,7 +141,7 @@ func getFromCache[T any](ctx context.Context, rdb *redis.Client, key string) (*T
 	if rdb == nil {
 		return nil, nil
 	}
-	
+
 	data, err := rdb.Get(ctx, key).Bytes()
 	if err == redis.Nil {
 		return nil, nil // Cache miss
@@ -145,7 +149,7 @@ func getFromCache[T any](ctx context.Context, rdb *redis.Client, key string) (*T
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var result T
 	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, err
@@ -158,12 +162,12 @@ func setInCache(ctx context.Context, rdb *redis.Client, key string, data interfa
 	if rdb == nil {
 		return nil
 	}
-	
+
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return err
 	}
-	
+
 	return rdb.Set(ctx, key, jsonData, ttl).Err()
 }
 
@@ -494,7 +498,11 @@ func (s *ProfileService) GetRecentTrades(ctx context.Context, address string, li
 		return *cached, nil
 	}
 
-	trades, err := s.dataAPIClient.GetTrades(ctx, profileAddress, &data_api.TradesParams{Limit: limit})
+	takerOnly := false
+	trades, err := s.dataAPIClient.GetTrades(ctx, profileAddress, &data_api.TradesParams{
+		Limit:     limit,
+		TakerOnly: &takerOnly,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -514,11 +522,13 @@ func (s *ProfileService) aggregateTradeVolume(ctx context.Context, address strin
 	totalVolume := 0.0
 	totalTrades := 0
 	offset := 0
+	takerOnly := false
 
 	for {
 		trades, err := s.dataAPIClient.GetTrades(ctx, address, &data_api.TradesParams{
-			Limit:  limit,
-			Offset: offset,
+			Limit:     limit,
+			Offset:    offset,
+			TakerOnly: &takerOnly,
 		})
 		if err != nil {
 			return totalVolume, 0, totalTrades, err

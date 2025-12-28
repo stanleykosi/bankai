@@ -41,22 +41,22 @@ type Position struct {
 
 // ClosedPosition represents a user's closed/resolved position
 type ClosedPosition struct {
-	Asset         string    `json:"asset"`
-	ConditionID   string    `json:"conditionId"`
-	TokenID       string    `json:"tokenId"`
-	Outcome       string    `json:"outcome"`
-	Size          float64   `json:"size"`
-	AveragePrice  float64   `json:"avgPrice"`
-	ExitPrice     float64   `json:"exitPrice"`
-	InitialValue  float64   `json:"initialValue"`
-	ExitValue     float64   `json:"exitValue"`
-	RealizedPnL   float64   `json:"realizedPnl"`
-	PctPnL        float64   `json:"pctPnl"`
-	Slug          string    `json:"slug"`
-	Title         string    `json:"title"`
-	ClosedAt      time.Time `json:"closedAt"`
-	Resolved      bool      `json:"resolved"`
-	Winner        bool      `json:"winner"`
+	Asset        string    `json:"asset"`
+	ConditionID  string    `json:"conditionId"`
+	TokenID      string    `json:"tokenId"`
+	Outcome      string    `json:"outcome"`
+	Size         float64   `json:"size"`
+	AveragePrice float64   `json:"avgPrice"`
+	ExitPrice    float64   `json:"exitPrice"`
+	InitialValue float64   `json:"initialValue"`
+	ExitValue    float64   `json:"exitValue"`
+	RealizedPnL  float64   `json:"realizedPnl"`
+	PctPnL       float64   `json:"pctPnl"`
+	Slug         string    `json:"slug"`
+	Title        string    `json:"title"`
+	ClosedAt     time.Time `json:"closedAt"`
+	Resolved     bool      `json:"resolved"`
+	Winner       bool      `json:"winner"`
 }
 
 // RawHolder represents a holder entry from the Data API /holders response.
@@ -94,27 +94,27 @@ type Holder struct {
 
 // Trade represents a single trade from the /trades endpoint
 type Trade struct {
-	ID            string    `json:"id"`
-	ConditionID   string    `json:"conditionId"`
-	TokenID       string    `json:"tokenId"`
-	Outcome       string    `json:"outcome"`
-	Side          string    `json:"side"` // BUY or SELL
-	Price         float64   `json:"price"`
-	Size          float64   `json:"size"`
-	Value         float64   `json:"value"`
-	Maker         string    `json:"maker"`
-	Taker         string    `json:"taker"`
-	MakerIsBuyer  bool      `json:"makerIsBuyer"`
-	TradeOwner    string    `json:"tradeOwner"`
-	Slug          string    `json:"slug"`
-	Title         string    `json:"title"`
-	Name          string    `json:"name,omitempty"`
-	Pseudonym     string    `json:"pseudonym,omitempty"`
-	ProfileImage  string    `json:"profileImage,omitempty"`
-	ProfileImageOptimized string `json:"profileImageOptimized,omitempty"`
-	DisplayUsernamePublic bool   `json:"displayUsernamePublic,omitempty"`
-	Timestamp     int64     `json:"timestamp"`
-	TxHash        string    `json:"transactionHash"`
+	ID                    string  `json:"id"`
+	ConditionID           string  `json:"conditionId"`
+	TokenID               string  `json:"tokenId"`
+	Outcome               string  `json:"outcome"`
+	Side                  string  `json:"side"` // BUY or SELL
+	Price                 float64 `json:"price"`
+	Size                  float64 `json:"size"`
+	Value                 float64 `json:"value"`
+	Maker                 string  `json:"maker"`
+	Taker                 string  `json:"taker"`
+	MakerIsBuyer          bool    `json:"makerIsBuyer"`
+	TradeOwner            string  `json:"tradeOwner"`
+	Slug                  string  `json:"slug"`
+	Title                 string  `json:"title"`
+	Name                  string  `json:"name,omitempty"`
+	Pseudonym             string  `json:"pseudonym,omitempty"`
+	ProfileImage          string  `json:"profileImage,omitempty"`
+	ProfileImageOptimized string  `json:"profileImageOptimized,omitempty"`
+	DisplayUsernamePublic bool    `json:"displayUsernamePublic,omitempty"`
+	Timestamp             int64   `json:"timestamp"`
+	TxHash                string  `json:"transactionHash"`
 }
 
 // TradedCount represents the total markets traded response from /traded
@@ -137,17 +137,17 @@ type PnLData struct {
 
 // TraderProfile aggregates all profile data for a trader
 type TraderProfile struct {
-	Address        string      `json:"address"`
-	ProxyWallet    string      `json:"proxy_wallet"`
-	ProfileName    string      `json:"profile_name"`
-	ProfileImage   string      `json:"profile_image"`
-	ProfileImageOptimized string `json:"profile_image_optimized,omitempty"`
-	Bio            string      `json:"bio"`
-	IsVerified     bool        `json:"is_verified"`
-	ENSName        string      `json:"ens_name,omitempty"`
-	LensHandle     string      `json:"lens_handle,omitempty"`
-	JoinedAt       string      `json:"joined_at"`
-	Stats          *TraderStats `json:"stats,omitempty"`
+	Address               string       `json:"address"`
+	ProxyWallet           string       `json:"proxy_wallet"`
+	ProfileName           string       `json:"profile_name"`
+	ProfileImage          string       `json:"profile_image"`
+	ProfileImageOptimized string       `json:"profile_image_optimized,omitempty"`
+	Bio                   string       `json:"bio"`
+	IsVerified            bool         `json:"is_verified"`
+	ENSName               string       `json:"ens_name,omitempty"`
+	LensHandle            string       `json:"lens_handle,omitempty"`
+	JoinedAt              string       `json:"joined_at"`
+	Stats                 *TraderStats `json:"stats,omitempty"`
 }
 
 // TraderStats contains calculated performance metrics
@@ -182,10 +182,11 @@ type PositionsParams struct {
 
 // TradesParams query parameters for /trades endpoint
 type TradesParams struct {
-	Limit  int    `json:"limit,omitempty"`
-	Offset int    `json:"offset,omitempty"`
-	Before string `json:"before,omitempty"` // ISO timestamp
-	After  string `json:"after,omitempty"`  // ISO timestamp
+	Limit     int    `json:"limit,omitempty"`
+	Offset    int    `json:"offset,omitempty"`
+	Before    string `json:"before,omitempty"`    // ISO timestamp
+	After     string `json:"after,omitempty"`     // ISO timestamp
+	TakerOnly *bool  `json:"takerOnly,omitempty"` // Defaults to true on the API; set to false to include maker trades
 }
 
 // parseFloatSafe converts interface to float64 safely
