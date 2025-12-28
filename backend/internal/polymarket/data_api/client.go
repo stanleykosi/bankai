@@ -269,6 +269,22 @@ func (c *Client) GetTrades(ctx context.Context, address string, params *TradesPa
 		return nil, fmt.Errorf("address is required")
 	}
 
+	// Apply API caps (doc: limit<=500, offset<=1000)
+	limit := 500
+	offset := 0
+	if params != nil {
+		if params.Limit > 0 && params.Limit < limit {
+			limit = params.Limit
+		}
+		if params.Offset > 0 {
+			if params.Offset > 1000 {
+				offset = 1000
+			} else {
+				offset = params.Offset
+			}
+		}
+	}
+
 	u, err := url.Parse(fmt.Sprintf("%s/trades", c.BaseURL))
 	if err != nil {
 		return nil, err
@@ -285,18 +301,16 @@ func (c *Client) GetTrades(ctx context.Context, address string, params *TradesPa
 	q.Set("takerOnly", strconv.FormatBool(takerOnly))
 
 	if params != nil {
-		if params.Limit > 0 {
-			q.Set("limit", strconv.Itoa(params.Limit))
-		}
-		if params.Offset > 0 {
-			q.Set("offset", strconv.Itoa(params.Offset))
-		}
 		if params.Before != "" {
 			q.Set("before", params.Before)
 		}
 		if params.After != "" {
 			q.Set("after", params.After)
 		}
+	}
+	q.Set("limit", strconv.Itoa(limit))
+	if offset > 0 {
+		q.Set("offset", strconv.Itoa(offset))
 	}
 	u.RawQuery = q.Encode()
 
@@ -436,16 +450,27 @@ func (c *Client) GetActivityHeatmap(ctx context.Context, address string) ([]Acti
 		return nil, fmt.Errorf("address is required")
 	}
 
-	// Get trades for the past year
+	// Get trades for the past year (paginate with API caps: limit<=500, offset<=1000)
 	oneYearAgo := time.Now().AddDate(-1, 0, 0).Format(time.RFC3339)
 	includeMakers := false
-	trades, err := c.GetTrades(ctx, address, &TradesParams{
-		Limit:     5000,
-		After:     oneYearAgo,
-		TakerOnly: &includeMakers,
-	})
-	if err != nil {
-		return nil, err
+	const apiLimit = 500
+	const maxOffset = 1000
+
+	var trades []Trade
+	for offset := 0; offset <= maxOffset; offset += apiLimit {
+		page, err := c.GetTrades(ctx, address, &TradesParams{
+			Limit:     apiLimit,
+			Offset:    offset,
+			After:     oneYearAgo,
+			TakerOnly: &includeMakers,
+		})
+		if err != nil {
+			return nil, err
+		}
+		trades = append(trades, page...)
+		if len(page) < apiLimit {
+			break
+		}
 	}
 
 	// Group trades by day

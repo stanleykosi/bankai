@@ -461,6 +461,7 @@ func (s *ProfileService) GetActivityHeatmap(ctx context.Context, address string)
 		return *cached, nil
 	}
 
+	oneYearAgo := time.Now().AddDate(-1, 0, 0).Format(time.RFC3339)
 	targets := []string{}
 	if profileAddress != "" {
 		targets = append(targets, profileAddress)
@@ -475,17 +476,26 @@ func (s *ProfileService) GetActivityHeatmap(ctx context.Context, address string)
 		if target == "" {
 			continue
 		}
-		activity, err := s.dataAPIClient.GetActivityHeatmap(ctx, target)
+		trades, err := s.fetchAllTrades(ctx, target, oneYearAgo)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		for _, dp := range activity {
-			existing := activityMap[dp.Date]
-			existing.Date = dp.Date
-			existing.TradeCount += dp.TradeCount
-			existing.Volume += dp.Volume
-			activityMap[dp.Date] = existing
+		for _, trade := range trades {
+			tradeTime := resolveTradeTime(trade.Timestamp)
+			if tradeTime.IsZero() {
+				continue
+			}
+			dateKey := tradeTime.Format("2006-01-02")
+			existing := activityMap[dateKey]
+			existing.Date = dateKey
+			existing.TradeCount++
+			if trade.Value > 0 {
+				existing.Volume += trade.Value
+			} else if trade.Price > 0 && trade.Size > 0 {
+				existing.Volume += trade.Price * trade.Size
+			}
+			activityMap[dateKey] = existing
 		}
 	}
 
@@ -600,12 +610,8 @@ func tradeKey(trade data_api.Trade) string {
 }
 
 func (s *ProfileService) aggregateTradeVolume(ctx context.Context, resolvedAddr, rawAddr string) (float64, float64, int, error) {
-	const limit = 1000
-	const maxOffset = 10000
-
 	totalVolume := 0.0
 	totalTrades := 0
-	takerOnly := false
 
 	targets := []string{}
 	if resolvedAddr != "" {
@@ -618,44 +624,24 @@ func (s *ProfileService) aggregateTradeVolume(ctx context.Context, resolvedAddr,
 
 	var lastErr error
 	for _, target := range targets {
-		offset := 0
-		for {
-			trades, err := s.dataAPIClient.GetTrades(ctx, target, &data_api.TradesParams{
-				Limit:     limit,
-				Offset:    offset,
-				TakerOnly: &takerOnly,
-			})
-			if err != nil {
-				lastErr = err
-				break
-			}
+		trades, err := s.fetchAllTrades(ctx, target, "")
+		if err != nil {
+			lastErr = err
+			continue
+		}
 
-			if len(trades) == 0 {
-				break
+		for _, trade := range trades {
+			key := tradeKey(trade)
+			if seen[key] {
+				continue
 			}
-
-			for _, trade := range trades {
-				key := tradeKey(trade)
-				if seen[key] {
-					continue
-				}
-				seen[key] = true
-				value := trade.Value
-				if value == 0 && trade.Price > 0 && trade.Size > 0 {
-					value = trade.Price * trade.Size
-				}
-				totalVolume += value
-				totalTrades++
+			seen[key] = true
+			value := trade.Value
+			if value == 0 && trade.Price > 0 && trade.Size > 0 {
+				value = trade.Price * trade.Size
 			}
-
-			if len(trades) < limit {
-				break
-			}
-
-			offset += limit
-			if offset > maxOffset {
-				break
-			}
+			totalVolume += value
+			totalTrades++
 		}
 	}
 
@@ -822,6 +808,75 @@ func (s *ProfileService) aggregatePnL(ctx context.Context, resolvedAddr, rawAddr
 	}
 
 	return result, nil
+}
+
+func (s *ProfileService) fetchAllTrades(ctx context.Context, address string, after string) ([]data_api.Trade, error) {
+	if address == "" {
+		return nil, nil
+	}
+
+	const limit = 500 // per Data API cap
+	const maxPages = 5000
+
+	var all []data_api.Trade
+	before := ""
+	takerOnly := false
+
+	for page := 0; page < maxPages; page++ {
+		params := &data_api.TradesParams{
+			Limit:     limit,
+			TakerOnly: &takerOnly,
+		}
+		if after != "" {
+			params.After = after
+		}
+		if before != "" {
+			params.Before = before
+		}
+
+		trades, err := s.dataAPIClient.GetTrades(ctx, address, params)
+		if err != nil {
+			return all, err
+		}
+		if len(trades) == 0 {
+			break
+		}
+
+		all = append(all, trades...)
+
+		// compute next "before" cursor using the oldest timestamp in this page
+		var minTs int64
+		for i, t := range trades {
+			if t.Timestamp <= 0 {
+				continue
+			}
+			if i == 0 || t.Timestamp < minTs {
+				minTs = t.Timestamp
+			}
+		}
+		if minTs == 0 {
+			break
+		}
+		var ts time.Time
+		if minTs > 1_000_000_000_000 {
+			ts = time.Unix(0, minTs*int64(time.Millisecond))
+		} else {
+			ts = time.Unix(minTs, 0)
+		}
+		before = ts.Add(-time.Millisecond).Format(time.RFC3339)
+	}
+
+	return all, nil
+}
+
+func resolveTradeTime(ts int64) time.Time {
+	if ts <= 0 {
+		return time.Time{}
+	}
+	if ts > 1_000_000_000_000 {
+		return time.Unix(0, ts*int64(time.Millisecond))
+	}
+	return time.Unix(ts, 0)
 }
 
 // GetMarketHolders fetches top holders for a market
