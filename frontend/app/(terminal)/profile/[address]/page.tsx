@@ -49,7 +49,7 @@ export default function TraderProfilePage() {
   const {
     data: tradesData,
     isLoading: isLoadingTrades,
-  } = useRecentTrades(address, 15);
+  } = useRecentTrades(address, 150);
 
   const isLoading = isLoadingProfile || !address;
 

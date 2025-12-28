@@ -6,15 +6,19 @@
  * Allows users to see what positions a trader holds for copy-trading.
  */
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { TrendingUp, TrendingDown, ExternalLink } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import type { Position } from "@/types";
 
 interface PositionsSpyProps {
   positions: Position[] | undefined;
   isLoading?: boolean;
 }
+
+const PAGE_SIZE = 15;
 
 function formatCurrency(value: number): string {
   if (Math.abs(value) >= 1_000_000) {
@@ -72,6 +76,22 @@ export function PositionsSpy({ positions, isLoading }: PositionsSpyProps) {
   const totalValue = positions.reduce((sum, position) => sum + position.currentValue, 0);
   const totalPnL = positions.reduce((sum, position) => sum + position.cashPnl, 0);
   const totalPnLColor = totalPnL >= 0 ? "text-emerald-400" : "text-rose-400";
+  const [page, setPage] = useState(1);
+
+  useEffect(() => {
+    if (!positions) {
+      setPage(1);
+      return;
+    }
+    const maxPage = Math.max(1, Math.ceil(positions.length / PAGE_SIZE));
+    setPage((prev) => Math.min(prev, maxPage));
+  }, [positions?.length]);
+
+  const totalPositions = positions.length;
+  const totalPages = Math.max(1, Math.ceil(totalPositions / PAGE_SIZE));
+  const startIndex = (page - 1) * PAGE_SIZE;
+  const endIndex = Math.min(startIndex + PAGE_SIZE, totalPositions);
+  const paginatedPositions = positions.slice(startIndex, endIndex);
 
   return (
     <Card className="border-border/60 bg-card/70">
@@ -111,7 +131,7 @@ export function PositionsSpy({ positions, isLoading }: PositionsSpyProps) {
               </tr>
             </thead>
             <tbody className="divide-y divide-border/30">
-              {positions.map((position, index) => {
+              {paginatedPositions.map((position, index) => {
                 const isProfitable = position.cashPnl >= 0;
                 const isYes = position.outcome?.toLowerCase() === "yes";
                 return (
@@ -172,6 +192,34 @@ export function PositionsSpy({ positions, isLoading }: PositionsSpyProps) {
               })}
             </tbody>
           </table>
+        </div>
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
+          <span className="font-mono">
+            Showing {startIndex + 1}-{endIndex} of {totalPositions}
+          </span>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+              disabled={page === 1}
+              className="h-8 px-3"
+            >
+              Prev
+            </Button>
+            <span className="font-mono text-foreground">
+              Page {page} / {totalPages}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
+              disabled={page === totalPages}
+              className="h-8 px-3"
+            >
+              Next
+            </Button>
+          </div>
         </div>
       </CardContent>
     </Card>

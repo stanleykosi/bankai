@@ -6,16 +6,20 @@
  * Renders side, outcome, size, price, and timestamp.
  */
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowUpRight, TrendingDown, TrendingUp } from "lucide-react";
 
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import type { Trade } from "@/types";
 
 interface RecentTradesProps {
   trades: Trade[] | undefined;
   isLoading?: boolean;
 }
+
+const PAGE_SIZE = 15;
 
 const formatCurrency = (value: number): string => {
   if (Math.abs(value) >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
@@ -39,6 +43,17 @@ const formatTimestamp = (timestamp: number): string => {
 };
 
 export function RecentTrades({ trades, isLoading }: RecentTradesProps) {
+  const [page, setPage] = useState(1);
+
+  useEffect(() => {
+    if (!trades || trades.length === 0) {
+      setPage(1);
+      return;
+    }
+    const maxPage = Math.max(1, Math.ceil(trades.length / PAGE_SIZE));
+    setPage((prev) => Math.min(prev, maxPage));
+  }, [trades?.length]);
+
   if (isLoading) {
     return (
       <Card className="border-border/60 bg-card/70">
@@ -74,6 +89,12 @@ export function RecentTrades({ trades, isLoading }: RecentTradesProps) {
     );
   }
 
+  const totalTrades = trades.length;
+  const totalPages = Math.max(1, Math.ceil(totalTrades / PAGE_SIZE));
+  const startIndex = (page - 1) * PAGE_SIZE;
+  const endIndex = Math.min(startIndex + PAGE_SIZE, totalTrades);
+  const paginatedTrades = trades.slice(startIndex, endIndex);
+
   return (
     <Card className="border-border/60 bg-card/70">
       <CardHeader className="pb-3">
@@ -85,12 +106,13 @@ export function RecentTrades({ trades, isLoading }: RecentTradesProps) {
             <h3 className="text-lg font-semibold text-foreground">Recent Trades</h3>
           </div>
           <span className="text-xs font-mono text-muted-foreground">
-            {trades.length} shown
+            Showing {Math.min(startIndex + 1, totalTrades)}-
+            {endIndex} of {totalTrades}
           </span>
         </div>
       </CardHeader>
       <CardContent className="space-y-3 pt-0">
-        {trades.map((trade) => {
+        {paginatedTrades.map((trade) => {
           const isBuy = trade.side === "BUY";
           const isYes = trade.outcome?.toUpperCase() === "YES";
           return (
@@ -142,6 +164,31 @@ export function RecentTrades({ trades, isLoading }: RecentTradesProps) {
             </div>
           );
         })}
+        <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
+          <span className="font-mono">
+            Page {page} / {totalPages}
+          </span>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+              disabled={page === 1}
+              className="h-8 px-3"
+            >
+              Prev
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
+              disabled={page === totalPages}
+              className="h-8 px-3"
+            >
+              Next
+            </Button>
+          </div>
+        </div>
       </CardContent>
     </Card>
   );
