@@ -321,8 +321,8 @@ func (s *ProfileService) GetTraderStats(ctx context.Context, address string) (*d
 
 	stats := &data_api.TraderStats{}
 
-	// Get PnL data (this also gets positions internally)
-	pnlData, err := s.dataAPIClient.GetPnL(ctx, profileAddress)
+	// Get PnL data (combine proxy + raw)
+	pnlData, err := s.aggregatePnL(ctx, profileAddress, address)
 	if err != nil {
 		logger.Error("ProfileService: Failed to get PnL: %v", err)
 	} else {
@@ -354,7 +354,7 @@ func (s *ProfileService) GetTraderStats(ctx context.Context, address string) (*d
 	}
 
 	// Get closed positions count
-	closedCount, err := s.countClosedPositions(ctx, profileAddress)
+	closedCount, err := s.countClosedPositions(ctx, profileAddress, address)
 	if err != nil {
 		logger.Error("ProfileService: Failed to count closed positions: %v", err)
 	} else {
@@ -574,10 +574,31 @@ func (s *ProfileService) GetRecentTrades(ctx context.Context, address string, li
 }
 
 func tradeKey(trade data_api.Trade) string {
+	if trade.TxHash != "" {
+		return fmt.Sprintf("%s:%d:%s:%s:%s:%.8f:%.8f:%s",
+			trade.TxHash,
+			trade.Timestamp,
+			trade.ConditionID,
+			trade.TokenID,
+			trade.Outcome,
+			trade.Price,
+			trade.Size,
+			trade.Side,
+		)
+	}
 	if trade.ID != "" {
 		return trade.ID
 	}
-	return fmt.Sprintf("%s:%d:%s:%s", trade.TxHash, trade.Timestamp, trade.Maker, trade.Taker)
+	return fmt.Sprintf("%s:%d:%s:%s:%s:%.8f:%.8f:%s",
+		trade.Maker,
+		trade.Timestamp,
+		trade.ConditionID,
+		trade.TokenID,
+		trade.Outcome,
+		trade.Price,
+		trade.Size,
+		trade.Side,
+	)
 }
 
 func (s *ProfileService) aggregateTradeVolume(ctx context.Context, resolvedAddr, rawAddr string) (float64, float64, int, error) {
@@ -733,31 +754,76 @@ func (s *ProfileService) fetchPositions(ctx context.Context, address string, lim
 	return nil, "", lastErr
 }
 
-func (s *ProfileService) countClosedPositions(ctx context.Context, address string) (int, error) {
+func (s *ProfileService) countClosedPositions(ctx context.Context, resolvedAddr, rawAddr string) (int, error) {
 	const limit = 500
 	const maxOffset = 10000
 
 	total := 0
-	offset := 0
+	targets := []string{}
+	if resolvedAddr != "" {
+		targets = append(targets, resolvedAddr)
+	}
+	if rawAddr != "" && !strings.EqualFold(rawAddr, resolvedAddr) {
+		targets = append(targets, rawAddr)
+	}
 
-	for {
-		positions, err := s.dataAPIClient.GetClosedPositions(ctx, address, limit, offset)
-		if err != nil {
-			return total, err
-		}
+	for _, target := range targets {
+		offset := 0
+		for {
+			positions, err := s.dataAPIClient.GetClosedPositions(ctx, target, limit, offset)
+			if err != nil {
+				return total, err
+			}
 
-		total += len(positions)
-		if len(positions) < limit {
-			break
-		}
+			total += len(positions)
+			if len(positions) < limit {
+				break
+			}
 
-		offset += limit
-		if offset > maxOffset {
-			break
+			offset += limit
+			if offset > maxOffset {
+				break
+			}
 		}
 	}
 
 	return total, nil
+}
+
+func (s *ProfileService) aggregatePnL(ctx context.Context, resolvedAddr, rawAddr string) (*data_api.PnLData, error) {
+	targets := []string{}
+	if resolvedAddr != "" {
+		targets = append(targets, resolvedAddr)
+	}
+	if rawAddr != "" && !strings.EqualFold(rawAddr, resolvedAddr) {
+		targets = append(targets, rawAddr)
+	}
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("no address provided for PnL")
+	}
+
+	result := &data_api.PnLData{}
+
+	for _, target := range targets {
+		pnlData, err := s.dataAPIClient.GetPnL(ctx, target)
+		if err != nil {
+			return nil, err
+		}
+
+		result.RealizedPnL += pnlData.RealizedPnL
+		result.UnrealizedPnL += pnlData.UnrealizedPnL
+		result.TotalPnL += pnlData.TotalPnL
+		result.WinningTrades += pnlData.WinningTrades
+		result.LosingTrades += pnlData.LosingTrades
+		result.TotalPositions += pnlData.TotalPositions
+	}
+
+	totalTrades := result.WinningTrades + result.LosingTrades
+	if totalTrades > 0 {
+		result.WinRate = float64(result.WinningTrades) / float64(totalTrades) * 100
+	}
+
+	return result, nil
 }
 
 // GetMarketHolders fetches top holders for a market
