@@ -575,7 +575,7 @@ func (s *ProfileService) GetRecentTrades(ctx context.Context, address string, li
 
 func tradeKey(trade data_api.Trade) string {
 	if trade.TxHash != "" {
-		return fmt.Sprintf("%s:%d:%s:%s:%s:%.8f:%.8f:%s",
+		return fmt.Sprintf("%s:%d:%s:%s:%s:%.8f:%.8f",
 			trade.TxHash,
 			trade.Timestamp,
 			trade.ConditionID,
@@ -583,13 +583,12 @@ func tradeKey(trade data_api.Trade) string {
 			trade.Outcome,
 			trade.Price,
 			trade.Size,
-			trade.Side,
 		)
 	}
 	if trade.ID != "" {
 		return trade.ID
 	}
-	return fmt.Sprintf("%s:%d:%s:%s:%s:%.8f:%.8f:%s",
+	return fmt.Sprintf("%s:%d:%s:%s:%s:%.8f:%.8f",
 		trade.Maker,
 		trade.Timestamp,
 		trade.ConditionID,
@@ -597,7 +596,6 @@ func tradeKey(trade data_api.Trade) string {
 		trade.Outcome,
 		trade.Price,
 		trade.Size,
-		trade.Side,
 	)
 }
 
