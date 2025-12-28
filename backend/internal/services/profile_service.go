@@ -472,14 +472,18 @@ func (s *ProfileService) GetActivityHeatmap(ctx context.Context, address string)
 
 	activityMap := make(map[string]data_api.ActivityDataPoint)
 	var lastErr error
+	partial := false
 	for _, target := range targets {
 		if target == "" {
 			continue
 		}
-		trades, err := s.fetchAllTrades(ctx, target, oneYearAgo)
+		trades, wasPartial, err := s.fetchTradesWithCursor(ctx, target, oneYearAgo)
 		if err != nil {
 			lastErr = err
 			continue
+		}
+		if wasPartial {
+			partial = true
 		}
 		for _, trade := range trades {
 			tradeTime := resolveTradeTime(trade.Timestamp)
@@ -504,6 +508,10 @@ func (s *ProfileService) GetActivityHeatmap(ctx context.Context, address string)
 			return nil, lastErr
 		}
 		return nil, nil
+	}
+
+	if partial {
+		logger.Info("ProfileService: Activity heatmap built with partial data for addresses %v", targets)
 	}
 
 	// Convert map to slice and recompute levels based on merged counts
@@ -623,11 +631,15 @@ func (s *ProfileService) aggregateTradeVolume(ctx context.Context, resolvedAddr,
 	seen := make(map[string]bool)
 
 	var lastErr error
+	partial := false
 	for _, target := range targets {
-		trades, err := s.fetchAllTrades(ctx, target, "")
+		trades, wasPartial, err := s.fetchTradesWithCursor(ctx, target, "")
 		if err != nil {
 			lastErr = err
 			continue
+		}
+		if wasPartial {
+			partial = true
 		}
 
 		for _, trade := range trades {
@@ -652,6 +664,10 @@ func (s *ProfileService) aggregateTradeVolume(ctx context.Context, resolvedAddr,
 
 	if lastErr != nil && totalTrades == 0 {
 		return totalVolume, avgTradeSize, totalTrades, lastErr
+	}
+
+	if partial {
+		logger.Info("ProfileService: Trade aggregation returned partial data for addresses %v", targets)
 	}
 
 	return totalVolume, avgTradeSize, totalTrades, nil
@@ -817,12 +833,17 @@ func (s *ProfileService) fetchAllTrades(ctx context.Context, address string, aft
 
 	const limit = 500 // per Data API cap
 	const maxPages = 5000
+	const pageDelay = 150 * time.Millisecond // stay under 75 req / 10s
 
 	var all []data_api.Trade
 	before := ""
 	takerOnly := false
 
 	for page := 0; page < maxPages; page++ {
+		if page > 0 {
+			time.Sleep(pageDelay)
+		}
+
 		params := &data_api.TradesParams{
 			Limit:     limit,
 			TakerOnly: &takerOnly,
@@ -836,6 +857,10 @@ func (s *ProfileService) fetchAllTrades(ctx context.Context, address string, aft
 
 		trades, err := s.dataAPIClient.GetTrades(ctx, address, params)
 		if err != nil {
+			// If we hit rate limit but already have data, return partial results.
+			if strings.Contains(err.Error(), "status 429") && len(all) > 0 {
+				return all, nil
+			}
 			return all, err
 		}
 		if len(trades) == 0 {
@@ -877,6 +902,89 @@ func resolveTradeTime(ts int64) time.Time {
 		return time.Unix(0, ts*int64(time.Millisecond))
 	}
 	return time.Unix(ts, 0)
+}
+
+// fetchTradesWithCursor pulls trades with time-window pagination (before cursor) and rate limiting.
+// Returns partial=true if a rate limit is hit after some data is collected.
+func (s *ProfileService) fetchTradesWithCursor(ctx context.Context, address string, after string) ([]data_api.Trade, bool, error) {
+	if address == "" {
+		return nil, false, nil
+	}
+
+	const limit = 500 // per Data API cap
+	const maxPages = 5000
+	const baseDelay = 150 * time.Millisecond // < 75 req / 10s per docs
+	const maxAttempts = 3
+
+	var all []data_api.Trade
+	before := ""
+	takerOnly := false
+	partial := false
+
+	for page := 0; page < maxPages; page++ {
+		if page > 0 {
+			time.Sleep(baseDelay)
+		}
+
+		params := &data_api.TradesParams{
+			Limit:     limit,
+			TakerOnly: &takerOnly,
+		}
+		if after != "" {
+			params.After = after
+		}
+		if before != "" {
+			params.Before = before
+		}
+
+		var trades []data_api.Trade
+		var err error
+
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			trades, err = s.dataAPIClient.GetTrades(ctx, address, params)
+			if err == nil {
+				break
+			}
+			if strings.Contains(err.Error(), "status 429") {
+				if attempt == maxAttempts-1 {
+					if len(all) > 0 {
+						return all, true, nil
+					}
+					return all, true, err
+				}
+				time.Sleep(baseDelay * time.Duration(attempt+1))
+				continue
+			}
+			return all, partial, err
+		}
+
+		if len(trades) == 0 {
+			break
+		}
+
+		all = append(all, trades...)
+
+		var minTs int64
+		for i, t := range trades {
+			if t.Timestamp <= 0 {
+				continue
+			}
+			if i == 0 || t.Timestamp < minTs {
+				minTs = t.Timestamp
+			}
+		}
+		if minTs == 0 {
+			break
+		}
+		ts := resolveTradeTime(minTs)
+		before = ts.Add(-time.Millisecond).Format(time.RFC3339)
+	}
+
+	if partial {
+		return all, true, nil
+	}
+
+	return all, false, nil
 }
 
 // GetMarketHolders fetches top holders for a market
