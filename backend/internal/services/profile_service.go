@@ -334,7 +334,7 @@ func (s *ProfileService) GetTraderStats(ctx context.Context, address string) (*d
 	}
 
 	// Compute volume stats from trades
-	tradeVolume, avgTradeSize, tradeCount, err := s.aggregateTradeVolume(ctx, profileAddress)
+	tradeVolume, avgTradeSize, tradeCount, err := s.aggregateTradeVolume(ctx, profileAddress, address)
 	if err != nil {
 		logger.Error("ProfileService: Failed to aggregate trade volume: %v", err)
 	} else {
@@ -461,10 +461,68 @@ func (s *ProfileService) GetActivityHeatmap(ctx context.Context, address string)
 		return *cached, nil
 	}
 
-	// Cache miss - fetch from API
-	activity, err := s.dataAPIClient.GetActivityHeatmap(ctx, profileAddress)
-	if err != nil {
-		return nil, err
+	targets := []string{}
+	if profileAddress != "" {
+		targets = append(targets, profileAddress)
+	}
+	if address != "" && !strings.EqualFold(address, profileAddress) {
+		targets = append(targets, address)
+	}
+
+	activityMap := make(map[string]data_api.ActivityDataPoint)
+	var lastErr error
+	for _, target := range targets {
+		if target == "" {
+			continue
+		}
+		activity, err := s.dataAPIClient.GetActivityHeatmap(ctx, target)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		for _, dp := range activity {
+			existing := activityMap[dp.Date]
+			existing.Date = dp.Date
+			existing.TradeCount += dp.TradeCount
+			existing.Volume += dp.Volume
+			activityMap[dp.Date] = existing
+		}
+	}
+
+	if len(activityMap) == 0 {
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, nil
+	}
+
+	// Convert map to slice and recompute levels based on merged counts
+	var activity []data_api.ActivityDataPoint
+	maxTrades := 0
+	for _, dp := range activityMap {
+		if dp.TradeCount > maxTrades {
+			maxTrades = dp.TradeCount
+		}
+		activity = append(activity, dp)
+	}
+	for i := range activity {
+		if maxTrades == 0 {
+			activity[i].Level = 0
+			continue
+		}
+		ratio := float64(activity[i].TradeCount) / float64(maxTrades)
+		switch {
+		case ratio == 0:
+			activity[i].Level = 0
+		case ratio < 0.25:
+			activity[i].Level = 1
+		case ratio < 0.50:
+			activity[i].Level = 2
+		case ratio < 0.75:
+			activity[i].Level = 3
+		default:
+			activity[i].Level = 4
+		}
 	}
 
 	// Cache with longer TTL (activity is historical, changes slowly)
@@ -515,51 +573,80 @@ func (s *ProfileService) GetRecentTrades(ctx context.Context, address string, li
 	return trades, nil
 }
 
-func (s *ProfileService) aggregateTradeVolume(ctx context.Context, address string) (float64, float64, int, error) {
+func tradeKey(trade data_api.Trade) string {
+	if trade.ID != "" {
+		return trade.ID
+	}
+	return fmt.Sprintf("%s:%d:%s:%s", trade.TxHash, trade.Timestamp, trade.Maker, trade.Taker)
+}
+
+func (s *ProfileService) aggregateTradeVolume(ctx context.Context, resolvedAddr, rawAddr string) (float64, float64, int, error) {
 	const limit = 1000
 	const maxOffset = 10000
 
 	totalVolume := 0.0
 	totalTrades := 0
-	offset := 0
 	takerOnly := false
 
-	for {
-		trades, err := s.dataAPIClient.GetTrades(ctx, address, &data_api.TradesParams{
-			Limit:     limit,
-			Offset:    offset,
-			TakerOnly: &takerOnly,
-		})
-		if err != nil {
-			return totalVolume, 0, totalTrades, err
-		}
+	targets := []string{}
+	if resolvedAddr != "" {
+		targets = append(targets, resolvedAddr)
+	}
+	if rawAddr != "" && !strings.EqualFold(rawAddr, resolvedAddr) {
+		targets = append(targets, rawAddr)
+	}
+	seen := make(map[string]bool)
 
-		if len(trades) == 0 {
-			break
-		}
-
-		for _, trade := range trades {
-			value := trade.Value
-			if value == 0 && trade.Price > 0 && trade.Size > 0 {
-				value = trade.Price * trade.Size
+	var lastErr error
+	for _, target := range targets {
+		offset := 0
+		for {
+			trades, err := s.dataAPIClient.GetTrades(ctx, target, &data_api.TradesParams{
+				Limit:     limit,
+				Offset:    offset,
+				TakerOnly: &takerOnly,
+			})
+			if err != nil {
+				lastErr = err
+				break
 			}
-			totalVolume += value
-		}
-		totalTrades += len(trades)
 
-		if len(trades) < limit {
-			break
-		}
+			if len(trades) == 0 {
+				break
+			}
 
-		offset += limit
-		if offset > maxOffset {
-			break
+			for _, trade := range trades {
+				key := tradeKey(trade)
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				value := trade.Value
+				if value == 0 && trade.Price > 0 && trade.Size > 0 {
+					value = trade.Price * trade.Size
+				}
+				totalVolume += value
+				totalTrades++
+			}
+
+			if len(trades) < limit {
+				break
+			}
+
+			offset += limit
+			if offset > maxOffset {
+				break
+			}
 		}
 	}
 
 	avgTradeSize := 0.0
 	if totalTrades > 0 {
 		avgTradeSize = totalVolume / float64(totalTrades)
+	}
+
+	if lastErr != nil && totalTrades == 0 {
+		return totalVolume, avgTradeSize, totalTrades, lastErr
 	}
 
 	return totalVolume, avgTradeSize, totalTrades, nil
