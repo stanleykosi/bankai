@@ -865,15 +865,6 @@ func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []strin
 	summary := tradeSummary{byDate: byDate}
 	start := time.Now()
 
-	afterParam := ""
-	if after != "" {
-		if t, err := time.Parse(time.RFC3339, after); err == nil {
-			afterParam = strconv.FormatInt(t.Unix(), 10)
-		} else {
-			afterParam = after
-		}
-	}
-
 	for _, address := range addresses {
 		if address == "" {
 			continue
@@ -902,8 +893,8 @@ func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []strin
 				Limit:     limit,
 				TakerOnly: boolPtr(false),
 			}
-			if afterParam != "" {
-				params.After = afterParam
+			if after != "" {
+				params.After = after
 			}
 			if before != "" {
 				params.Before = before
@@ -976,11 +967,8 @@ func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []strin
 				logger.Info("ProfileService: accumulateTrades minTs=0 break for %s after %d pages, total=%d", address, pagesFetched, summary.totalTrades)
 				break
 			}
-			minTsSec := minTs
-			if minTsSec > 1_000_000_000_000 {
-				minTsSec = minTsSec / 1000
-			}
-			nextBefore := strconv.FormatInt(minTsSec-1, 10)
+			ts := resolveTradeTime(minTs)
+			nextBefore := ts.Add(-time.Millisecond).Format(time.RFC3339)
 			if nextBefore == before {
 				logger.Info("ProfileService: accumulateTrades stalled cursor for %s after %d pages, total=%d", address, pagesFetched, summary.totalTrades)
 				break
