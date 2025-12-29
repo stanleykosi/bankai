@@ -470,47 +470,17 @@ func (s *ProfileService) GetActivityHeatmap(ctx context.Context, address string)
 		targets = append(targets, address)
 	}
 
-	activityMap := make(map[string]data_api.ActivityDataPoint)
-	var lastErr error
-	partial := false
-	for _, target := range targets {
-		if target == "" {
-			continue
-		}
-		trades, wasPartial, err := s.fetchTradesWithCursor(ctx, target, oneYearAgo)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if wasPartial {
-			partial = true
-		}
-		for _, trade := range trades {
-			tradeTime := resolveTradeTime(trade.Timestamp)
-			if tradeTime.IsZero() {
-				continue
-			}
-			dateKey := tradeTime.Format("2006-01-02")
-			existing := activityMap[dateKey]
-			existing.Date = dateKey
-			existing.TradeCount++
-			if trade.Value > 0 {
-				existing.Volume += trade.Value
-			} else if trade.Price > 0 && trade.Size > 0 {
-				existing.Volume += trade.Price * trade.Size
-			}
-			activityMap[dateKey] = existing
-		}
+	summary, err := s.accumulateTrades(ctx, targets, oneYearAgo, true)
+	if err != nil {
+		logger.Error("ProfileService: Failed to accumulate trades for activity: %v", err)
+		return nil, err
 	}
-
+	activityMap := summary.byDate
 	if len(activityMap) == 0 {
-		if lastErr != nil {
-			return nil, lastErr
-		}
 		return nil, nil
 	}
 
-	if partial {
+	if summary.partial {
 		logger.Info("ProfileService: Activity heatmap built with partial data for addresses %v", targets)
 	}
 
@@ -618,9 +588,6 @@ func tradeKey(trade data_api.Trade) string {
 }
 
 func (s *ProfileService) aggregateTradeVolume(ctx context.Context, resolvedAddr, rawAddr string) (float64, float64, int, error) {
-	totalVolume := 0.0
-	totalTrades := 0
-
 	targets := []string{}
 	if resolvedAddr != "" {
 		targets = append(targets, resolvedAddr)
@@ -628,49 +595,22 @@ func (s *ProfileService) aggregateTradeVolume(ctx context.Context, resolvedAddr,
 	if rawAddr != "" && !strings.EqualFold(rawAddr, resolvedAddr) {
 		targets = append(targets, rawAddr)
 	}
-	seen := make(map[string]bool)
 
-	var lastErr error
-	partial := false
-	for _, target := range targets {
-		trades, wasPartial, err := s.fetchTradesWithCursor(ctx, target, "")
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if wasPartial {
-			partial = true
-		}
-
-		for _, trade := range trades {
-			key := tradeKey(trade)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			value := trade.Value
-			if value == 0 && trade.Price > 0 && trade.Size > 0 {
-				value = trade.Price * trade.Size
-			}
-			totalVolume += value
-			totalTrades++
-		}
+	summary, err := s.accumulateTrades(ctx, targets, "", false)
+	if err != nil {
+		return 0, 0, 0, err
 	}
 
 	avgTradeSize := 0.0
-	if totalTrades > 0 {
-		avgTradeSize = totalVolume / float64(totalTrades)
+	if summary.totalTrades > 0 {
+		avgTradeSize = summary.totalVolume / float64(summary.totalTrades)
 	}
 
-	if lastErr != nil && totalTrades == 0 {
-		return totalVolume, avgTradeSize, totalTrades, lastErr
-	}
-
-	if partial {
+	if summary.partial {
 		logger.Info("ProfileService: Trade aggregation returned partial data for addresses %v", targets)
 	}
 
-	return totalVolume, avgTradeSize, totalTrades, nil
+	return summary.totalVolume, avgTradeSize, summary.totalTrades, nil
 }
 
 func (s *ProfileService) countOpenPositions(ctx context.Context, resolvedAddr, rawAddr string) (int, error) {
@@ -904,92 +844,115 @@ func resolveTradeTime(ts int64) time.Time {
 	return time.Unix(ts, 0)
 }
 
-// fetchTradesWithCursor pulls trades with time-window pagination (before cursor) and rate limiting.
-// Returns partial=true if a rate limit is hit after some data is collected.
-func (s *ProfileService) fetchTradesWithCursor(ctx context.Context, address string, after string) ([]data_api.Trade, bool, error) {
-	if address == "" {
-		return nil, false, nil
-	}
+type tradeSummary struct {
+	totalTrades int
+	totalVolume float64
+	byDate      map[string]data_api.ActivityDataPoint
+	partial     bool
+}
 
-	const limit = 500                        // per Data API cap
-	const maxPages = 200                     // safeguard on pagination depth
+// accumulateTrades fetches trades across addresses with time-window pagination, dedups by tradeKey, and optionally aggregates by day.
+func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []string, after string, includeDates bool) (tradeSummary, error) {
+	const limit = 500                        // Data API cap
+	const maxPages = 500                     // safety bound on pagination depth
 	const baseDelay = 150 * time.Millisecond // < 75 req / 10s per docs
 	const maxAttempts = 3
-	const maxTrades = 20000 // hard cap to avoid OOM
 
-	var all []data_api.Trade
-	before := ""
-	takerOnly := false
-	partial := false
+	seen := make(map[string]bool)
+	byDate := make(map[string]data_api.ActivityDataPoint)
+	summary := tradeSummary{byDate: byDate}
 
-	for page := 0; page < maxPages; page++ {
-		if page > 0 {
-			time.Sleep(baseDelay)
+	for _, address := range addresses {
+		if address == "" {
+			continue
 		}
+		before := ""
+		for page := 0; page < maxPages; page++ {
+			if page > 0 {
+				time.Sleep(baseDelay)
+			}
 
-		params := &data_api.TradesParams{
-			Limit:     limit,
-			TakerOnly: &takerOnly,
-		}
-		if after != "" {
-			params.After = after
-		}
-		if before != "" {
-			params.Before = before
-		}
+			params := &data_api.TradesParams{
+				Limit:     limit,
+				TakerOnly: boolPtr(false),
+			}
+			if after != "" {
+				params.After = after
+			}
+			if before != "" {
+				params.Before = before
+			}
 
-		var trades []data_api.Trade
-		var err error
+			var trades []data_api.Trade
+			var err error
+			for attempt := 0; attempt < maxAttempts; attempt++ {
+				trades, err = s.dataAPIClient.GetTrades(ctx, address, params)
+				if err == nil {
+					break
+				}
+				if strings.Contains(err.Error(), "status 429") {
+					if attempt == maxAttempts-1 {
+						summary.partial = true
+						trades = nil
+						err = nil
+						break
+					}
+					time.Sleep(baseDelay * time.Duration(attempt+1))
+					continue
+				}
+				return summary, err
+			}
 
-		for attempt := 0; attempt < maxAttempts; attempt++ {
-			trades, err = s.dataAPIClient.GetTrades(ctx, address, params)
-			if err == nil {
+			if len(trades) == 0 {
 				break
 			}
-			if strings.Contains(err.Error(), "status 429") {
-				if attempt == maxAttempts-1 {
-					if len(all) > 0 {
-						return all, true, nil
-					}
-					// treat as partial empty rather than hard error to avoid 500s
-					return all, true, nil
+
+			var minTs int64
+			for i, trade := range trades {
+				if trade.Timestamp > 0 && (i == 0 || trade.Timestamp < minTs) {
+					minTs = trade.Timestamp
 				}
-				time.Sleep(baseDelay * time.Duration(attempt+1))
-				continue
+
+				key := tradeKey(trade)
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+
+				value := trade.Value
+				if value == 0 && trade.Price > 0 && trade.Size > 0 {
+					value = trade.Price * trade.Size
+				}
+				summary.totalTrades++
+				summary.totalVolume += value
+
+				if includeDates {
+					tradeTime := resolveTradeTime(trade.Timestamp)
+					if tradeTime.IsZero() {
+						continue
+					}
+					dateKey := tradeTime.Format("2006-01-02")
+					dp := byDate[dateKey]
+					dp.Date = dateKey
+					dp.TradeCount++
+					dp.Volume += value
+					byDate[dateKey] = dp
+				}
 			}
-			return all, partial, err
-		}
 
-		if len(trades) == 0 {
-			break
-		}
-
-		all = append(all, trades...)
-
-		// stop if we hit our hard cap to avoid memory blowups
-		if len(all) >= maxTrades {
-			partial = true
-			all = all[:maxTrades]
-			break
-		}
-
-		var minTs int64
-		for i, t := range trades {
-			if t.Timestamp <= 0 {
-				continue
+			if minTs == 0 {
+				break
 			}
-			if i == 0 || t.Timestamp < minTs {
-				minTs = t.Timestamp
-			}
+			ts := resolveTradeTime(minTs)
+			before = ts.Add(-time.Millisecond).Format(time.RFC3339)
 		}
-		if minTs == 0 {
-			break
-		}
-		ts := resolveTradeTime(minTs)
-		before = ts.Add(-time.Millisecond).Format(time.RFC3339)
 	}
 
-	return all, partial, nil
+	return summary, nil
+}
+
+func boolPtr[T any](v T) *T {
+	return &v
 }
 
 // GetMarketHolders fetches top holders for a market
