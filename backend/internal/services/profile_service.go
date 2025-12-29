@@ -854,13 +854,15 @@ type tradeSummary struct {
 // accumulateTrades fetches trades across addresses with time-window pagination, dedups by tradeKey, and optionally aggregates by day.
 func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []string, after string, includeDates bool) (tradeSummary, error) {
 	const limit = 500                        // Data API cap
-	const maxPages = 500                     // safety bound on pagination depth
-	const baseDelay = 150 * time.Millisecond // < 75 req / 10s per docs
+	const maxPages = 100                     // bounded to reduce latency while allowing deeper history
+	const baseDelay = 150 * time.Millisecond // stay under 75 req / 10s per docs
 	const maxAttempts = 3
+	const maxDuration = 10 * time.Second // stop accumulating if taking too long
 
 	seen := make(map[string]bool)
 	byDate := make(map[string]data_api.ActivityDataPoint)
 	summary := tradeSummary{byDate: byDate}
+	start := time.Now()
 
 	for _, address := range addresses {
 		if address == "" {
@@ -868,8 +870,19 @@ func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []strin
 		}
 		before := ""
 		for page := 0; page < maxPages; page++ {
+			if ctx.Err() != nil {
+				summary.partial = true
+				return summary, ctx.Err()
+			}
+
 			if page > 0 {
 				time.Sleep(baseDelay)
+			}
+
+			// Stop if we've spent too long fetching
+			if time.Since(start) > maxDuration {
+				summary.partial = true
+				return summary, nil
 			}
 
 			params := &data_api.TradesParams{
@@ -899,6 +912,10 @@ func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []strin
 					}
 					time.Sleep(baseDelay * time.Duration(attempt+1))
 					continue
+				}
+				if ctx.Err() != nil {
+					summary.partial = true
+					return summary, ctx.Err()
 				}
 				return summary, err
 			}
