@@ -854,10 +854,10 @@ type tradeSummary struct {
 // accumulateTrades fetches trades across addresses with time-window pagination, dedups by tradeKey, and optionally aggregates by day.
 func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []string, after string, includeDates bool) (tradeSummary, error) {
 	const limit = 500                        // Data API cap
-	const maxPages = 100                     // bounded to reduce latency while allowing deeper history
-	const baseDelay = 150 * time.Millisecond // stay under 75 req / 10s per docs
-	const maxAttempts = 3
-	const maxDuration = 10 * time.Second // stop accumulating if taking too long
+	const maxPages = 200                     // allow deeper history while bounded
+	const baseDelay = 100 * time.Millisecond // stay under 75 req / 10s per docs
+	const maxAttempts = 5
+	const maxDuration = 30 * time.Second // stop accumulating if taking too long
 
 	seen := make(map[string]bool)
 	byDate := make(map[string]data_api.ActivityDataPoint)
