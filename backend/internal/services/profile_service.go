@@ -857,12 +857,21 @@ func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []strin
 	const maxPages = 300                     // allow deeper history while bounded
 	const baseDelay = 100 * time.Millisecond // stay under 75 req / 10s per docs
 	const maxAttempts = 5
-	const maxDuration = 45 * time.Second // stop accumulating if taking too long
+	const maxDuration = 30 * time.Second // stop accumulating if taking too long
 
 	seen := make(map[string]bool)
 	byDate := make(map[string]data_api.ActivityDataPoint)
 	summary := tradeSummary{byDate: byDate}
 	start := time.Now()
+
+	afterParam := ""
+	if after != "" {
+		if t, err := time.Parse(time.RFC3339, after); err == nil {
+			afterParam = strconv.FormatInt(t.Unix(), 10)
+		} else {
+			afterParam = after
+		}
+	}
 
 	for _, address := range addresses {
 		if address == "" {
@@ -892,8 +901,8 @@ func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []strin
 				Limit:     limit,
 				TakerOnly: boolPtr(false),
 			}
-			if after != "" {
-				params.After = after
+			if afterParam != "" {
+				params.After = afterParam
 			}
 			if before != "" {
 				params.Before = before
@@ -966,8 +975,16 @@ func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []strin
 				logger.Info("ProfileService: accumulateTrades minTs=0 break for %s after %d pages, total=%d", address, pagesFetched, summary.totalTrades)
 				break
 			}
-			ts := resolveTradeTime(minTs)
-			before = ts.Add(-time.Millisecond).Format(time.RFC3339)
+			minTsSec := minTs
+			if minTsSec > 1_000_000_000_000 {
+				minTsSec = minTsSec / 1000
+			}
+			nextBefore := strconv.FormatInt(minTsSec-1, 10)
+			if nextBefore == before {
+				logger.Info("ProfileService: accumulateTrades stalled cursor for %s after %d pages, total=%d", address, pagesFetched, summary.totalTrades)
+				break
+			}
+			before = nextBefore
 			pagesFetched++
 		}
 		logger.Info("ProfileService: accumulateTrades finished address %s pages=%d totalTrades=%d volume=%.2f partial=%v", address, pagesFetched, summary.totalTrades, summary.totalVolume, summary.partial)
