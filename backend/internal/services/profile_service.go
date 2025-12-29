@@ -854,10 +854,10 @@ type tradeSummary struct {
 // accumulateTrades fetches trades across addresses with time-window pagination, dedups by tradeKey, and optionally aggregates by day.
 func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []string, after string, includeDates bool) (tradeSummary, error) {
 	const limit = 500                        // Data API cap
-	const maxPages = 200                     // allow deeper history while bounded
+	const maxPages = 300                     // allow deeper history while bounded
 	const baseDelay = 100 * time.Millisecond // stay under 75 req / 10s per docs
 	const maxAttempts = 5
-	const maxDuration = 30 * time.Second // stop accumulating if taking too long
+	const maxDuration = 45 * time.Second // stop accumulating if taking too long
 
 	seen := make(map[string]bool)
 	byDate := make(map[string]data_api.ActivityDataPoint)
@@ -869,8 +869,10 @@ func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []strin
 			continue
 		}
 		before := ""
+		pagesFetched := 0
 		for page := 0; page < maxPages; page++ {
 			if ctx.Err() != nil {
+				logger.Info("ProfileService: accumulateTrades canceled for %s after %d pages (ctx canceled), total=%d", address, pagesFetched, summary.totalTrades)
 				summary.partial = true
 				return summary, ctx.Err()
 			}
@@ -881,6 +883,7 @@ func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []strin
 
 			// Stop if we've spent too long fetching
 			if time.Since(start) > maxDuration {
+				logger.Info("ProfileService: accumulateTrades timed out for %s after %d pages, total=%d", address, pagesFetched, summary.totalTrades)
 				summary.partial = true
 				return summary, nil
 			}
@@ -914,6 +917,7 @@ func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []strin
 					continue
 				}
 				if ctx.Err() != nil {
+					logger.Info("ProfileService: accumulateTrades canceled mid-retry for %s after %d pages, total=%d", address, pagesFetched, summary.totalTrades)
 					summary.partial = true
 					return summary, ctx.Err()
 				}
@@ -921,6 +925,7 @@ func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []strin
 			}
 
 			if len(trades) == 0 {
+				logger.Info("ProfileService: accumulateTrades reached empty page for %s after %d pages, total=%d", address, pagesFetched, summary.totalTrades)
 				break
 			}
 
@@ -958,11 +963,14 @@ func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []strin
 			}
 
 			if minTs == 0 {
+				logger.Info("ProfileService: accumulateTrades minTs=0 break for %s after %d pages, total=%d", address, pagesFetched, summary.totalTrades)
 				break
 			}
 			ts := resolveTradeTime(minTs)
 			before = ts.Add(-time.Millisecond).Format(time.RFC3339)
+			pagesFetched++
 		}
+		logger.Info("ProfileService: accumulateTrades finished address %s pages=%d totalTrades=%d volume=%.2f partial=%v", address, pagesFetched, summary.totalTrades, summary.totalVolume, summary.partial)
 	}
 
 	return summary, nil
