@@ -911,10 +911,11 @@ func (s *ProfileService) fetchTradesWithCursor(ctx context.Context, address stri
 		return nil, false, nil
 	}
 
-	const limit = 500 // per Data API cap
-	const maxPages = 5000
+	const limit = 500                        // per Data API cap
+	const maxPages = 200                     // safeguard on pagination depth
 	const baseDelay = 150 * time.Millisecond // < 75 req / 10s per docs
 	const maxAttempts = 3
+	const maxTrades = 20000 // hard cap to avoid OOM
 
 	var all []data_api.Trade
 	before := ""
@@ -950,7 +951,8 @@ func (s *ProfileService) fetchTradesWithCursor(ctx context.Context, address stri
 					if len(all) > 0 {
 						return all, true, nil
 					}
-					return all, true, err
+					// treat as partial empty rather than hard error to avoid 500s
+					return all, true, nil
 				}
 				time.Sleep(baseDelay * time.Duration(attempt+1))
 				continue
@@ -963,6 +965,13 @@ func (s *ProfileService) fetchTradesWithCursor(ctx context.Context, address stri
 		}
 
 		all = append(all, trades...)
+
+		// stop if we hit our hard cap to avoid memory blowups
+		if len(all) >= maxTrades {
+			partial = true
+			all = all[:maxTrades]
+			break
+		}
 
 		var minTs int64
 		for i, t := range trades {
@@ -980,11 +989,7 @@ func (s *ProfileService) fetchTradesWithCursor(ctx context.Context, address stri
 		before = ts.Add(-time.Millisecond).Format(time.RFC3339)
 	}
 
-	if partial {
-		return all, true, nil
-	}
-
-	return all, false, nil
+	return all, partial, nil
 }
 
 // GetMarketHolders fetches top holders for a market
