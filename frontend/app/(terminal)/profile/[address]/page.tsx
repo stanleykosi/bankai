@@ -13,14 +13,11 @@ import { ArrowLeft, Loader2, RefreshCcw, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ProfileHeader } from "@/components/profile/ProfileHeader";
 import { StatsCards } from "@/components/profile/StatsCards";
-import { ActivityHeatmap } from "@/components/profile/ActivityHeatmap";
 import { PositionsSpy } from "@/components/profile/PositionsSpy";
 import { RecentTrades } from "@/components/profile/RecentTrades";
-
 import {
   useTraderProfile,
   useTraderPositions,
-  useActivityHeatmap,
   useRecentTrades,
 } from "@/hooks/useTraderProfile";
 
@@ -40,11 +37,6 @@ export default function TraderProfilePage() {
     data: positionsData,
     isLoading: isLoadingPositions,
   } = useTraderPositions(address, 200, 0, "CASHPNL");
-
-  const {
-    data: activityData,
-    isLoading: isLoadingActivity,
-  } = useActivityHeatmap(address);
 
   const {
     data: tradesData,
@@ -141,22 +133,14 @@ export default function TraderProfilePage() {
           <StatsCards stats={profile.stats} isLoading={isLoadingProfile} />
         </section>
 
-        <section className="grid gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
-          <div className="space-y-6">
-            <div className="animate-in fade-in slide-in-from-bottom-2 duration-700 delay-150">
-              <PositionsSpy
-                positions={positionsData?.positions}
-                isLoading={isLoadingPositions}
-              />
-            </div>
-            <div className="animate-in fade-in slide-in-from-bottom-2 duration-700 delay-200">
-              <ActivityHeatmap
-                activity={activityData?.activity}
-                isLoading={isLoadingActivity}
-              />
-            </div>
+        <section className="grid gap-6 lg:grid-cols-2">
+          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-700 delay-150">
+            <PositionsSpy
+              positions={positionsData?.positions}
+              isLoading={isLoadingPositions}
+            />
           </div>
-          <div className="animate-in fade-in slide-in-from-bottom-2 duration-700 delay-250">
+          <div className="animate-in fade-in slide-in-from-bottom-2 duration-700 delay-200">
             <RecentTrades trades={tradesData?.trades} isLoading={isLoadingTrades} />
           </div>
         </section>

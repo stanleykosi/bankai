@@ -117,28 +117,7 @@ func (h *ProfileHandler) GetTraderPositions(c *fiber.Ctx) error {
 	})
 }
 
-// GetActivityHeatmap returns trade activity data for heatmap
-// GET /api/v1/profile/:address/activity
-func (h *ProfileHandler) GetActivityHeatmap(c *fiber.Ctx) error {
-	address := c.Params("address")
-	if address == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Address is required",
-		})
-	}
 
-	activity, err := h.profileService.GetActivityHeatmap(c.Context(), address)
-	if err != nil {
-		logger.Error("ProfileHandler: Failed to get activity: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to fetch activity data",
-		})
-	}
-
-	return c.JSON(fiber.Map{
-		"activity": activity,
-	})
-}
 
 // GetRecentTrades returns recent trades for a trader
 // GET /api/v1/profile/:address/trades

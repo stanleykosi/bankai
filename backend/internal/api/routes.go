@@ -124,7 +124,6 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	profile.Get("/:address", profileHandler.GetTraderProfile)
 	profile.Get("/:address/stats", profileHandler.GetTraderStats)
 	profile.Get("/:address/positions", profileHandler.GetTraderPositions)
-	profile.Get("/:address/activity", profileHandler.GetActivityHeatmap)
 	profile.Get("/:address/trades", profileHandler.GetRecentTrades)
 
 	// User Routes (Protected)

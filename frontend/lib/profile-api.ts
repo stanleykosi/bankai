@@ -13,7 +13,6 @@ import type {
   TraderProfileResponse,
   TraderStats,
   PositionsResponse,
-  ActivityResponse,
   TradesResponse,
 } from "@/types";
 
@@ -53,18 +52,6 @@ export async function fetchTraderPositions(
   const response = await api.get<PositionsResponse>(
     `/profile/${address}/positions`,
     { params: { limit, offset, sortBy } }
-  );
-  return response.data;
-}
-
-/**
- * Fetch trader activity heatmap data
- */
-export async function fetchActivityHeatmap(
-  address: string
-): Promise<ActivityResponse> {
-  const response = await api.get<ActivityResponse>(
-    `/profile/${address}/activity`
   );
   return response.data;
 }

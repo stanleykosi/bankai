@@ -12,7 +12,6 @@ import {
   fetchTraderProfile,
   fetchTraderStats,
   fetchTraderPositions,
-  fetchActivityHeatmap,
   fetchRecentTrades,
 } from "@/lib/profile-api";
 
@@ -55,18 +54,6 @@ export function useTraderPositions(
     queryFn: () => fetchTraderPositions(address!, limit, offset, sortBy),
     enabled: Boolean(address),
     staleTime: 30_000, // 30 seconds
-  });
-}
-
-/**
- * Hook for fetching activity heatmap data
- */
-export function useActivityHeatmap(address: string | undefined) {
-  return useQuery({
-    queryKey: ["trader-activity", address],
-    queryFn: () => fetchActivityHeatmap(address!),
-    enabled: Boolean(address),
-    staleTime: 300_000, // 5 minutes (activity doesn't change often)
   });
 }
 

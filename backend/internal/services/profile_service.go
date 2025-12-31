@@ -301,6 +301,7 @@ func (s *ProfileService) GetTraderProfile(ctx context.Context, address string) (
 }
 
 // GetTraderStats calculates performance metrics for a trader
+// GetTraderStats calculates performance metrics for a trader
 func (s *ProfileService) GetTraderStats(ctx context.Context, address string) (*data_api.TraderStats, error) {
 	address = normalizeAddress(address)
 	profileAddress := s.resolveProfileAddress(ctx, address)
@@ -328,21 +329,36 @@ func (s *ProfileService) GetTraderStats(ctx context.Context, address string) (*d
 	} else {
 		stats.WinRate = pnlData.WinRate
 		stats.RealizedPnL = pnlData.RealizedPnL
+		stats.UnrealizedPnL = pnlData.UnrealizedPnL
 		stats.WinningTrades = pnlData.WinningTrades
 		stats.LosingTrades = pnlData.LosingTrades
-		stats.TotalTrades = pnlData.WinningTrades + pnlData.LosingTrades
+		// Predictions count is fetched separately, so we don't use PnL trade count for "TotalTrades"/Predictions
 	}
 
-	// Compute volume stats from trades
-	tradeVolume, avgTradeSize, tradeCount, err := s.aggregateTradeVolume(ctx, profileAddress, address)
+	// Get Predictions count (markets traded)
+	// We use the primary address (or proxy if available)
+	targetAddr := profileAddress
+	if targetAddr == "" {
+		targetAddr = address
+	}
+	tradedCount, err := s.dataAPIClient.GetTradedCount(ctx, targetAddr)
 	if err != nil {
-		logger.Error("ProfileService: Failed to aggregate trade volume: %v", err)
+		logger.Error("ProfileService: Failed to get traded count: %v", err)
+	} else if tradedCount != nil {
+		stats.Predictions = tradedCount.Traded
+	}
+
+	// Calculate Portfolio Value from Open Positions
+	// We use GetOpenPositions which handles caching and merging proxy+raw
+	positions, err := s.GetOpenPositions(ctx, address, 1000, 0) // Limit 1000 to get most positions
+	if err != nil {
+		logger.Error("ProfileService: Failed to get positions for portfolio value: %v", err)
 	} else {
-		stats.TotalVolume = tradeVolume
-		stats.AvgTradeSize = avgTradeSize
-		if tradeCount > 0 {
-			stats.TotalTrades = tradeCount
+		var totalValue float64
+		for _, pos := range positions {
+			totalValue += pos.CurrentValue
 		}
+		stats.PortfolioValue = totalValue
 	}
 
 	// Get open positions count
@@ -445,82 +461,6 @@ func (s *ProfileService) GetOpenPositions(ctx context.Context, address string, l
 	return lastPositions, nil
 }
 
-// GetActivityHeatmap fetches trade activity for GitHub-style heatmap
-func (s *ProfileService) GetActivityHeatmap(ctx context.Context, address string) ([]data_api.ActivityDataPoint, error) {
-	address = normalizeAddress(address)
-	profileAddress := s.resolveProfileAddress(ctx, address)
-
-	// Check Redis cache first
-	key := cacheKey("activity", address)
-	cached, err := getFromCache[[]data_api.ActivityDataPoint](ctx, s.redis, key)
-	if err != nil {
-		logger.Error("ProfileService: Activity cache error: %v", err)
-	}
-	if cached != nil {
-		logger.Info("ProfileService: Activity cache hit for %s", address)
-		return *cached, nil
-	}
-
-	oneYearAgo := time.Now().AddDate(-1, 0, 0).Format(time.RFC3339)
-	targets := []string{}
-	if profileAddress != "" {
-		targets = append(targets, profileAddress)
-	}
-	if address != "" && !strings.EqualFold(address, profileAddress) {
-		targets = append(targets, address)
-	}
-
-	summary, err := s.accumulateTrades(ctx, targets, oneYearAgo, true)
-	if err != nil {
-		logger.Error("ProfileService: Failed to accumulate trades for activity: %v", err)
-		return nil, err
-	}
-	activityMap := summary.byDate
-	if len(activityMap) == 0 {
-		return nil, nil
-	}
-
-	if summary.partial {
-		logger.Info("ProfileService: Activity heatmap built with partial data for addresses %v", targets)
-	}
-
-	// Convert map to slice and recompute levels based on merged counts
-	var activity []data_api.ActivityDataPoint
-	maxTrades := 0
-	for _, dp := range activityMap {
-		if dp.TradeCount > maxTrades {
-			maxTrades = dp.TradeCount
-		}
-		activity = append(activity, dp)
-	}
-	for i := range activity {
-		if maxTrades == 0 {
-			activity[i].Level = 0
-			continue
-		}
-		ratio := float64(activity[i].TradeCount) / float64(maxTrades)
-		switch {
-		case ratio == 0:
-			activity[i].Level = 0
-		case ratio < 0.25:
-			activity[i].Level = 1
-		case ratio < 0.50:
-			activity[i].Level = 2
-		case ratio < 0.75:
-			activity[i].Level = 3
-		default:
-			activity[i].Level = 4
-		}
-	}
-
-	// Cache with longer TTL (activity is historical, changes slowly)
-	if err := setInCache(ctx, s.redis, key, activity, ActivityCacheTTL); err != nil {
-		logger.Error("ProfileService: Failed to cache activity: %v", err)
-	}
-
-	return activity, nil
-}
-
 // GetRecentTrades fetches recent trades for a trader
 func (s *ProfileService) GetRecentTrades(ctx context.Context, address string, limit int) ([]data_api.Trade, error) {
 	address = normalizeAddress(address)
@@ -561,57 +501,7 @@ func (s *ProfileService) GetRecentTrades(ctx context.Context, address string, li
 	return trades, nil
 }
 
-func tradeKey(trade data_api.Trade) string {
-	if trade.TxHash != "" {
-		return fmt.Sprintf("%s:%d:%s:%s:%s:%.8f:%.8f",
-			trade.TxHash,
-			trade.Timestamp,
-			trade.ConditionID,
-			trade.TokenID,
-			trade.Outcome,
-			trade.Price,
-			trade.Size,
-		)
-	}
-	if trade.ID != "" {
-		return trade.ID
-	}
-	return fmt.Sprintf("%s:%d:%s:%s:%s:%.8f:%.8f",
-		trade.Maker,
-		trade.Timestamp,
-		trade.ConditionID,
-		trade.TokenID,
-		trade.Outcome,
-		trade.Price,
-		trade.Size,
-	)
-}
 
-func (s *ProfileService) aggregateTradeVolume(ctx context.Context, resolvedAddr, rawAddr string) (float64, float64, int, error) {
-	targets := []string{}
-	if resolvedAddr != "" {
-		targets = append(targets, resolvedAddr)
-	}
-	if rawAddr != "" && !strings.EqualFold(rawAddr, resolvedAddr) {
-		targets = append(targets, rawAddr)
-	}
-
-	summary, err := s.accumulateTrades(ctx, targets, "", false)
-	if err != nil {
-		return 0, 0, 0, err
-	}
-
-	avgTradeSize := 0.0
-	if summary.totalTrades > 0 {
-		avgTradeSize = summary.totalVolume / float64(summary.totalTrades)
-	}
-
-	if summary.partial {
-		logger.Info("ProfileService: Trade aggregation returned partial data for addresses %v", targets)
-	}
-
-	return summary.totalVolume, avgTradeSize, summary.totalTrades, nil
-}
 
 func (s *ProfileService) countOpenPositions(ctx context.Context, resolvedAddr, rawAddr string) (int, error) {
 	const limit = 500
@@ -766,233 +656,7 @@ func (s *ProfileService) aggregatePnL(ctx context.Context, resolvedAddr, rawAddr
 	return result, nil
 }
 
-func (s *ProfileService) fetchAllTrades(ctx context.Context, address string, after string) ([]data_api.Trade, error) {
-	if address == "" {
-		return nil, nil
-	}
 
-	const limit = 500 // per Data API cap
-	const maxPages = 5000
-	const pageDelay = 150 * time.Millisecond // stay under 75 req / 10s
-
-	var all []data_api.Trade
-	before := ""
-	takerOnly := false
-
-	for page := 0; page < maxPages; page++ {
-		if page > 0 {
-			time.Sleep(pageDelay)
-		}
-
-		params := &data_api.TradesParams{
-			Limit:     limit,
-			TakerOnly: &takerOnly,
-		}
-		if after != "" {
-			params.After = after
-		}
-		if before != "" {
-			params.Before = before
-		}
-
-		trades, err := s.dataAPIClient.GetTrades(ctx, address, params)
-		if err != nil {
-			// If we hit rate limit but already have data, return partial results.
-			if strings.Contains(err.Error(), "status 429") && len(all) > 0 {
-				return all, nil
-			}
-			return all, err
-		}
-		if len(trades) == 0 {
-			break
-		}
-
-		all = append(all, trades...)
-
-		// compute next "before" cursor using the oldest timestamp in this page
-		var minTs int64
-		for i, t := range trades {
-			if t.Timestamp <= 0 {
-				continue
-			}
-			if i == 0 || t.Timestamp < minTs {
-				minTs = t.Timestamp
-			}
-		}
-		if minTs == 0 {
-			break
-		}
-		var ts time.Time
-		if minTs > 1_000_000_000_000 {
-			ts = time.Unix(0, minTs*int64(time.Millisecond))
-		} else {
-			ts = time.Unix(minTs, 0)
-		}
-		before = ts.Add(-time.Millisecond).Format(time.RFC3339)
-	}
-
-	return all, nil
-}
-
-func resolveTradeTime(ts int64) time.Time {
-	if ts <= 0 {
-		return time.Time{}
-	}
-	if ts > 1_000_000_000_000 {
-		return time.Unix(0, ts*int64(time.Millisecond))
-	}
-	return time.Unix(ts, 0)
-}
-
-type tradeSummary struct {
-	totalTrades int
-	totalVolume float64
-	byDate      map[string]data_api.ActivityDataPoint
-	partial     bool
-}
-
-// accumulateTrades fetches trades across addresses with time-window pagination, dedups by tradeKey, and optionally aggregates by day.
-func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []string, after string, includeDates bool) (tradeSummary, error) {
-	const limit = 500                       // Data API hard cap
-	const maxPages = 300                    // safety valve; real break is len<trades or cursor stall
-	const baseDelay = 60 * time.Millisecond // stay under 75 req / 10s per docs
-	const maxAttempts = 3                   // retry when hitting 429s
-	const maxDuration = 25 * time.Second    // stop accumulating if taking too long
-
-	seen := make(map[string]bool)
-	byDate := make(map[string]data_api.ActivityDataPoint)
-	summary := tradeSummary{byDate: byDate}
-	start := time.Now()
-
-	for _, address := range addresses {
-		if address == "" {
-			continue
-		}
-		before := ""
-		pagesFetched := 0
-		for page := 0; page < maxPages; page++ {
-			if ctx.Err() != nil {
-				logger.Info("ProfileService: accumulateTrades canceled for %s after %d pages (ctx canceled), total=%d", address, pagesFetched, summary.totalTrades)
-				summary.partial = true
-				return summary, ctx.Err()
-			}
-
-			if page > 0 {
-				time.Sleep(baseDelay)
-			}
-
-			// Stop if we've spent too long fetching
-			if time.Since(start) > maxDuration {
-				logger.Info("ProfileService: accumulateTrades timed out for %s after %d pages, total=%d", address, pagesFetched, summary.totalTrades)
-				summary.partial = true
-				return summary, nil
-			}
-
-			params := &data_api.TradesParams{
-				Limit:     limit,
-				TakerOnly: boolPtr(false),
-			}
-			if after != "" {
-				params.After = after
-			}
-			if before != "" {
-				params.Before = before
-			}
-
-			var trades []data_api.Trade
-			var err error
-			for attempt := 0; attempt < maxAttempts; attempt++ {
-				trades, err = s.dataAPIClient.GetTrades(ctx, address, params)
-				if err == nil {
-					break
-				}
-				if strings.Contains(err.Error(), "status 429") {
-					if attempt == maxAttempts-1 {
-						summary.partial = true
-						trades = nil
-						err = nil
-						break
-					}
-					time.Sleep(baseDelay * time.Duration(attempt+1))
-					continue
-				}
-				if ctx.Err() != nil {
-					logger.Info("ProfileService: accumulateTrades canceled mid-retry for %s after %d pages, total=%d", address, pagesFetched, summary.totalTrades)
-					summary.partial = true
-					return summary, ctx.Err()
-				}
-				return summary, err
-			}
-
-			if len(trades) == 0 {
-				logger.Info("ProfileService: accumulateTrades reached empty page for %s after %d pages (before=%s), total=%d", address, pagesFetched, before, summary.totalTrades)
-				break
-			}
-
-			oldestTs := int64(0)
-			for _, trade := range trades {
-				if oldestTs == 0 || trade.Timestamp < oldestTs {
-					oldestTs = trade.Timestamp
-				}
-				key := tradeKey(trade)
-				if seen[key] {
-					continue
-				}
-				seen[key] = true
-
-				value := trade.Value
-				if value == 0 && trade.Price > 0 && trade.Size > 0 {
-					value = trade.Price * trade.Size
-				}
-				summary.totalTrades++
-				summary.totalVolume += value
-
-				if includeDates {
-					tradeTime := resolveTradeTime(trade.Timestamp)
-					if tradeTime.IsZero() {
-						continue
-					}
-					dateKey := tradeTime.Format("2006-01-02")
-					dp := byDate[dateKey]
-					dp.Date = dateKey
-					dp.TradeCount++
-					dp.Volume += value
-					byDate[dateKey] = dp
-				}
-			}
-
-			pagesFetched++
-			if len(trades) < limit {
-				logger.Info("ProfileService: accumulateTrades hit last partial page for %s after %d pages (before=%s), total=%d", address, pagesFetched, before, summary.totalTrades)
-				break
-			}
-
-			if oldestTs == 0 {
-				logger.Info("ProfileService: accumulateTrades stalled cursor for %s after %d pages, total=%d", address, pagesFetched, summary.totalTrades)
-				summary.partial = true
-				break
-			}
-
-			// Use the oldest timestamp on this page to page further back in time.
-			oldestTime := resolveTradeTime(oldestTs)
-			if oldestTime.IsZero() {
-				logger.Info("ProfileService: accumulateTrades invalid cursor time for %s after %d pages, total=%d", address, pagesFetched, summary.totalTrades)
-				summary.partial = true
-				break
-			}
-			nextBefore := oldestTime.Add(-time.Millisecond).UTC().Format(time.RFC3339)
-			if nextBefore == before {
-				logger.Info("ProfileService: accumulateTrades cursor did not move for %s after %d pages, total=%d", address, pagesFetched, summary.totalTrades)
-				summary.partial = true
-				break
-			}
-			before = nextBefore
-		}
-		logger.Info("ProfileService: accumulateTrades finished address %s pages=%d totalTrades=%d volume=%.2f partial=%v", address, pagesFetched, summary.totalTrades, summary.totalVolume, summary.partial)
-	}
-
-	return summary, nil
-}
 
 func boolPtr[T any](v T) *T {
 	return &v

@@ -126,6 +126,7 @@ export function PositionsSpy({ positions, isLoading }: PositionsSpyProps) {
                 <th className="pb-2 text-right">Size</th>
                 <th className="pb-2 text-right">Avg Price</th>
                 <th className="pb-2 text-right">Value</th>
+                <th className="pb-2 text-right">Unrealized</th>
                 <th className="pb-2 text-right">PnL</th>
                 <th className="pb-2"></th>
               </tr>
@@ -162,6 +163,13 @@ export function PositionsSpy({ positions, isLoading }: PositionsSpyProps) {
                     </td>
                     <td className="py-3 text-right font-mono">
                       {formatCurrency(position.currentValue)}
+                    </td>
+                    <td className="py-3 text-right">
+                      <span
+                        className={`font-mono ${isProfitable ? "text-emerald-400" : "text-rose-400"}`}
+                      >
+                        {formatCurrency(position.cashPnl)}
+                      </span>
                     </td>
                     <td className="py-3 text-right">
                       <div className="flex items-center justify-end gap-1">

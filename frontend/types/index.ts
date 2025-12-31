@@ -164,14 +164,14 @@ export interface DepthEstimate {
 // Trader Profile
 export interface TraderStats {
   win_rate: number;
-  total_volume: number;
+  portfolio_value: number;
   realized_pnl: number;
-  total_trades: number;
+  unrealized_pnl: number;
+  predictions: number;
   winning_trades: number;
   losing_trades: number;
   open_positions: number;
   closed_positions: number;
-  avg_trade_size: number;
 }
 
 export interface TraderProfile {

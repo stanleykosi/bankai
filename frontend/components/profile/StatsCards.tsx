@@ -15,6 +15,8 @@ interface StatsCardsProps {
 }
 
 function formatCurrency(value: number): string {
+  // Handle empty or zero values gracefully
+  if (!value) return "$0.00";
   if (Math.abs(value) >= 1_000_000_000) {
     return `$${(value / 1_000_000_000).toFixed(2)}B`;
   }
@@ -92,9 +94,9 @@ export function StatsCards({ stats, isLoading }: StatsCardsProps) {
         tone={winRateTone}
       />
       <StatCard
-        title="Total Volume"
-        value={formatCurrency(stats.total_volume)}
-        subtitle={`${stats.total_trades} trades`}
+        title="Predictions"
+        value={stats.predictions.toString()}
+        subtitle="Markets traded"
         tone="neutral"
       />
       <StatCard
@@ -103,9 +105,8 @@ export function StatsCards({ stats, isLoading }: StatsCardsProps) {
         tone={pnlTone}
       />
       <StatCard
-        title="Avg Trade Volume"
-        value={formatCurrency(stats.avg_trade_size)}
-        subtitle="Per trade"
+        title="Portfolio Value"
+        value={formatCurrency(stats.portfolio_value)}
         tone="neutral"
       />
       <StatCard

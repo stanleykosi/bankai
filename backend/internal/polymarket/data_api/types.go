@@ -153,14 +153,14 @@ type TraderProfile struct {
 // TraderStats contains calculated performance metrics
 type TraderStats struct {
 	WinRate         float64 `json:"win_rate"`
-	TotalVolume     float64 `json:"total_volume"`
+	PortfolioValue  float64 `json:"portfolio_value"` // Sum of current value of all open positions
 	RealizedPnL     float64 `json:"realized_pnl"`
-	TotalTrades     int     `json:"total_trades"`
+	UnrealizedPnL   float64 `json:"unrealized_pnl"`
+	Predictions     int     `json:"predictions"` // Total markets traded (from /traded endpoint)
 	WinningTrades   int     `json:"winning_trades"`
 	LosingTrades    int     `json:"losing_trades"`
 	OpenPositions   int     `json:"open_positions"`
 	ClosedPositions int     `json:"closed_positions"`
-	AvgTradeSize    float64 `json:"avg_trade_size"`
 }
 
 // ActivityDataPoint represents a single day's trading activity for heatmap
