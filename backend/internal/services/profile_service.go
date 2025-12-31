@@ -853,12 +853,11 @@ type tradeSummary struct {
 
 // accumulateTrades fetches trades across addresses with time-window pagination, dedups by tradeKey, and optionally aggregates by day.
 func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []string, after string, includeDates bool) (tradeSummary, error) {
-	const limit = 500                       // Data API cap
-	const maxPages = 50                     // cap attempts; we page by offset per docs (offset<=1000)
-	const baseDelay = 50 * time.Millisecond // stay under 75 req / 10s per docs
-	const maxAttempts = 3
-	const maxDuration = 15 * time.Second // stop accumulating if taking too long
-	const maxOffset = 1000               // per Data API update (limit<=500, offset<=1000)
+	const limit = 500                       // Data API hard cap
+	const maxPages = 300                    // safety valve; real break is len<trades or cursor stall
+	const baseDelay = 60 * time.Millisecond // stay under 75 req / 10s per docs
+	const maxAttempts = 3                   // retry when hitting 429s
+	const maxDuration = 25 * time.Second    // stop accumulating if taking too long
 
 	seen := make(map[string]bool)
 	byDate := make(map[string]data_api.ActivityDataPoint)
@@ -869,7 +868,7 @@ func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []strin
 		if address == "" {
 			continue
 		}
-		offset := 0
+		before := ""
 		pagesFetched := 0
 		for page := 0; page < maxPages; page++ {
 			if ctx.Err() != nil {
@@ -889,18 +888,15 @@ func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []strin
 				return summary, nil
 			}
 
-			if offset > maxOffset {
-				logger.Info("ProfileService: accumulateTrades hit maxOffset for %s after %d pages, total=%d", address, pagesFetched, summary.totalTrades)
-				break
-			}
-
 			params := &data_api.TradesParams{
 				Limit:     limit,
-				Offset:    offset,
 				TakerOnly: boolPtr(false),
 			}
 			if after != "" {
 				params.After = after
+			}
+			if before != "" {
+				params.Before = before
 			}
 
 			var trades []data_api.Trade
@@ -929,11 +925,15 @@ func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []strin
 			}
 
 			if len(trades) == 0 {
-				logger.Info("ProfileService: accumulateTrades reached empty page for %s after %d pages (offset=%d), total=%d", address, pagesFetched, offset, summary.totalTrades)
+				logger.Info("ProfileService: accumulateTrades reached empty page for %s after %d pages (before=%s), total=%d", address, pagesFetched, before, summary.totalTrades)
 				break
 			}
 
-			for i, trade := range trades {
+			oldestTs := int64(0)
+			for _, trade := range trades {
+				if oldestTs == 0 || trade.Timestamp < oldestTs {
+					oldestTs = trade.Timestamp
+				}
 				key := tradeKey(trade)
 				if seen[key] {
 					continue
@@ -961,12 +961,32 @@ func (s *ProfileService) accumulateTrades(ctx context.Context, addresses []strin
 				}
 			}
 
-			offset += limit
 			pagesFetched++
 			if len(trades) < limit {
-				logger.Info("ProfileService: accumulateTrades hit last partial page for %s after %d pages (offset=%d), total=%d", address, pagesFetched, offset, summary.totalTrades)
+				logger.Info("ProfileService: accumulateTrades hit last partial page for %s after %d pages (before=%s), total=%d", address, pagesFetched, before, summary.totalTrades)
 				break
 			}
+
+			if oldestTs == 0 {
+				logger.Info("ProfileService: accumulateTrades stalled cursor for %s after %d pages, total=%d", address, pagesFetched, summary.totalTrades)
+				summary.partial = true
+				break
+			}
+
+			// Use the oldest timestamp on this page to page further back in time.
+			oldestTime := resolveTradeTime(oldestTs)
+			if oldestTime.IsZero() {
+				logger.Info("ProfileService: accumulateTrades invalid cursor time for %s after %d pages, total=%d", address, pagesFetched, summary.totalTrades)
+				summary.partial = true
+				break
+			}
+			nextBefore := oldestTime.Add(-time.Millisecond).UTC().Format(time.RFC3339)
+			if nextBefore == before {
+				logger.Info("ProfileService: accumulateTrades cursor did not move for %s after %d pages, total=%d", address, pagesFetched, summary.totalTrades)
+				summary.partial = true
+				break
+			}
+			before = nextBefore
 		}
 		logger.Info("ProfileService: accumulateTrades finished address %s pages=%d totalTrades=%d volume=%.2f partial=%v", address, pagesFetched, summary.totalTrades, summary.totalVolume, summary.partial)
 	}
