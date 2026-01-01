@@ -61,6 +61,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	socialService := services.NewSocialService(db, gammaClient)
 	watchlistService := services.NewWatchlistService(db)
 	notificationService := services.NewNotificationService(db, socialService)
+	alphaHubService := services.NewAlphaHubService(marketService, profileService, clobClient, tavilyClient, openaiClient, rdb)
 
 	// Initialize Blockchain Service
 	blockchainService, err := services.NewBlockchainService(cfg)
@@ -76,6 +77,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	walletHandler := handlers.NewWalletHandler(walletManager, blockchainService)
 	tradeHandler := handlers.NewTradeHandler(tradeService, cfg, db)
 	oracleHandler := handlers.NewOracleHandler(oracleService)
+	analysisHandler := handlers.NewAnalysisHandler(alphaHubService)
 
 	// Social & Intelligence Handlers
 	profileHandler := handlers.NewProfileHandler(profileService, socialService)
@@ -118,6 +120,11 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	// Oracle Routes (Public for now, can be protected)
 	oracle := v1.Group("/oracle")
 	oracle.Get("/analyze/:condition_id", oracleHandler.AnalyzeMarket)
+
+	// Analysis (Alpha Hub) Routes
+	analysis := v1.Group("/analysis")
+	analysis.Get("/smart-money", analysisHandler.GetSmartMoney)
+	analysis.Get("/ai-picks", analysisHandler.GetAIPicks)
 
 	// Profile Routes (Public - trader profiles are public)
 	profile := v1.Group("/profile")

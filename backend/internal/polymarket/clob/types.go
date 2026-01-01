@@ -282,3 +282,28 @@ type HistoryPoint struct {
 	Timestamp int64   `json:"t"`
 	Price     float64 `json:"p"`
 }
+
+// TradeEvent represents a trade returned by the CLOB /data/trades endpoint.
+// Numeric fields may be encoded as strings; parsing helpers normalize them.
+type TradeEvent struct {
+	ID        string    `json:"id"`
+	Market    string    `json:"market"`     // condition_id
+	TokenID   string    `json:"token_id"`   // asset id
+	Side      OrderSide `json:"side"`       // BUY/SELL from taker's perspective
+	Price     float64   `json:"price"`      // parsed from price or price_num
+	Size      float64   `json:"size"`       // parsed from size or size_num
+	Value     float64   `json:"value"`      // price * size if not provided
+	Taker     string    `json:"taker"`      // taker address (initiator)
+	Maker     string    `json:"maker"`      // maker address
+	MatchTime int64     `json:"match_time"` // unix seconds
+}
+
+// TradesQuery parameters for /data/trades.
+type TradesQuery struct {
+	Market string
+	Maker  string
+	Taker  string
+	After  int64 // unix seconds
+	Before int64 // unix seconds
+	Limit  int
+}

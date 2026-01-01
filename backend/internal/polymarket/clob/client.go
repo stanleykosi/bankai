@@ -236,6 +236,61 @@ func (c *Client) GetSpread(ctx context.Context, tokenID string) (float64, error)
 	return parseSpreadResponse(raw, tokenID)
 }
 
+// GetTrades fetches trades from the CLOB /data/trades endpoint.
+// It supports filtering by market, maker, taker, and time window.
+func (c *Client) GetTrades(ctx context.Context, params TradesQuery) ([]TradeEvent, error) {
+	values := url.Values{}
+	if strings.TrimSpace(params.Market) != "" {
+		values.Set("market", strings.TrimSpace(params.Market))
+	}
+	if strings.TrimSpace(params.Maker) != "" {
+		values.Set("maker", strings.TrimSpace(params.Maker))
+	}
+	if strings.TrimSpace(params.Taker) != "" {
+		values.Set("taker", strings.TrimSpace(params.Taker))
+	}
+	if params.After > 0 {
+		values.Set("after", strconv.FormatInt(params.After, 10))
+	}
+	if params.Before > 0 {
+		values.Set("before", strconv.FormatInt(params.Before, 10))
+	}
+	if params.Limit > 0 {
+		values.Set("limit", strconv.Itoa(params.Limit))
+	}
+
+	path := "/data/trades"
+	if encoded := values.Encode(); encoded != "" {
+		path = fmt.Sprintf("%s?%s", path, encoded)
+	}
+
+	var raw []map[string]interface{}
+	if err := c.sendRequestDecode(ctx, http.MethodGet, path, nil, &raw, nil); err != nil {
+		return nil, err
+	}
+
+	trades := make([]TradeEvent, 0, len(raw))
+	for _, entry := range raw {
+		trade := TradeEvent{
+			ID:        stringValue(entry["id"]),
+			Market:    stringValue(entry["market"]),
+			TokenID:   stringValue(entry["token_id"]),
+			Side:      normalizeSide(stringValue(entry["side"])),
+			Price:     floatValue(entry["price"], entry["price_num"]),
+			Size:      floatValue(entry["size"], entry["size_num"]),
+			Value:     floatValue(entry["value"]),
+			Taker:     stringValue(entry["taker"]),
+			Maker:     stringValue(entry["maker"]),
+			MatchTime: int64Value(entry["match_time"], entry["timestamp"]),
+		}
+		if trade.Value == 0 && trade.Price > 0 && trade.Size > 0 {
+			trade.Value = trade.Price * trade.Size
+		}
+		trades = append(trades, trade)
+	}
+	return trades, nil
+}
+
 func parseLastTradePriceResponse(raw json.RawMessage) (float64, string, error) {
 	var num float64
 	if err := json.Unmarshal(raw, &num); err == nil && num > 0 {
@@ -343,6 +398,78 @@ func parseSpreadResponse(raw json.RawMessage, tokenID string) (float64, error) {
 	}
 
 	return 0, fmt.Errorf("unexpected spreads response: %s", string(raw))
+}
+
+// Helper to normalize BUY/SELL sides and tolerate numeric encodings.
+func normalizeSide(side string) OrderSide {
+	switch strings.ToUpper(strings.TrimSpace(side)) {
+	case "BUY", "B", "1", "TRUE":
+		return BUY
+	case "SELL", "S", "0", "FALSE":
+		return SELL
+	default:
+		return OrderSide(strings.ToUpper(strings.TrimSpace(side)))
+	}
+}
+
+// stringValue safely extracts a string from an interface{}.
+func stringValue(val interface{}) string {
+	switch v := val.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case json.Number:
+		return strings.TrimSpace(v.String())
+	case float64:
+		return strings.TrimSpace(strconv.FormatFloat(v, 'f', -1, 64))
+	default:
+		return ""
+	}
+}
+
+// floatValue attempts to parse the first non-zero numeric value from a list of candidates.
+func floatValue(candidates ...interface{}) float64 {
+	for _, c := range candidates {
+		switch v := c.(type) {
+		case float64:
+			if v != 0 {
+				return v
+			}
+		case json.Number:
+			if parsed, err := v.Float64(); err == nil && parsed != 0 {
+				return parsed
+			}
+		case string:
+			if parsed, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil && parsed != 0 {
+				return parsed
+			}
+		}
+	}
+	return 0
+}
+
+// int64Value attempts to parse the first non-zero integer value from a list of candidates.
+func int64Value(candidates ...interface{}) int64 {
+	for _, c := range candidates {
+		switch v := c.(type) {
+		case int64:
+			if v != 0 {
+				return v
+			}
+		case float64:
+			if v != 0 {
+				return int64(v)
+			}
+		case json.Number:
+			if parsed, err := v.Int64(); err == nil && parsed != 0 {
+				return parsed
+			}
+		case string:
+			if parsed, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil && parsed != 0 {
+				return parsed
+			}
+		}
+	}
+	return 0
 }
 
 // DeriveAPIKey requests (or creates) the user API credentials using the L1 ClobAuth signature.
