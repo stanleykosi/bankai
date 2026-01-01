@@ -15,7 +15,7 @@
 import React from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, Star } from "lucide-react";
+import { Loader2, Star, Users } from "lucide-react";
 
 import { MarketTicker } from "@/components/terminal/MarketTicker";
 import { usePriceStream } from "@/hooks/usePriceStream";
@@ -24,6 +24,7 @@ import type { MarketLaneResponse } from "@/lib/market-data";
 import { Button } from "@/components/ui/button";
 import type { Market } from "@/types";
 import { useWatchlist } from "@/hooks/useWatchlist";
+import { useFollowing } from "@/hooks/useFollow";
 
 export const dynamic = "force-dynamic";
 
@@ -80,6 +81,7 @@ const mergeLanes = (prev: MarketLaneResponse, next: MarketLaneResponse): MarketL
 export default function DashboardPage() {
   const { hydrateMarkets } = usePriceStream();
   const { data: watchlistData } = useWatchlist();
+  const { data: followingData } = useFollowing();
 
   const { data: laneData, isLoading: isLoadingLanes } = useQuery({
     queryKey: ["markets", "lanes"],
@@ -183,6 +185,22 @@ export default function DashboardPage() {
               {watchlistData && (
                 <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full border border-primary/30 bg-primary/10 px-1.5 text-[10px] text-primary">
                   {watchlistData.count}
+                </span>
+              )}
+            </Link>
+          </Button>
+          <Button
+            asChild
+            size="sm"
+            variant="outline"
+            className="font-mono text-xs tracking-wide"
+          >
+            <Link href="/dashboard/following" className="flex items-center gap-2">
+              <Users className="h-4 w-4" />
+              Following
+              {followingData && (
+                <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full border border-primary/30 bg-primary/10 px-1.5 text-[10px] text-primary">
+                  {followingData.count}
                 </span>
               )}
             </Link>
