@@ -79,7 +79,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 
 	// Social & Intelligence Handlers
 	profileHandler := handlers.NewProfileHandler(profileService, socialService)
-	socialHandler := handlers.NewSocialHandler(db, socialService, notificationService)
+	socialHandler := handlers.NewSocialHandler(db, socialService, notificationService, profileService)
 	watchlistHandler := handlers.NewWatchlistHandler(db, watchlistService)
 	holdersHandler := handlers.NewHoldersHandler(profileService)
 
@@ -156,6 +156,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	social.Post("/follow", socialHandler.FollowTrader)
 	social.Delete("/follow/:address", socialHandler.UnfollowTrader)
 	social.Get("/following", socialHandler.GetFollowing)
+	social.Get("/following/performance", socialHandler.GetFollowingPerformance)
 	social.Get("/following/:address", socialHandler.CheckIsFollowing)
 	social.Get("/notifications", socialHandler.GetNotifications)
 	social.Post("/notifications/:id/read", socialHandler.MarkNotificationRead)

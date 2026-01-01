@@ -15,6 +15,7 @@ import {
   unfollowTrader,
   fetchFollowing,
   checkIsFollowing,
+  fetchFollowingPerformance,
 } from "@/lib/social-api";
 
 /**
@@ -42,6 +43,20 @@ export function useFollowing() {
     queryFn: () => fetchFollowing(getToken),
     enabled: isSignedIn,
     staleTime: 60_000,
+  });
+}
+
+/**
+ * Hook for getting followed traders ranked by performance
+ */
+export function useFollowingPerformance() {
+  const { getToken, isSignedIn } = useAuth();
+
+  return useQuery({
+    queryKey: ["following-performance"],
+    queryFn: () => fetchFollowingPerformance(getToken),
+    enabled: isSignedIn,
+    staleTime: 30_000,
   });
 }
 

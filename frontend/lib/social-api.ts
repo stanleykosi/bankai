@@ -15,6 +15,7 @@ import type {
   FollowStatusResponse,
   FollowActionResponse,
   NotificationsResponse,
+  FollowingPerformanceResponse,
 } from "@/types";
 
 /**
@@ -66,6 +67,20 @@ export async function fetchFollowing(
   const response = await api.get<FollowingResponse>("/social/following", {
     headers,
   });
+  return response.data;
+}
+
+/**
+ * Get list of followed traders with performance stats
+ */
+export async function fetchFollowingPerformance(
+  getToken: () => Promise<string | null>
+): Promise<FollowingPerformanceResponse> {
+  const headers = await getAuthHeaders(getToken);
+  const response = await api.get<FollowingPerformanceResponse>(
+    "/social/following/performance",
+    { headers }
+  );
   return response.data;
 }
 

@@ -290,6 +290,19 @@ export interface FollowingResponse {
   count: number;
 }
 
+export interface FollowPerformance {
+  target_address: string;
+  profile_name?: string;
+  profile_image?: string;
+  stats?: TraderStats;
+  total_pnl: number;
+}
+
+export interface FollowingPerformanceResponse {
+  following: FollowPerformance[];
+  count: number;
+}
+
 export interface FollowStatusResponse {
   is_following: boolean;
   target: string;

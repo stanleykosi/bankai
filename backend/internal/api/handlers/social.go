@@ -13,11 +13,13 @@ package handlers
 
 import (
 	"strconv"
+	"sort"
 
 	"github.com/bankai-project/backend/internal/api/middleware"
 	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/models"
 	"github.com/bankai-project/backend/internal/services"
+	"github.com/bankai-project/backend/internal/polymarket/data_api"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -28,14 +30,16 @@ type SocialHandler struct {
 	db                  *gorm.DB
 	socialService       *services.SocialService
 	notificationService *services.NotificationService
+	profileService      *services.ProfileService
 }
 
 // NewSocialHandler creates a new SocialHandler
-func NewSocialHandler(db *gorm.DB, socialService *services.SocialService, notificationService *services.NotificationService) *SocialHandler {
+func NewSocialHandler(db *gorm.DB, socialService *services.SocialService, notificationService *services.NotificationService, profileService *services.ProfileService) *SocialHandler {
 	return &SocialHandler{
 		db:                  db,
 		socialService:       socialService,
 		notificationService: notificationService,
+		profileService:      profileService,
 	}
 }
 
@@ -145,6 +149,66 @@ func (h *SocialHandler) GetFollowing(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"following": following,
 		"count":     len(following),
+	})
+}
+
+// FollowPerformance represents a followed trader with performance stats
+type FollowPerformance struct {
+	TargetAddress string              `json:"target_address"`
+	ProfileName   string              `json:"profile_name,omitempty"`
+	ProfileImage  string              `json:"profile_image,omitempty"`
+	Stats         *data_api.TraderStats `json:"stats,omitempty"`
+	TotalPnL      float64             `json:"total_pnl"`
+}
+
+// GetFollowingPerformance returns followed traders ranked by total PnL
+// GET /api/v1/social/following/performance
+func (h *SocialHandler) GetFollowingPerformance(c *fiber.Ctx) error {
+	clerkID, err := middleware.GetUserID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
+	}
+
+	var user models.User
+	if err := h.db.Where("clerk_id = ?", clerkID).First(&user).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
+	}
+
+	following, err := h.socialService.GetFollowingWithProfiles(c.Context(), user.ID)
+	if err != nil {
+		logger.Error("SocialHandler: Failed to get following performance: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to fetch following list",
+		})
+	}
+
+	results := make([]FollowPerformance, 0, len(following))
+	for _, f := range following {
+		stats, err := h.profileService.GetTraderStats(c.Context(), f.TargetAddress)
+		if err != nil {
+			logger.Error("SocialHandler: Failed to get stats for %s: %v", f.TargetAddress, err)
+			continue
+		}
+		fp := FollowPerformance{
+			TargetAddress: f.TargetAddress,
+			ProfileName:   f.ProfileName,
+			ProfileImage:  f.ProfileImage,
+			Stats:         stats,
+		}
+		if stats != nil {
+			fp.TotalPnL = stats.RealizedPnL + stats.UnrealizedPnL
+		}
+		results = append(results, fp)
+	}
+
+	// Sort by total PnL descending
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].TotalPnL > results[j].TotalPnL
+	})
+
+	return c.JSON(fiber.Map{
+		"following": results,
+		"count":     len(results),
 	})
 }
 
