@@ -644,23 +644,13 @@ func (c *Client) setHeaders(req *http.Request, body []byte, userCreds *APIKeyCre
 		path = fmt.Sprintf("%s?%s", path, req.URL.RawQuery)
 	}
 
-	// /data/* endpoints can be served with a read-only API key (no HMAC) if provided.
-	if strings.HasPrefix(path, "/data/") {
-		key := c.Readonly
-		if key == "" {
-			key = c.APIKey
-		}
-		if key == "" {
-			return fmt.Errorf("missing CLOB API key for /data endpoints")
-		}
-		req.Header.Set("X-API-KEY", key)
-		return nil // /data endpoints accept simple key header; no HMAC required.
-	}
-
 	// If no builder credentials, we can't sign.
 	if c.APIKey == "" || c.APISecret == "" || c.Passphrase == "" {
 		return fmt.Errorf("missing builder credentials: POLY_BUILDER_API_KEY, SECRET, and PASSPHRASE are required for CLOB requests")
 	}
+
+	// Always include the key header; some CLOB endpoints (like /data/trades) require X-API-KEY even when using builder HMAC.
+	req.Header.Set("X-API-KEY", c.APIKey)
 
 	// Docs: POLY_BUILDER_SIGNATURE = base64url( HMAC_SHA256( base64Decode(secret), timestamp + method + path + body ) )
 	method := strings.ToUpper(req.Method)
