@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/bankai-project/backend/internal/config"
+	"github.com/bankai-project/backend/internal/logger"
 )
 
 const (
@@ -105,6 +106,7 @@ func (c *Client) GetDeployed(ctx context.Context, safeAddress string) (bool, err
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
+		logger.Error("Relayer GET /deployed status=%d address=%s body=%s", resp.StatusCode, safeAddress, truncate(string(body), 600))
 		return false, fmt.Errorf("relayer returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -148,6 +150,8 @@ func (c *Client) submitTransaction(ctx context.Context, payload interface{}) (*R
 			return nil, fmt.Errorf("relayer returned status %d (failed to read error body: %v)", resp.StatusCode, readErr)
 		}
 
+		logger.Error("Relayer /submit status=%d body=%s", resp.StatusCode, truncate(string(body), 800))
+
 		// Try to parse as JSON error
 		var relayerErr RelayerError
 		if jsonErr := json.Unmarshal(body, &relayerErr); jsonErr == nil && relayerErr.Message != "" {
@@ -174,6 +178,9 @@ func (c *Client) setHeaders(req *http.Request, body []byte) error {
 		return fmt.Errorf("builder credentials are not configured")
 	}
 
+	// Always include the key header for correlation/allowlist checks.
+	req.Header.Set("POLY_BUILDER_API_KEY", c.APIKey)
+
 	// Ensure we have just the path portion (plus query) for signing (e.g., /submit)
 	path := req.URL.Path
 	if path == "" {
@@ -192,12 +199,18 @@ func (c *Client) setHeaders(req *http.Request, body []byte) error {
 		return err
 	}
 
-	req.Header.Set("POLY_BUILDER_API_KEY", c.APIKey)
 	req.Header.Set("POLY_BUILDER_PASSPHRASE", c.Passphrase)
 	req.Header.Set("POLY_BUILDER_SIGNATURE", sig)
 	req.Header.Set("POLY_BUILDER_TIMESTAMP", strconv.FormatInt(timestamp, 10))
 
 	return nil
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
 }
 
 // CheckAuth performs a lightweight POST /submit with a no-op transaction to verify credentials.

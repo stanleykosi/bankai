@@ -110,6 +110,23 @@ func (h *WalletHandler) DeployWallet(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Connect a wallet before requesting deployment"})
 	}
 
+	// Idempotency: if Safe already exists (relayer or stored), short-circuit without re-signing.
+	derivedSafe, derr := relayer.DeriveSafeAddress(user.EOAAddress)
+	if derr == nil && derivedSafe != "" {
+		if deployed, checkErr := h.Manager.Relayer.GetDeployed(c.Context(), derivedSafe); checkErr == nil && deployed {
+			wType := models.WalletTypeSafe
+			if err := h.Manager.UpdateVaultAddress(c.Context(), clerkID, derivedSafe, &wType); err != nil {
+				logger.Error("Failed to persist existing safe address for user %s: %v", clerkID, err)
+			}
+			return c.JSON(fiber.Map{
+				"task_id":          "",
+				"state":            "ALREADY_DEPLOYED",
+				"transaction_hash": "",
+				"proxy_address":    derivedSafe,
+			})
+		}
+	}
+
 	txReq, err := relayer.BuildSafeCreateRequest(user.EOAAddress, req.Signature, req.Metadata)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
