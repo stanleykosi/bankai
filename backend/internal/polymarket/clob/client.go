@@ -44,6 +44,7 @@ type Client struct {
 	APIKey     string
 	APISecret  string
 	Passphrase string
+	Readonly   string
 }
 
 func NewClient(cfg *config.Config) *Client {
@@ -52,6 +53,7 @@ func NewClient(cfg *config.Config) *Client {
 		APIKey:     cfg.Polymarket.BuilderAPIKey,
 		APISecret:  cfg.Polymarket.BuilderSecret,
 		Passphrase: cfg.Polymarket.BuilderPass,
+		Readonly:   cfg.Polymarket.ReadonlyAPIKey,
 		HTTPClient: &http.Client{
 			Timeout: DefaultTimeout,
 		},
@@ -634,19 +636,30 @@ func (c *Client) setHeaders(req *http.Request, body []byte, userCreds *APIKeyCre
 	// Use a browser-like UA to avoid aggressive WAF heuristics.
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; BankaiTerminal/1.0; +https://polymarket.com)")
 
-	// If no builder credentials, we can't sign.
-	// However, we shouldn't fail if they aren't configured, just skip attribution.
-	// But the project requirements specifically ask for Builder Attribution.
-	if c.APIKey == "" || c.APISecret == "" || c.Passphrase == "" {
-		return fmt.Errorf("missing builder credentials: POLY_BUILDER_API_KEY, SECRET, and PASSPHRASE are required for CLOB requests")
-	}
-
 	path := req.URL.Path
 	if path == "" {
 		path = "/"
 	}
 	if req.URL.RawQuery != "" {
 		path = fmt.Sprintf("%s?%s", path, req.URL.RawQuery)
+	}
+
+	// /data/* endpoints can be served with a read-only API key (no HMAC) if provided.
+	if strings.HasPrefix(path, "/data/") {
+		key := c.Readonly
+		if key == "" {
+			key = c.APIKey
+		}
+		if key == "" {
+			return fmt.Errorf("missing CLOB API key for /data endpoints")
+		}
+		req.Header.Set("X-API-KEY", key)
+		return nil // /data endpoints accept simple key header; no HMAC required.
+	}
+
+	// If no builder credentials, we can't sign.
+	if c.APIKey == "" || c.APISecret == "" || c.Passphrase == "" {
+		return fmt.Errorf("missing builder credentials: POLY_BUILDER_API_KEY, SECRET, and PASSPHRASE are required for CLOB requests")
 	}
 
 	// Docs: POLY_BUILDER_SIGNATURE = base64url( HMAC_SHA256( base64Decode(secret), timestamp + method + path + body ) )
