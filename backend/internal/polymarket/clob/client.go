@@ -44,7 +44,6 @@ type Client struct {
 	APIKey     string
 	APISecret  string
 	Passphrase string
-	Readonly   string
 }
 
 func NewClient(cfg *config.Config) *Client {
@@ -53,7 +52,6 @@ func NewClient(cfg *config.Config) *Client {
 		APIKey:     cfg.Polymarket.BuilderAPIKey,
 		APISecret:  cfg.Polymarket.BuilderSecret,
 		Passphrase: cfg.Polymarket.BuilderPass,
-		Readonly:   cfg.Polymarket.ReadonlyAPIKey,
 		HTTPClient: &http.Client{
 			Timeout: DefaultTimeout,
 		},

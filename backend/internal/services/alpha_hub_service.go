@@ -20,7 +20,6 @@ import (
 const (
 	defaultSmartMoneyTTL   = 45 * time.Second
 	defaultWhaleThreshold  = 5_000.0
-	defaultMaxTrades       = 500
 	defaultAIMarketLimit   = 6
 	defaultNewsMarketLimit = 3
 )
@@ -126,10 +125,8 @@ func NewAlphaHubService(marketService *MarketService, profileService *ProfileSer
 }
 
 // GetSmartMoneySignals aggregates last-hour trades, tags wallets by tier, and computes per-market scores.
+// Source of trades: RTDS-ingested trades buffered in Redis (no CLOB /data/trades dependency).
 func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.Duration) (*SmartMoneyResponse, error) {
-	if s.clobClient == nil {
-		return nil, fmt.Errorf("clob client not configured")
-	}
 	cacheKey := fmt.Sprintf("analysis:smart:%d", int(window.Seconds()))
 	if cached, err := s.redis.Get(ctx, cacheKey).Bytes(); err == nil && len(cached) > 0 {
 		var resp SmartMoneyResponse
@@ -138,11 +135,7 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 		}
 	}
 
-	after := time.Now().Add(-window).Unix()
-	trades, err := s.clobClient.GetTrades(ctx, clob.TradesQuery{
-		After: after,
-		Limit: defaultMaxTrades,
-	})
+	trades, err := s.consumeRecentTrades(ctx, window)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch trades: %w", err)
 	}
@@ -260,6 +253,34 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 	}
 
 	return &resp, nil
+}
+
+// consumeRecentTrades pulls recent trades from Redis (populated by RTDS handlers).
+// Expected key pattern: rtds:trades:{unixMinute} -> list of JSON-encoded TradeEvent.
+func (s *AlphaHubService) consumeRecentTrades(ctx context.Context, window time.Duration) ([]clob.TradeEvent, error) {
+	if s.redis == nil {
+		return nil, fmt.Errorf("redis not configured")
+	}
+
+	now := time.Now().Unix()
+	start := now - int64(window.Seconds())
+	var trades []clob.TradeEvent
+
+	for ts := start; ts <= now; ts += 60 {
+		key := fmt.Sprintf("rtds:trades:%d", ts/60)
+		raw, err := s.redis.LRange(ctx, key, 0, -1).Result()
+		if err != nil && err != redis.Nil {
+			logger.Error("AlphaHub: trade buffer read failed for %s: %v", key, err)
+			continue
+		}
+		for _, item := range raw {
+			var ev clob.TradeEvent
+			if err := json.Unmarshal([]byte(item), &ev); err == nil && ev.MatchTime >= start {
+				trades = append(trades, ev)
+			}
+		}
+	}
+	return trades, nil
 }
 
 // GenerateAIPicks runs the Alpha Hub prompt against the smart-money payload and optional Tavily news.

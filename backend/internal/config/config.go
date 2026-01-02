@@ -51,14 +51,13 @@ type RedisConfig struct {
 
 // PolymarketConfig holds Polymarket API endpoints and keys
 type PolymarketConfig struct {
-	ClobURL        string
-	GammaURL       string
-	DataAPIURL     string // Polymarket Data API for positions, holders, trades
-	BuilderAPIKey  string
-	BuilderSecret  string
-	BuilderPass    string
-	ReadonlyAPIKey string // Optional read-only key for public CLOB data endpoints (e.g., /data/trades)
-	RelayerURL     string // Optional, used for gasless wallets
+	ClobURL       string
+	GammaURL      string
+	DataAPIURL    string // Polymarket Data API for positions, holders, trades
+	BuilderAPIKey string
+	BuilderSecret string
+	BuilderPass   string
+	RelayerURL    string // Optional, used for gasless wallets
 }
 
 // ServicesConfig holds external service keys (AI, Auth, etc.)
@@ -90,13 +89,12 @@ func Load() (*Config, error) {
 			URL: getEnv("REDIS_URL", "redis://localhost:6379"),
 		},
 		Polymarket: PolymarketConfig{
-			ClobURL:        getEnv("POLYMARKET_CLOB_URL", "https://clob.polymarket.com"),
-			GammaURL:       getEnv("POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com"),
-			BuilderAPIKey:  sanitizeCredential(getEnv("POLY_BUILDER_API_KEY", "")),
-			BuilderSecret:  sanitizeCredential(getEnv("POLY_BUILDER_SECRET", "")), // Often empty/not used for local signing depending on setup, but good to have
-			BuilderPass:    sanitizeCredential(getEnv("POLY_BUILDER_PASSPHRASE", "")),
-			ReadonlyAPIKey: sanitizeCredential(getEnv("POLY_CLOB_READONLY_API_KEY", "")),
-			RelayerURL:     getEnv("POLYMARKET_RELAYER_URL", "https://relayer-v2.polymarket.com"),
+			ClobURL:       getEnv("POLYMARKET_CLOB_URL", "https://clob.polymarket.com"),
+			GammaURL:      getEnv("POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com"),
+			BuilderAPIKey: sanitizeCredential(getEnv("POLY_BUILDER_API_KEY", "")),
+			BuilderSecret: sanitizeCredential(getEnv("POLY_BUILDER_SECRET", "")), // Often empty/not used for local signing depending on setup, but good to have
+			BuilderPass:   sanitizeCredential(getEnv("POLY_BUILDER_PASSPHRASE", "")),
+			RelayerURL:    getEnv("POLYMARKET_RELAYER_URL", "https://relayer-v2.polymarket.com"),
 		},
 		Services: ServicesConfig{
 			ClerkSecretKey: getEnv("CLERK_SECRET_KEY", ""),
