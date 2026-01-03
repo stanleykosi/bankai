@@ -13,6 +13,7 @@ import (
 	"github.com/bankai-project/backend/internal/integrations/tavily"
 	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/polymarket/clob"
+	"github.com/bankai-project/backend/internal/polymarket/data_api"
 	"github.com/bankai-project/backend/internal/services/prompts"
 	"github.com/redis/go-redis/v9"
 )
@@ -20,8 +21,12 @@ import (
 const (
 	defaultSmartMoneyTTL   = 45 * time.Second
 	defaultWhaleThreshold  = 5_000.0
-	defaultAIMarketLimit   = 6
+	defaultAIMarketLimit   = 10
 	defaultNewsMarketLimit = 3
+	maxGlobalTrades        = 500
+	tradeBufferTTL         = 6 * time.Hour
+	minResolutionHorizon   = 6 * time.Hour
+	maxResolutionHorizon   = 60 * 24 * time.Hour
 )
 
 // AlphaHubService orchestrates smart-money + whale flow + AI picks for the /analysis dashboard.
@@ -31,6 +36,7 @@ type AlphaHubService struct {
 	clobClient     *clob.Client
 	tavilyClient   *tavily.Client
 	openaiClient   *openai.Client
+	dataAPIClient  *data_api.Client
 	redis          *redis.Client
 }
 
@@ -44,6 +50,7 @@ type SmartMoneyStats struct {
 	GoldBuys          float64 `json:"gold_buys"`
 	SilverBuys        float64 `json:"silver_buys"`
 	BronzeBuys        float64 `json:"bronze_buys"`
+	AvgEntryVsMidBps  float64 `json:"avg_entry_vs_mid_bps"`
 }
 
 type MarketSignal struct {
@@ -113,13 +120,14 @@ type AIResponse struct {
 	Model      string   `json:"model"`
 }
 
-func NewAlphaHubService(marketService *MarketService, profileService *ProfileService, clobClient *clob.Client, tavilyClient *tavily.Client, openaiClient *openai.Client, redis *redis.Client) *AlphaHubService {
+func NewAlphaHubService(marketService *MarketService, profileService *ProfileService, clobClient *clob.Client, tavilyClient *tavily.Client, openaiClient *openai.Client, dataAPIClient *data_api.Client, redis *redis.Client) *AlphaHubService {
 	return &AlphaHubService{
 		marketService:  marketService,
 		profileService: profileService,
 		clobClient:     clobClient,
 		tavilyClient:   tavilyClient,
 		openaiClient:   openaiClient,
+		dataAPIClient:  dataAPIClient,
 		redis:          redis,
 	}
 }
@@ -143,6 +151,10 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 	walletTierCache := make(map[string]WalletSnapshot)
 	marketAgg := make(map[string]*MarketSignal)
 	whales := make([]WhaleEvent, 0)
+	entrySums := make(map[string]struct {
+		Notional float64
+		Size     float64
+	})
 
 	for _, t := range trades {
 		marketID := strings.TrimSpace(t.Market)
@@ -203,6 +215,14 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 			})
 			agg.SmartMoney.WhaleHitsCount++
 		}
+
+		// Track average entry vs mid (weighted)
+		if t.Price > 0 && t.Size > 0 {
+			cur := entrySums[marketID]
+			cur.Notional += t.Price * t.Size
+			cur.Size += t.Size
+			entrySums[marketID] = cur
+		}
 	}
 
 	// Hydrate market metadata and compute scores
@@ -213,6 +233,13 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 			logger.Error("AlphaHub: failed to get market meta %s: %v", marketID, mErr)
 		}
 		if metadata != nil {
+			// Filter by resolution horizon
+			if metadata.EndDate != nil {
+				horizon := metadata.EndDate.Sub(time.Now())
+				if horizon < minResolutionHorizon || horizon > maxResolutionHorizon {
+					continue
+				}
+			}
 			agg.Title = metadata.Title
 			agg.Slug = metadata.Slug
 			agg.Category = metadata.Category
@@ -229,6 +256,13 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 			agg.Momentum7d = metadata.OneWeekPriceChange
 			agg.SpreadBps = spreadToBps(metadata.Spread)
 			agg.TokenID = metadata.TokenIDYes
+
+			// Compute avg entry vs mid (bps) using current mid
+			mid := resolveMid(agg.BestBid, agg.BestAsk, agg.YesPrice)
+			if sums, ok := entrySums[marketID]; ok && sums.Size > 0 && mid > 0 {
+				avgEntry := sums.Notional / sums.Size
+				agg.SmartMoney.AvgEntryVsMidBps = ((avgEntry - mid) / mid) * 10000
+			}
 		}
 		agg.Score = scoreMarket(*agg)
 		signals = append(signals, *agg)
@@ -258,29 +292,130 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 // consumeRecentTrades pulls recent trades from Redis (populated by RTDS handlers).
 // Expected key pattern: rtds:trades:{unixMinute} -> list of JSON-encoded TradeEvent.
 func (s *AlphaHubService) consumeRecentTrades(ctx context.Context, window time.Duration) ([]clob.TradeEvent, error) {
-	if s.redis == nil {
-		return nil, fmt.Errorf("redis not configured")
-	}
-
+	var merged []clob.TradeEvent
 	now := time.Now().Unix()
 	start := now - int64(window.Seconds())
-	var trades []clob.TradeEvent
 
-	for ts := start; ts <= now; ts += 60 {
-		key := fmt.Sprintf("rtds:trades:%d", ts/60)
-		raw, err := s.redis.LRange(ctx, key, 0, -1).Result()
-		if err != nil && err != redis.Nil {
-			logger.Error("AlphaHub: trade buffer read failed for %s: %v", key, err)
-			continue
-		}
-		for _, item := range raw {
-			var ev clob.TradeEvent
-			if err := json.Unmarshal([]byte(item), &ev); err == nil && ev.MatchTime >= start {
-				trades = append(trades, ev)
+	// 1) Try cached RTDS trades
+	if s.redis != nil {
+		for ts := start; ts <= now; ts += 60 {
+			key := fmt.Sprintf("rtds:trades:%d", ts/60)
+			raw, err := s.redis.LRange(ctx, key, 0, -1).Result()
+			if err != nil && err != redis.Nil {
+				logger.Error("AlphaHub: trade buffer read failed for %s: %v", key, err)
+				continue
+			}
+			for _, item := range raw {
+				var ev clob.TradeEvent
+				if err := json.Unmarshal([]byte(item), &ev); err == nil && ev.MatchTime >= start {
+					merged = append(merged, ev)
+				}
 			}
 		}
 	}
-	return trades, nil
+
+	// 2) If empty, backfill from Data API global trades
+	if len(merged) == 0 && s.dataAPIClient != nil {
+		after := time.Unix(start, 0).UTC().Format(time.RFC3339)
+		apiTrades, err := s.dataAPIClient.GetGlobalTrades(ctx, &data_api.TradesParams{
+			After: after,
+			Limit: maxGlobalTrades,
+		})
+		if err != nil {
+			logger.Error("AlphaHub: data API global trades failed: %v", err)
+		} else {
+			for _, t := range apiTrades {
+				matchTime := normalizeTradeTimestamp(t.Timestamp)
+				merged = append(merged, clob.TradeEvent{
+					ID:        t.ID,
+					Market:    t.ConditionID,
+					TokenID:   t.TokenID,
+					Side:      clob.OrderSide(strings.ToUpper(strings.TrimSpace(t.Side))),
+					Price:     t.Price,
+					Size:      t.Size,
+					Value:     resolveTradeValue(t.Value, t.Price, t.Size),
+					Taker:     t.Taker,
+					Maker:     t.Maker,
+					MatchTime: matchTime,
+				})
+			}
+		}
+	}
+
+	// Deduplicate by tx hash + market if available
+	seen := make(map[string]struct{})
+	out := make([]clob.TradeEvent, 0, len(merged))
+	for _, ev := range merged {
+		key := ev.ID
+		if key == "" && ev.MatchTime > 0 {
+			key = fmt.Sprintf("%s-%d-%s", ev.Market, ev.MatchTime, ev.Taker)
+		}
+		if key == "" {
+			out = append(out, ev)
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, ev)
+	}
+
+	return out, nil
+}
+
+func normalizeTradeTimestamp(ts int64) int64 {
+	// Data API uses ms; RTDS uses seconds
+	if ts > 1_000_000_000_000 {
+		return ts / 1000
+	}
+	return ts
+}
+
+func resolveTradeValue(value float64, price float64, size float64) float64 {
+	if value > 0 {
+		return value
+	}
+	if price > 0 && size > 0 {
+		return price * size
+	}
+	return 0
+}
+
+func resolveMid(bid float64, ask float64, last float64) float64 {
+	if bid > 0 && ask > 0 {
+		return (bid + ask) / 2
+	}
+	if last > 0 {
+		return last
+	}
+	return 0
+}
+
+func valueEdgeScore(m MarketSignal) float64 {
+	price := m.YesPrice
+	// Penalize near-certain pricing unless smart money entered cheaper
+	if price > 0.9 {
+		edge := clamp(-((price - 0.9) / 0.1), -1, 0)
+		edge += clamp(-m.SmartMoney.AvgEntryVsMidBps/1000, -0.5, 0.5)
+		return edge
+	}
+	// Reward tradable band and smart entry edge
+	bandScore := 0.0
+	if price >= 0.15 && price <= 0.85 {
+		bandScore = 0.5
+	}
+	entryEdge := clamp(-m.SmartMoney.AvgEntryVsMidBps/500, -1, 1) // negative bps = entered cheaper
+	timeBias := 0.0
+	if m.Resolution != "" {
+		if t, err := time.Parse(time.RFC3339, m.Resolution); err == nil {
+			days := t.Sub(time.Now()).Hours() / 24
+			if days <= 30 {
+				timeBias = 0.2
+			}
+		}
+	}
+	return clamp(bandScore+entryEdge+timeBias, -1, 1)
 }
 
 // GenerateAIPicks runs the Alpha Hub prompt against the smart-money payload and optional Tavily news.
@@ -288,8 +423,22 @@ func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoney
 	if s.openaiClient == nil {
 		return nil, fmt.Errorf("openai client not configured")
 	}
+	if s.tavilyClient == nil {
+		return nil, fmt.Errorf("tavily client not configured")
+	}
 	if smart == nil || len(smart.Markets) == 0 {
-		return nil, fmt.Errorf("no smart money signals available")
+		// Graceful fallback: no signals yet; return empty AI response.
+		return &AIResponse{Picks: []AIPick{}, RawContent: "", Model: s.openaiClient.Model()}, nil
+	}
+
+	cacheKey := fmt.Sprintf("analysis:ai:%d", smart.WindowSeconds)
+	if s.redis != nil {
+		if cached, err := s.redis.Get(ctx, cacheKey).Bytes(); err == nil && len(cached) > 0 {
+			var cachedResp AIResponse
+			if err := json.Unmarshal(cached, &cachedResp); err == nil {
+				return &cachedResp, nil
+			}
+		}
 	}
 
 	topMarkets := smart.Markets
@@ -297,7 +446,7 @@ func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoney
 		topMarkets = topMarkets[:defaultAIMarketLimit]
 	}
 
-	// Optionally enrich with news for top markets
+	// Enrich with news for top markets (required for analysis richness)
 	type newsItem struct {
 		Title   string  `json:"title"`
 		URL     string  `json:"url"`
@@ -305,24 +454,19 @@ func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoney
 		Score   float64 `json:"score"`
 	}
 	newsByMarket := make(map[string][]newsItem)
-	if s.tavilyClient != nil {
-		for idx, m := range topMarkets {
-			if idx >= defaultNewsMarketLimit {
-				break
-			}
-			results, err := s.tavilyClient.Search(ctx, m.Title, "polymarket.com")
-			if err != nil {
-				logger.Error("AlphaHub: tavily search failed for %s: %v", m.MarketID, err)
-				continue
-			}
-			for _, r := range results {
-				newsByMarket[m.MarketID] = append(newsByMarket[m.MarketID], newsItem{
-					Title:   r.Title,
-					URL:     r.URL,
-					Content: r.Content,
-					Score:   r.Score,
-				})
-			}
+	for _, m := range topMarkets {
+		results, err := s.tavilyClient.Search(ctx, m.Title, "polymarket.com")
+		if err != nil {
+			logger.Error("AlphaHub: tavily search failed for %s: %v", m.MarketID, err)
+			continue
+		}
+		for _, r := range results {
+			newsByMarket[m.MarketID] = append(newsByMarket[m.MarketID], newsItem{
+				Title:   r.Title,
+				URL:     r.URL,
+				Content: r.Content,
+				Score:   r.Score,
+			})
 		}
 	}
 
@@ -330,6 +474,7 @@ func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoney
 		"markets":             topMarkets,
 		"whale_events":        smart.Whales,
 		"news":                newsByMarket,
+		"as_of":               time.Now().UTC().Format(time.RFC3339),
 		"data_freshness_secs": int(time.Since(smart.GeneratedAt).Seconds()),
 	}
 	userPromptBytes, _ := json.Marshal(payload)
@@ -345,11 +490,19 @@ func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoney
 		return &AIResponse{RawContent: content, Model: s.openaiClient.Model()}, nil
 	}
 
-	return &AIResponse{
+	resp := &AIResponse{
 		Picks:      parsed.AIPicks,
 		RawContent: content,
 		Model:      s.openaiClient.Model(),
-	}, nil
+	}
+
+	if s.redis != nil {
+		if data, err := json.Marshal(resp); err == nil {
+			_ = s.redis.Set(ctx, cacheKey, data, 5*time.Minute).Err()
+		}
+	}
+
+	return resp, nil
 }
 
 func (s *AlphaHubService) getWalletTier(ctx context.Context, address string, cache map[string]WalletSnapshot) WalletSnapshot {
@@ -393,11 +546,13 @@ func scoreMarket(m MarketSignal) float64 {
 	if m.SpreadBps > 150 {
 		liquidityPenalty += 10
 	}
-	smartWeight := 0.35 * normalizeScore(m.SmartMoney.NetBuyUSD)
+	smartWeight := 0.30 * normalizeScore(m.SmartMoney.NetBuyUSD)
 	momentumWeight := 0.15 * clamp(m.Momentum1h/0.1, -1, 1)
-	liquidityWeight := 0.15 * clamp(1-(m.SpreadBps/300), -1, 1)
-	volumeWeight := 0.1 * clamp(m.Volume24h/200000, 0, 1)
-	base := (smartWeight + momentumWeight + liquidityWeight + volumeWeight) * 100
+	liquidityWeight := 0.10 * clamp(1-(m.SpreadBps/300), -1, 1)
+	volumeWeight := 0.10 * clamp(m.Volume24h/200000, 0, 1)
+	valueWeight := 0.20 * valueEdgeScore(m)
+	fundamentalsWeight := 0.15 // placeholder for rules/resolution clarity baked via penalties above
+	base := (smartWeight + momentumWeight + liquidityWeight + volumeWeight + valueWeight + fundamentalsWeight) * 100
 	return math.Max(base-liquidityPenalty, 0)
 }
 

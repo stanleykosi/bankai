@@ -16,7 +16,7 @@ import { fetchAIPicks, fetchSmartMoney } from "@/lib/analysis";
 import type { AIPick, MarketSignal, WhaleEvent } from "@/types/analysis";
 import { cn } from "@/lib/utils";
 
-const windowMinutes = 60;
+const windowMinutes = 1440;
 
 const formatDollars = (value: number) =>
   value >= 1_000_000
@@ -108,6 +108,9 @@ function MarketSignalCard({ market }: { market: MarketSignal }) {
             </span>
             <span className="rounded-full border border-border/60 px-2 py-0.5">
               Whale Hits {market.smart_money.whale_hits_count}
+            </span>
+            <span className="rounded-full border border-border/60 px-2 py-0.5">
+              Entry Edge {market.smart_money.avg_entry_vs_mid_bps.toFixed(1)} bps
             </span>
           </div>
         </div>

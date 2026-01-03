@@ -8,6 +8,7 @@ export type SmartMoneyStats = {
   gold_buys: number;
   silver_buys: number;
   bronze_buys: number;
+  avg_entry_vs_mid_bps: number;
 };
 
 export type WalletSnapshot = {

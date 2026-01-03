@@ -61,7 +61,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	socialService := services.NewSocialService(db, gammaClient)
 	watchlistService := services.NewWatchlistService(db)
 	notificationService := services.NewNotificationService(db, socialService)
-	alphaHubService := services.NewAlphaHubService(marketService, profileService, clobClient, tavilyClient, openaiClient, rdb)
+	alphaHubService := services.NewAlphaHubService(marketService, profileService, clobClient, tavilyClient, openaiClient, dataAPIClient, rdb)
 
 	// Initialize Blockchain Service
 	blockchainService, err := services.NewBlockchainService(cfg)

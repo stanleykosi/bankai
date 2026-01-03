@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bankai-project/backend/internal/polymarket/clob"
 	"github.com/bankai-project/backend/internal/services"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -45,6 +46,8 @@ const (
 type BaseMessage struct {
 	EventType string `json:"event_type"`
 }
+
+const tradeBufferTTL = 6 * time.Hour
 
 // PriceChange represents a single update in the new Sept 2025 schema
 type PriceChange struct {
@@ -245,6 +248,8 @@ func (h *MessageHandler) handleLastTrade(ctx context.Context, m *LastTradeMessag
 	price, _ := strconv.ParseFloat(m.Price, 64)
 	size, _ := strconv.ParseFloat(m.Size, 64)
 	volume := price * size
+	matchTime := parseTimestampToUnix(m.Timestamp)
+	tradeID := fmt.Sprintf("%s-%s-%s", m.Market, m.AssetID, m.Timestamp)
 
 	pipe := h.Redis.Pipeline()
 
@@ -259,6 +264,29 @@ func (h *MessageHandler) handleLastTrade(ctx context.Context, m *LastTradeMessag
 		"last_trade_price":   m.Price,
 		"last_trade_updated": m.Timestamp,
 	})
+
+	// 4. Buffer trade event for analysis (rolling window)
+	if matchTime > 0 {
+		bucket := matchTime / 60
+		trade := clob.TradeEvent{
+			ID:        tradeID,
+			Market:    m.Market,
+			TokenID:   m.AssetID,
+			Side:      clob.OrderSide(strings.ToUpper(m.Side)),
+			Price:     price,
+			Size:      size,
+			Value:     volume,
+			Taker:     "", // Not provided in RTDS; left empty
+			Maker:     "",
+			MatchTime: matchTime,
+		}
+		data, err := json.Marshal(trade)
+		if err == nil {
+			listKey := fmt.Sprintf("rtds:trades:%d", bucket)
+			pipe.LPush(ctx, listKey, data)
+			pipe.Expire(ctx, listKey, tradeBufferTTL)
+		}
+	}
 
 	if _, err := pipe.Exec(ctx); err != nil {
 		return err
@@ -334,4 +362,22 @@ func parseFloat(value string) float64 {
 		return 0
 	}
 	return f
+}
+
+func parseTimestampToUnix(ts string) int64 {
+	if ts == "" {
+		return time.Now().Unix()
+	}
+	// Try RFC3339
+	if parsed, err := time.Parse(time.RFC3339, ts); err == nil {
+		return parsed.Unix()
+	}
+	// Try numeric seconds
+	if num, err := strconv.ParseInt(ts, 10, 64); err == nil {
+		if num > 1_000_000_000_000 {
+			return num / 1000
+		}
+		return num
+	}
+	return time.Now().Unix()
 }

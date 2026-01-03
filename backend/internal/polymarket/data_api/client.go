@@ -269,6 +269,17 @@ func (c *Client) GetTrades(ctx context.Context, address string, params *TradesPa
 		return nil, fmt.Errorf("address is required")
 	}
 
+	return c.getTradesInternal(ctx, address, params)
+}
+
+// GetGlobalTrades fetches recent trades without filtering by user.
+// GET /trades?limit={limit}&after={ts}
+func (c *Client) GetGlobalTrades(ctx context.Context, params *TradesParams) ([]Trade, error) {
+	return c.getTradesInternal(ctx, "", params)
+}
+
+func (c *Client) getTradesInternal(ctx context.Context, address string, params *TradesParams) ([]Trade, error) {
+
 	// Apply API caps (doc: limit<=500, offset<=1000)
 	limit := 500
 	offset := 0
@@ -291,7 +302,9 @@ func (c *Client) GetTrades(ctx context.Context, address string, params *TradesPa
 	}
 
 	q := u.Query()
-	q.Set("user", strings.ToLower(address))
+	if address != "" {
+		q.Set("user", strings.ToLower(address))
+	}
 
 	// The Data API defaults takerOnly=true; set false unless explicitly provided.
 	takerOnly := false

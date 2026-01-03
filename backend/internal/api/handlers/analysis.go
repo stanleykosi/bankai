@@ -29,7 +29,7 @@ func NewAnalysisHandler(service *services.AlphaHubService) *AnalysisHandler {
 // GetSmartMoney returns the smart-money + whale signals for the last hour (default) or provided window.
 // GET /api/v1/analysis/smart-money?window=60
 func (h *AnalysisHandler) GetSmartMoney(c *fiber.Ctx) error {
-	window := time.Duration(60) * time.Minute
+	window := time.Duration(1440) * time.Minute // default 24h lookback
 	if raw := strings.TrimSpace(c.Query("window")); raw != "" {
 		if mins, err := strconv.Atoi(raw); err == nil && mins > 0 && mins <= 180 {
 			window = time.Duration(mins) * time.Minute
@@ -46,7 +46,7 @@ func (h *AnalysisHandler) GetSmartMoney(c *fiber.Ctx) error {
 // GetAIPicks runs the Alpha Hub LLM against the latest smart-money payload.
 // GET /api/v1/analysis/ai-picks?window=60
 func (h *AnalysisHandler) GetAIPicks(c *fiber.Ctx) error {
-	window := time.Duration(60) * time.Minute
+	window := time.Duration(1440) * time.Minute // default 24h lookback
 	if raw := strings.TrimSpace(c.Query("window")); raw != "" {
 		if mins, err := strconv.Atoi(raw); err == nil && mins > 0 && mins <= 180 {
 			window = time.Duration(mins) * time.Minute
