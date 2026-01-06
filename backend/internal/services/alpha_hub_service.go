@@ -145,7 +145,14 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 
 	trades, err := s.consumeRecentTrades(ctx, window)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch trades: %w", err)
+		logger.Error("AlphaHub: trades fetch failed: %v", err)
+		// Degrade gracefully with empty signals
+		return &SmartMoneyResponse{
+			WindowSeconds: int(window.Seconds()),
+			Markets:       []MarketSignal{},
+			Whales:        []WhaleEvent{},
+			GeneratedAt:   time.Now().UTC(),
+		}, nil
 	}
 
 	walletTierCache := make(map[string]WalletSnapshot)
@@ -458,7 +465,7 @@ func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoney
 		results, err := s.tavilyClient.Search(ctx, m.Title, "polymarket.com")
 		if err != nil {
 			logger.Error("AlphaHub: tavily search failed for %s: %v", m.MarketID, err)
-			continue
+			return nil, fmt.Errorf("tavily failed for %s: %w", m.MarketID, err)
 		}
 		for _, r := range results {
 			newsByMarket[m.MarketID] = append(newsByMarket[m.MarketID], newsItem{
@@ -480,6 +487,7 @@ func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoney
 	userPromptBytes, _ := json.Marshal(payload)
 	content, err := s.openaiClient.Analyze(ctx, prompts.AlphaHubSystemPrompt, string(userPromptBytes))
 	if err != nil {
+		logger.Error("AlphaHub: OpenAI analyze failed: %v | payload=%s", err, string(userPromptBytes))
 		return nil, err
 	}
 
