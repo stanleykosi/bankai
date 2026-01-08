@@ -51,25 +51,28 @@ type RedisConfig struct {
 
 // PolymarketConfig holds Polymarket API endpoints and keys
 type PolymarketConfig struct {
-	ClobURL       string
-	GammaURL      string
-	DataAPIURL    string // Polymarket Data API for positions, holders, trades
-	BuilderAPIKey string
-	BuilderSecret string
-	BuilderPass   string
-	RelayerURL    string // Optional, used for gasless wallets
+	ClobURL              string
+	GammaURL             string
+	DataAPIURL           string // Polymarket Data API for positions, holders, trades
+	OrderbookSubgraphURL string // Goldsky Orderbook subgraph for deep trade history
+	CollateralAssetID    string // Native USDC on Polygon (used to price trades)
+	BuilderAPIKey        string
+	BuilderSecret        string
+	BuilderPass          string
+	RelayerURL           string // Optional, used for gasless wallets
 }
 
 // ServicesConfig holds external service keys (AI, Auth, etc.)
 type ServicesConfig struct {
-	ClerkSecretKey string
-	ClerkJWKSURL   string // URL to fetch JSON Web Key Set for JWT validation
-	TavilyAPIKey   string
-	OpenAIAPIKey   string
-	OpenAIBaseURL  string
-	OpenAIModel    string
-	PolygonRPCURL  string
-	SyncJobSecret  string
+	ClerkSecretKey     string
+	ClerkJWKSURL       string // URL to fetch JSON Web Key Set for JWT validation
+	TavilyAPIKey       string
+	OpenAIAPIKey       string
+	OpenAIBaseURL      string
+	OpenAIModel        string
+	PolygonRPCURL      string
+	SyncJobSecret      string
+	AIPicksMarketLimit int
 }
 
 // Load reads .env file and populates the Config struct
@@ -89,23 +92,26 @@ func Load() (*Config, error) {
 			URL: getEnv("REDIS_URL", "redis://localhost:6379"),
 		},
 		Polymarket: PolymarketConfig{
-			ClobURL:       getEnv("POLYMARKET_CLOB_URL", "https://clob.polymarket.com"),
-			GammaURL:      getEnv("POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com"),
-			DataAPIURL:    getEnv("POLYMARKET_DATA_API_URL", "https://data-api.polymarket.com"),
-			BuilderAPIKey: sanitizeCredential(getEnv("POLY_BUILDER_API_KEY", "")),
-			BuilderSecret: sanitizeCredential(getEnv("POLY_BUILDER_SECRET", "")), // Often empty/not used for local signing depending on setup, but good to have
-			BuilderPass:   sanitizeCredential(getEnv("POLY_BUILDER_PASSPHRASE", "")),
-			RelayerURL:    getEnv("POLYMARKET_RELAYER_URL", "https://relayer-v2.polymarket.com"),
+			ClobURL:              getEnv("POLYMARKET_CLOB_URL", "https://clob.polymarket.com"),
+			GammaURL:             getEnv("POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com"),
+			DataAPIURL:           getEnv("POLYMARKET_DATA_API_URL", "https://data-api.polymarket.com"),
+			OrderbookSubgraphURL: getEnv("POLYMARKET_ORDERBOOK_SUBGRAPH_URL", "https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/orderbook-subgraph/0.0.1/gn"),
+			CollateralAssetID:    strings.ToLower(getEnv("POLYMARKET_COLLATERAL_ASSET_ID", "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359")),
+			BuilderAPIKey:        sanitizeCredential(getEnv("POLY_BUILDER_API_KEY", "")),
+			BuilderSecret:        sanitizeCredential(getEnv("POLY_BUILDER_SECRET", "")), // Often empty/not used for local signing depending on setup, but good to have
+			BuilderPass:          sanitizeCredential(getEnv("POLY_BUILDER_PASSPHRASE", "")),
+			RelayerURL:           getEnv("POLYMARKET_RELAYER_URL", "https://relayer-v2.polymarket.com"),
 		},
 		Services: ServicesConfig{
-			ClerkSecretKey: getEnv("CLERK_SECRET_KEY", ""),
-			ClerkJWKSURL:   getEnv("CLERK_JWKS_URL", ""),
-			TavilyAPIKey:   getEnv("TAVILY_API_KEY", ""),
-			OpenAIAPIKey:   getEnv("OPENAI_API_KEY", ""),
-			OpenAIBaseURL:  getEnv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"),
-			OpenAIModel:    getEnv("OPENAI_MODEL", "google/gemini-3-pro-preview"),
-			PolygonRPCURL:  getEnv("POLYGON_RPC_URL", ""),
-			SyncJobSecret:  getEnv("JOB_SYNC_SECRET", ""),
+			ClerkSecretKey:     getEnv("CLERK_SECRET_KEY", ""),
+			ClerkJWKSURL:       getEnv("CLERK_JWKS_URL", ""),
+			TavilyAPIKey:       getEnv("TAVILY_API_KEY", ""),
+			OpenAIAPIKey:       getEnv("OPENAI_API_KEY", ""),
+			OpenAIBaseURL:      getEnv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"),
+			OpenAIModel:        getEnv("OPENAI_MODEL", "google/gemini-3-pro-preview"),
+			PolygonRPCURL:      getEnv("POLYGON_RPC_URL", ""),
+			SyncJobSecret:      getEnv("JOB_SYNC_SECRET", ""),
+			AIPicksMarketLimit: getEnvAsInt("AI_PICKS_MARKET_LIMIT", 10),
 		},
 	}
 

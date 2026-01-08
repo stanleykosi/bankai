@@ -22,6 +22,7 @@ import (
 	"github.com/bankai-project/backend/internal/integrations/openai"
 	"github.com/bankai-project/backend/internal/integrations/tavily"
 	"github.com/bankai-project/backend/internal/logger"
+	"github.com/bankai-project/backend/internal/polymarket"
 	"github.com/bankai-project/backend/internal/polymarket/clob"
 	"github.com/bankai-project/backend/internal/polymarket/data_api"
 	"github.com/bankai-project/backend/internal/polymarket/gamma"
@@ -49,6 +50,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	tavilyClient := tavily.NewClient(cfg)
 	openaiClient := openai.NewClient(cfg)
 	dataAPIClient := data_api.NewClient(cfg)
+	subgraphClient := polymarket.NewSubgraphClient(cfg)
 
 	// 3. Initialize Services
 	marketService := services.NewMarketService(db, rdb, gammaClient, clobClient)
@@ -61,7 +63,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	socialService := services.NewSocialService(db, gammaClient)
 	watchlistService := services.NewWatchlistService(db)
 	notificationService := services.NewNotificationService(db, socialService)
-	alphaHubService := services.NewAlphaHubService(marketService, profileService, clobClient, tavilyClient, openaiClient, dataAPIClient, rdb)
+	alphaHubService := services.NewAlphaHubService(marketService, profileService, clobClient, tavilyClient, openaiClient, dataAPIClient, subgraphClient, cfg.Services.AIPicksMarketLimit, rdb)
 
 	// Initialize Blockchain Service
 	blockchainService, err := services.NewBlockchainService(cfg)

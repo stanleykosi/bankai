@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bankai-project/backend/internal/integrations/openai"
 	"github.com/bankai-project/backend/internal/integrations/tavily"
 	"github.com/bankai-project/backend/internal/logger"
+	"github.com/bankai-project/backend/internal/polymarket"
 	"github.com/bankai-project/backend/internal/polymarket/clob"
 	"github.com/bankai-project/backend/internal/polymarket/data_api"
 	"github.com/bankai-project/backend/internal/services/prompts"
@@ -19,10 +21,9 @@ import (
 )
 
 const (
-	defaultSmartMoneyTTL   = 45 * time.Second
+	defaultSmartMoneyTTL   = 90 * time.Second
 	defaultWhaleThreshold  = 1_000.0
 	defaultAIMarketLimit   = 10
-	defaultNewsMarketLimit = 10
 	maxWhalesToEnrich      = 200
 	washTradeWindow        = 10 * time.Minute
 	washTradeSizeThreshold = 0.10 // 10% size similarity window
@@ -31,6 +32,11 @@ const (
 	tavilySearchTimeout    = 15 * time.Second
 	maxGlobalTrades        = 500
 	dataAPIMaxPages        = 3
+	subgraphMaxPages       = 80
+	subgraphMinMakerAmount = int64(1)
+	subgraphMinNotionalUSD = 1.0
+	maxSubgraphTrades      = 60000
+	subgraphCacheTTL       = 90 * time.Second
 	tradeBufferTTL         = 30 * time.Hour
 	minResolutionHorizon   = 6 * time.Hour
 	maxResolutionHorizon   = 60 * 24 * time.Hour
@@ -44,7 +50,9 @@ type AlphaHubService struct {
 	tavilyClient   *tavily.Client
 	openaiClient   *openai.Client
 	dataAPIClient  *data_api.Client
+	subgraphClient *polymarket.SubgraphClient
 	redis          *redis.Client
+	aiMarketLimit  int
 }
 
 type SmartMoneyStats struct {
@@ -200,7 +208,10 @@ type AIResponse struct {
 	Model      string   `json:"model"`
 }
 
-func NewAlphaHubService(marketService *MarketService, profileService *ProfileService, clobClient *clob.Client, tavilyClient *tavily.Client, openaiClient *openai.Client, dataAPIClient *data_api.Client, redis *redis.Client) *AlphaHubService {
+func NewAlphaHubService(marketService *MarketService, profileService *ProfileService, clobClient *clob.Client, tavilyClient *tavily.Client, openaiClient *openai.Client, dataAPIClient *data_api.Client, subgraphClient *polymarket.SubgraphClient, aiMarketLimit int, redis *redis.Client) *AlphaHubService {
+	if subgraphClient == nil {
+		subgraphClient = polymarket.NewSubgraphClient(nil)
+	}
 	return &AlphaHubService{
 		marketService:  marketService,
 		profileService: profileService,
@@ -208,7 +219,9 @@ func NewAlphaHubService(marketService *MarketService, profileService *ProfileSer
 		tavilyClient:   tavilyClient,
 		openaiClient:   openaiClient,
 		dataAPIClient:  dataAPIClient,
+		subgraphClient: subgraphClient,
 		redis:          redis,
+		aiMarketLimit:  aiMarketLimit,
 	}
 }
 
@@ -541,79 +554,33 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 // Expected key pattern: rtds:trades:{unixMinute} -> list of JSON-encoded TradeEvent.
 func (s *AlphaHubService) consumeRecentTrades(ctx context.Context, window time.Duration) ([]clob.TradeEvent, error) {
 	var merged []clob.TradeEvent
-	now := time.Now().Unix()
-	start := now - int64(window.Seconds())
+	start := time.Now().Unix() - int64(window.Seconds())
 
-	// 1) Primary source: Data API (proxyWallet available without user filter)
-	if s.dataAPIClient != nil {
-		after := time.Unix(start, 0).UTC().Format(time.RFC3339)
-		offset := 0
-		for page := 0; page < dataAPIMaxPages; page++ {
-			apiTrades, err := s.dataAPIClient.GetGlobalTrades(ctx, &data_api.TradesParams{
-				After:  after,
-				Limit:  maxGlobalTrades,
-				Offset: offset,
-			})
-			if err != nil {
-				logger.Error("AlphaHub: data API global trades failed (page %d offset %d): %v", page, offset, err)
-				break
+	cacheKey := fmt.Sprintf("alphahub:trades:subgraph:%d", int(window.Seconds()))
+
+	// Cache-first lookup for mapped subgraph trades
+	if s.redis != nil {
+		if cached, err := s.redis.Get(ctx, cacheKey).Bytes(); err == nil && len(cached) > 0 {
+			var cachedTrades []clob.TradeEvent
+			if unmarshalErr := json.Unmarshal(cached, &cachedTrades); unmarshalErr == nil && len(cachedTrades) > 0 {
+				merged = append(merged, cachedTrades...)
+				logger.Info("AlphaHub: using cached subgraph trades, window=%v count=%d", window, len(cachedTrades))
 			}
-			if len(apiTrades) == 0 {
-				break
-			}
-			for _, t := range apiTrades {
-				matchTime := normalizeTradeTimestamp(t.Timestamp)
-				if matchTime < start {
-					continue
-				}
-				taker := strings.TrimSpace(t.Taker)
-				maker := strings.TrimSpace(t.Maker)
-				proxy := strings.TrimSpace(t.ProxyWallet)
-				if taker == "" {
-					taker = strings.TrimSpace(t.TradeOwner)
-				}
-				if taker == "" {
-					taker = proxy
-				}
-				if maker == "" {
-					maker = strings.TrimSpace(t.TradeOwner)
-				}
-				if maker == "" {
-					maker = proxy
-				}
-				merged = append(merged, clob.TradeEvent{
-					ID:        t.ID,
-					Market:    t.ConditionID,
-					TokenID:   t.TokenID,
-					Side:      clob.OrderSide(strings.ToUpper(strings.TrimSpace(t.Side))),
-					Price:     t.Price,
-					Size:      t.Size,
-					Value:     resolveTradeValue(t.Value, t.Price, t.Size),
-					Taker:     taker,
-					Maker:     maker,
-					MatchTime: matchTime,
-				})
-			}
-			if len(apiTrades) < maxGlobalTrades || offset >= 1000 {
-				break
-			}
-			offset += maxGlobalTrades
 		}
 	}
 
-	// 2) Supplement with cached RTDS trades for near-real-time fills
-	if s.redis != nil {
-		for ts := start; ts <= now; ts += 60 {
-			key := fmt.Sprintf("rtds:trades:%d", ts/60)
-			raw, err := s.redis.LRange(ctx, key, 0, -1).Result()
-			if err != nil && err != redis.Nil {
-				logger.Error("AlphaHub: trade buffer read failed for %s: %v", key, err)
-				continue
-			}
-			for _, item := range raw {
-				var ev clob.TradeEvent
-				if err := json.Unmarshal([]byte(item), &ev); err == nil && ev.MatchTime >= start {
-					merged = append(merged, ev)
+	// Primary source: Orderbook subgraph for complete 24h history (cache miss)
+	if len(merged) == 0 && s.subgraphClient != nil {
+		subgraphTrades, markets, err := s.fetchSubgraphTrades(ctx, start)
+		if err != nil {
+			logger.Error("AlphaHub: subgraph trade fetch failed: %v", err)
+		} else {
+			logger.Info("AlphaHub: subgraph trades fetched window=%v trades=%d markets=%d", window, len(subgraphTrades), markets)
+			merged = append(merged, subgraphTrades...)
+
+			if s.redis != nil && len(subgraphTrades) > 0 {
+				if data, marshalErr := json.Marshal(subgraphTrades); marshalErr == nil {
+					_ = s.redis.Set(ctx, cacheKey, data, subgraphCacheTTL).Err()
 				}
 			}
 		}
@@ -658,6 +625,136 @@ func (s *AlphaHubService) consumeRecentTrades(ctx context.Context, window time.D
 		window, len(merged), len(out), withWallet)
 
 	return out, nil
+}
+
+func (s *AlphaHubService) fetchSubgraphTrades(ctx context.Context, start int64) ([]clob.TradeEvent, int, error) {
+	if s.subgraphClient == nil {
+		return nil, 0, fmt.Errorf("subgraph client not configured")
+	}
+
+	events, err := s.subgraphClient.FetchOrderFilledEvents(ctx, time.Unix(start, 0), subgraphMinMakerAmount, subgraphMaxPages)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	assets, err := s.marketService.GetMarketAssets(ctx, 0)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	type assetRef struct {
+		MarketID string
+		TokenID  string
+	}
+	assetLookup := make(map[string]assetRef, len(assets)*2)
+	for _, asset := range assets {
+		if asset.TokenIDYes != "" {
+			assetLookup[strings.ToLower(strings.TrimSpace(asset.TokenIDYes))] = assetRef{MarketID: asset.ConditionID, TokenID: asset.TokenIDYes}
+		}
+		if asset.TokenIDNo != "" {
+			assetLookup[strings.ToLower(strings.TrimSpace(asset.TokenIDNo))] = assetRef{MarketID: asset.ConditionID, TokenID: asset.TokenIDNo}
+		}
+	}
+
+	trades := make([]clob.TradeEvent, 0, len(events))
+	latest := start
+	marketSet := make(map[string]struct{})
+	for _, ev := range events {
+		trade, ok := s.mapOrderFilledEvent(ev, assetLookup)
+		if !ok || trade.MatchTime < start {
+			continue
+		}
+		trades = append(trades, trade)
+		if trade.Market != "" {
+			marketSet[trade.Market] = struct{}{}
+		}
+		if trade.MatchTime > latest {
+			latest = trade.MatchTime
+		}
+		if len(trades) >= maxSubgraphTrades {
+			logger.Info("AlphaHub: subgraph trade list truncated at %d trades", maxSubgraphTrades)
+			break
+		}
+	}
+
+	logger.Info("AlphaHub: subgraph trade mapping completed, fetched=%d latest_ts=%d markets=%d", len(trades), latest, len(marketSet))
+	return trades, len(marketSet), nil
+}
+
+func (s *AlphaHubService) mapOrderFilledEvent(ev polymarket.OrderFilledEvent, assets map[string]struct {
+	MarketID string
+	TokenID  string
+}) (clob.TradeEvent, bool) {
+	collateral := strings.ToLower(strings.TrimSpace(s.subgraphClient.CollateralAssetID))
+	makerAsset := strings.ToLower(strings.TrimSpace(ev.MakerAssetID))
+	takerAsset := strings.ToLower(strings.TrimSpace(ev.TakerAssetID))
+
+	makerAmt := parseAtomicAmount(ev.MakerAmountFilled)
+	takerAmt := parseAtomicAmount(ev.TakerAmountFilled)
+	if makerAmt <= 0 || takerAmt <= 0 {
+		return clob.TradeEvent{}, false
+	}
+
+	var (
+		tokenAsset       string
+		tokenAtomic      float64
+		collateralAtomic float64
+		side             clob.OrderSide
+	)
+
+	switch {
+	case makerAsset == collateral:
+		tokenAsset = takerAsset
+		tokenAtomic = takerAmt
+		collateralAtomic = makerAmt
+		side = clob.SELL
+	case takerAsset == collateral:
+		tokenAsset = makerAsset
+		tokenAtomic = makerAmt
+		collateralAtomic = takerAmt
+		side = clob.BUY
+	default:
+		return clob.TradeEvent{}, false
+	}
+
+	meta, ok := assets[tokenAsset]
+	if !ok || meta.MarketID == "" || tokenAtomic <= 0 || collateralAtomic <= 0 {
+		return clob.TradeEvent{}, false
+	}
+
+	price := collateralAtomic / tokenAtomic
+	size := tokenAtomic / 1e6
+	value := collateralAtomic / 1e6
+	if price <= 0 || size <= 0 || value < subgraphMinNotionalUSD {
+		return clob.TradeEvent{}, false
+	}
+
+	matchTime := normalizeTradeTimestamp(ev.Timestamp)
+
+	return clob.TradeEvent{
+		ID:        ev.TransactionHash,
+		Market:    meta.MarketID,
+		TokenID:   meta.TokenID,
+		Side:      side,
+		Price:     price,
+		Size:      size,
+		Value:     value,
+		Taker:     ev.Taker,
+		Maker:     ev.Maker,
+		MatchTime: matchTime,
+	}, true
+}
+
+func parseAtomicAmount(raw string) float64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	val, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0
+	}
+	return val
 }
 
 func buildTradeKey(t clob.TradeEvent, wallet string, idx int) string {
@@ -764,9 +861,13 @@ func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoney
 	}
 
 	// Limit to top markets for AI picks/news lookups
+	limit := s.aiMarketLimit
+	if limit <= 0 {
+		limit = defaultAIMarketLimit
+	}
 	topMarkets := smart.Markets
-	if len(topMarkets) > defaultAIMarketLimit {
-		topMarkets = topMarkets[:defaultAIMarketLimit]
+	if len(topMarkets) > limit {
+		topMarkets = topMarkets[:limit]
 	}
 
 	// Enrich with news for top markets (optional - continue even if it fails)
@@ -782,9 +883,6 @@ func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoney
 	if s.tavilyClient != nil {
 		newsStart := time.Now()
 		newsMarkets := topMarkets
-		if len(newsMarkets) > defaultNewsMarketLimit {
-			newsMarkets = newsMarkets[:defaultNewsMarketLimit]
-		}
 		for _, m := range newsMarkets {
 			// Use a short timeout for each Tavily search
 			searchCtx, cancel := context.WithTimeout(ctx, tavilySearchTimeout)
@@ -830,35 +928,6 @@ func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoney
 	}
 	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
 		return &AIResponse{RawContent: content, Model: s.openaiClient.Model()}, nil
-	}
-
-	// Only backfill if model returned nothing to keep AI copy intact.
-	if len(parsed.AIPicks) == 0 {
-		seen := make(map[string]struct{})
-		for _, p := range parsed.AIPicks {
-			seen[p.MarketID] = struct{}{}
-		}
-		for _, m := range topMarkets {
-			if len(parsed.AIPicks) >= defaultAIMarketLimit {
-				break
-			}
-			if _, ok := seen[m.MarketID]; ok {
-				continue
-			}
-			action := "monitor"
-			if m.SmartMoney.NetBuyUSD > m.SmartMoney.NetSellUSD {
-				action = "buy_yes"
-			}
-			parsed.AIPicks = append(parsed.AIPicks, AIPick{
-				MarketID:       m.MarketID,
-				Slug:           m.Slug,
-				Title:          m.Title,
-				ProbabilityYes: m.YesPrice,
-				Conviction:     "Medium",
-				Action:         action,
-				Rationale:      fmt.Sprintf("Net buy $%.0fk, spread %.0fbps, momentum 1h %.2f.", m.SmartMoney.NetBuyUSD/1000, m.SpreadBps, m.Momentum1h),
-			})
-		}
 	}
 
 	resp := &AIResponse{
@@ -983,9 +1052,9 @@ func scoreMarket(m MarketSignal) float64 {
 	}
 	smartWeight := 0.30 * normalizeScore(m.SmartMoney.NetBuyUSD)
 	momentumWeight := 0.15 * clamp(m.Momentum1h/0.1, -1, 1)
-	liquidityWeight := 0.10 * clamp(1-(m.SpreadBps/300), -1, 1)
-	volumeWeight := 0.10 * clamp(m.Volume24h/200000, 0, 1)
-	valueWeight := 0.20 * valueEdgeScore(m)
+	liquidityWeight := 0.05 * clamp(1-(m.SpreadBps/300), -1, 1)
+	volumeWeight := 0.05 * clamp(m.Volume24h/200000, 0, 1)
+	valueWeight := 0.30 * valueEdgeScore(m)
 	fundamentalsWeight := 0.15 // placeholder for rules/resolution clarity baked via penalties above
 	base := (smartWeight + momentumWeight + liquidityWeight + volumeWeight + valueWeight + fundamentalsWeight) * 100
 	return math.Max(base-liquidityPenalty, 0)
