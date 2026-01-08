@@ -18,12 +18,14 @@ import (
 	"github.com/bankai-project/backend/internal/polymarket/data_api"
 	"github.com/bankai-project/backend/internal/services/prompts"
 	"github.com/redis/go-redis/v9"
+	"sync"
 )
 
 const (
 	defaultSmartMoneyTTL   = 90 * time.Second
 	defaultWhaleThreshold  = 1_000.0
 	defaultAIMarketLimit   = 50
+	defaultNewsMarketLimit = 50
 	maxWhalesToEnrich      = 200
 	washTradeWindow        = 10 * time.Minute
 	washTradeSizeThreshold = 0.10 // 10% size similarity window
@@ -460,12 +462,17 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 	}
 
 	// Single batch query instead of N individual queries
-	marketsMap, batchErr := s.marketService.GetMarketsByConditionIDs(ctx, marketIDs)
+	marketsMap, batchErr := s.marketService.GetMarketsByConditionIDsWithGammaFallback(ctx, marketIDs)
 	if batchErr != nil {
 		logger.Error("AlphaHub: batch market query failed: %v", batchErr)
 	}
-	logger.Info("AlphaHub: batch market query completed, requested=%d, found=%d, elapsed=%v",
-		len(marketIDs), len(marketsMap), time.Since(marketHydrateStart))
+	if len(marketsMap) < len(marketIDs) {
+		logger.Info("AlphaHub: batch market query completed, requested=%d, found=%d (missing=%d), elapsed=%v",
+			len(marketIDs), len(marketsMap), len(marketIDs)-len(marketsMap), time.Since(marketHydrateStart))
+	} else {
+		logger.Info("AlphaHub: batch market query completed, requested=%d, found=%d, elapsed=%v",
+			len(marketIDs), len(marketsMap), time.Since(marketHydrateStart))
+	}
 
 	// Hydrate whale tape with market metadata for UI clarity
 	for i := range whales {
@@ -475,6 +482,14 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 			whales[i].SpreadBps = spreadToBps(meta.Spread)
 		}
 	}
+	filteredWhales := make([]WhaleEvent, 0, len(whales))
+	for _, w := range whales {
+		if meta := marketsMap[w.MarketID]; meta != nil {
+			filteredWhales = append(filteredWhales, w)
+		}
+	}
+	whales = filteredWhales
+
 	sort.Slice(whales, func(i, j int) bool {
 		return whales[i].Timestamp.After(whales[j].Timestamp)
 	})
@@ -483,53 +498,60 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 	}
 
 	signals := make([]MarketSignal, 0, len(marketAgg))
+	missingMetadata := 0
 	for marketID, agg := range marketAgg {
 		metadata := marketsMap[marketID]
-		if metadata != nil {
-			// Filter by resolution horizon
-			if metadata.EndDate != nil {
-				horizon := metadata.EndDate.Sub(time.Now())
-				if horizon < minResolutionHorizon || horizon > maxResolutionHorizon {
-					continue
-				}
-			}
-			agg.Title = metadata.Title
-			agg.Slug = metadata.Slug
-			agg.Category = metadata.Category
-			agg.Rules = metadata.ResolutionRules
-			if metadata.Active && !metadata.Closed {
-				agg.Status = "active"
-			} else if metadata.Closed {
-				agg.Status = "closed"
-			}
-			if metadata.CreatedAt.Unix() > 0 {
-				agg.CreatedAt = metadata.CreatedAt.UTC().Format(time.RFC3339)
-			}
-			if metadata.EndDate != nil {
-				agg.Resolution = metadata.EndDate.UTC().Format(time.RFC3339)
-			}
-			agg.YesPrice = metadata.YesPrice
-			agg.BestBid = metadata.YesBestBid
-			agg.BestAsk = metadata.YesBestAsk
-			agg.Volume24h = metadata.Volume24h
-			agg.Volume7d = metadata.Volume1Week
-			agg.Momentum1h = metadata.OneHourPriceChange
-			agg.Momentum24h = metadata.OneDayPriceChange
-			agg.Momentum7d = metadata.OneWeekPriceChange
-			agg.SpreadBps = spreadToBps(metadata.Spread)
-			agg.TokenID = metadata.TokenIDYes
+		if metadata == nil {
+			missingMetadata++
+			continue // drop markets we cannot hydrate to avoid blank cards
+		}
 
-			// Compute avg entry vs mid (bps) using current mid
-			mid := resolveMid(agg.BestBid, agg.BestAsk, agg.YesPrice)
-			if sums, ok := entrySums[marketID]; ok && sums.Size > 0 && mid > 0 {
-				avgEntry := sums.Notional / sums.Size
-				agg.SmartMoney.AvgEntryVsMidBps = ((avgEntry - mid) / mid) * 10000
-				agg.SmartMoney.AvgEntryVsMidBps = clamp(agg.SmartMoney.AvgEntryVsMidBps, -5000, 5000)
+		// Filter by resolution horizon
+		if metadata.EndDate != nil {
+			horizon := metadata.EndDate.Sub(time.Now())
+			if horizon < minResolutionHorizon || horizon > maxResolutionHorizon {
+				continue
 			}
-		} else {
-			// Fallback to prevent blank UI cards when metadata is missing (e.g., archived market still trading)
-			agg.Title = marketID
-			agg.Slug = marketID
+		}
+		// Skip resolved/closed markets to avoid blank stats on inactive IDs
+		if metadata.Closed || !metadata.Active {
+			continue
+		}
+		if metadata.EndDate != nil && metadata.EndDate.Before(time.Now()) {
+			continue
+		}
+		agg.Title = metadata.Title
+		agg.Slug = metadata.Slug
+		agg.Category = metadata.Category
+		agg.Rules = metadata.ResolutionRules
+		if metadata.Active && !metadata.Closed {
+			agg.Status = "active"
+		} else if metadata.Closed {
+			agg.Status = "closed"
+		}
+		if metadata.CreatedAt.Unix() > 0 {
+			agg.CreatedAt = metadata.CreatedAt.UTC().Format(time.RFC3339)
+		}
+		if metadata.EndDate != nil {
+			agg.Resolution = metadata.EndDate.UTC().Format(time.RFC3339)
+		}
+		agg.YesPrice = metadata.YesPrice
+		agg.BestBid = metadata.YesBestBid
+		agg.BestAsk = metadata.YesBestAsk
+		agg.Volume24h = metadata.Volume24h
+		agg.Volume7d = metadata.Volume1Week
+		agg.Momentum1h = metadata.OneHourPriceChange
+		agg.Momentum24h = metadata.OneDayPriceChange
+		agg.Momentum7d = metadata.OneWeekPriceChange
+		agg.SpreadBps = spreadToBps(metadata.Spread)
+		agg.TokenID = metadata.TokenIDYes
+
+		// Compute avg entry vs mid (bps) using current mid
+		mid := resolveMid(agg.BestBid, agg.BestAsk, agg.YesPrice)
+		if sums, ok := entrySums[marketID]; ok && sums.Size > 0 && mid > 0 {
+			avgEntry := sums.Notional / sums.Size
+			agg.SmartMoney.AvgEntryVsMidBps = ((avgEntry - mid) / mid) * 10000
+			agg.SmartMoney.AvgEntryVsMidBps = clamp(agg.SmartMoney.AvgEntryVsMidBps, -5000, 5000)
 		}
 
 		// Skip markets that only contained wash trades within the window
@@ -540,6 +562,9 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 		signals = append(signals, *agg)
 	}
 	logger.Info("AlphaHub: market hydration completed, signals=%d, elapsed=%v", len(signals), time.Since(marketHydrateStart))
+	if missingMetadata > 0 {
+		logger.Info("AlphaHub: dropped markets with missing metadata: %d", missingMetadata)
+	}
 
 	sort.Slice(signals, func(i, j int) bool {
 		if signals[i].Score == signals[j].Score {
@@ -960,25 +985,58 @@ func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoney
 	if s.tavilyClient != nil {
 		newsStart := time.Now()
 		newsMarkets := topMarkets
-		for _, m := range newsMarkets {
-			// Use a short timeout for each Tavily search
-			searchCtx, cancel := context.WithTimeout(ctx, tavilySearchTimeout)
-			results, err := s.tavilyClient.Search(searchCtx, m.Title, "polymarket.com")
-			cancel()
-
-			if err != nil {
-				logger.Error("AlphaHub: tavily search failed for %s: %v (continuing without news)", m.MarketID, err)
-				continue // Don't fail the entire request, just skip news for this market
-			}
-			for _, r := range results {
-				newsByMarket[m.MarketID] = append(newsByMarket[m.MarketID], newsItem{
-					Title:   r.Title,
-					URL:     r.URL,
-					Content: r.Content,
-					Score:   r.Score,
-				})
-			}
+		maxNews := s.aiMarketLimit
+		if maxNews <= 0 {
+			maxNews = defaultAIMarketLimit
 		}
+		if maxNews < defaultNewsMarketLimit {
+			maxNews = defaultNewsMarketLimit
+		}
+		if len(newsMarkets) > maxNews {
+			newsMarkets = newsMarkets[:maxNews]
+		}
+
+		workerCount := 6
+		jobs := make(chan MarketSignal, len(newsMarkets))
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+
+		for i := 0; i < workerCount; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for m := range jobs {
+					searchCtx, cancel := context.WithTimeout(ctx, tavilySearchTimeout)
+					results, err := s.tavilyClient.Search(searchCtx, m.Title, "polymarket.com")
+					cancel()
+
+					if err != nil {
+						logger.Error("AlphaHub: tavily search failed for %s: %v (continuing without news)", m.MarketID, err)
+						continue
+					}
+					if len(results) == 0 {
+						continue
+					}
+					mu.Lock()
+					for _, r := range results {
+						newsByMarket[m.MarketID] = append(newsByMarket[m.MarketID], newsItem{
+							Title:   r.Title,
+							URL:     r.URL,
+							Content: r.Content,
+							Score:   r.Score,
+						})
+					}
+					mu.Unlock()
+				}
+			}()
+		}
+
+		for _, m := range newsMarkets {
+			jobs <- m
+		}
+		close(jobs)
+		wg.Wait()
+
 		logger.Info("AlphaHub: Tavily news enrichment completed, markets=%d, newsItems=%d, elapsed=%v",
 			len(newsMarkets), len(newsByMarket), time.Since(newsStart))
 	}

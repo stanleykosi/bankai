@@ -678,6 +678,42 @@ func (s *MarketService) GetMarketsByConditionIDs(ctx context.Context, conditionI
 	return result, nil
 }
 
+// GetMarketsByConditionIDsWithGammaFallback first tries the active cache, then triggers a Gamma sync for missing IDs.
+// This avoids DB dependence when the active cache excludes recently resolved/filtered markets.
+func (s *MarketService) GetMarketsByConditionIDsWithGammaFallback(ctx context.Context, conditionIDs []string) (map[string]*models.Market, error) {
+	result, err := s.GetMarketsByConditionIDs(ctx, conditionIDs)
+	if err != nil {
+		result = make(map[string]*models.Market)
+	}
+
+	missing := make([]string, 0)
+	for _, id := range conditionIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := result[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+
+	if len(missing) == 0 || s.GammaClient == nil {
+		return result, nil
+	}
+
+	// Sync active markets from Gamma and refresh cache
+	if err := s.syncActiveMarketsCache(ctx); err != nil {
+		return result, err
+	}
+	if refreshed, err := s.GetMarketsByConditionIDs(ctx, missing); err == nil {
+		for k, v := range refreshed {
+			result[k] = v
+		}
+	}
+
+	return result, nil
+}
+
 // GetMarketBySlug fetches a single market by its slug and attaches the latest price snapshot.
 func (s *MarketService) GetMarketBySlug(ctx context.Context, slug string) (*models.Market, error) {
 	if slug == "" {

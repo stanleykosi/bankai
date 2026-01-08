@@ -6,7 +6,7 @@
 
 "use client";
 
-import React from "react";
+import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, Brain, Flame, Loader2, Sparkles, Zap } from "lucide-react";
@@ -17,6 +17,9 @@ import type { AIPick, MarketSignal, WhaleEvent } from "@/types/analysis";
 import { cn } from "@/lib/utils";
 
 const windowMinutes = 1440;
+const maxDisplayMarkets = 50;
+const pageSize = 10;
+const maxPages = 5;
 
 const formatDollars = (value: number) =>
   value >= 1_000_000
@@ -148,6 +151,48 @@ function MarketSignalCard({ market }: { market: MarketSignal }) {
   );
 }
 
+function LoadingState() {
+  return (
+    <div className="flex flex-col gap-6 rounded-xl border border-border/70 bg-card/60 p-6">
+      <div className="flex items-center gap-3 text-muted-foreground">
+        <Loader2 className="h-5 w-5 animate-spin" />
+        <div className="space-y-1">
+          <div className="font-mono text-xs text-foreground/80">Building Alpha Hub insights...</div>
+          <div className="text-xs text-muted-foreground">
+            Smart money + whales load first; AI picks/news can take up to ~5 minutes.
+          </div>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        {Array.from({ length: 6 }).map((_, idx) => (
+          <Card key={idx} className="border-border/50 bg-card/40 p-4">
+            <div className="h-4 w-3/4 animate-pulse rounded bg-muted/40" />
+            <div className="mt-3 flex flex-wrap gap-2">
+              <div className="h-5 w-20 animate-pulse rounded-full bg-muted/30" />
+              <div className="h-5 w-20 animate-pulse rounded-full bg-muted/30" />
+              <div className="h-5 w-24 animate-pulse rounded-full bg-muted/30" />
+            </div>
+            <div className="mt-4 grid grid-cols-3 gap-3">
+              <div className="space-y-2">
+                <div className="h-3 w-16 animate-pulse rounded bg-muted/30" />
+                <div className="h-3 w-24 animate-pulse rounded bg-muted/30" />
+              </div>
+              <div className="space-y-2">
+                <div className="h-3 w-16 animate-pulse rounded bg-muted/30" />
+                <div className="h-3 w-24 animate-pulse rounded bg-muted/30" />
+              </div>
+              <div className="space-y-2">
+                <div className="h-3 w-16 animate-pulse rounded bg-muted/30" />
+                <div className="h-3 w-24 animate-pulse rounded bg-muted/30" />
+              </div>
+            </div>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function AnalysisPage() {
   const smartQuery = useQuery({
     queryKey: ["analysis", "smart", windowMinutes],
@@ -162,12 +207,25 @@ export default function AnalysisPage() {
     enabled: Boolean(smartQuery.data),
   });
 
-  const isLoading = smartQuery.isLoading;
+  const isLoading = smartQuery.isLoading || (aiQuery.isLoading && !aiQuery.data);
   const smart = smartQuery.data;
   const ai = aiQuery.data;
 
-  const topMarkets = smart?.markets?.slice(0, 12) ?? [];
+  const topMarkets = smart?.markets?.slice(0, maxDisplayMarkets) ?? [];
   const whales = smart?.whales?.slice(0, 15) ?? [];
+
+  const totalPages = useMemo(() => {
+    const pages = Math.ceil(topMarkets.length / pageSize);
+    if (pages === 0) return 1;
+    return Math.min(pages, maxPages);
+  }, [topMarkets.length]);
+
+  const [page, setPage] = useState(1);
+  const currentPage = Math.min(page, totalPages);
+  const pagedMarkets = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return topMarkets.slice(start, start + pageSize);
+  }, [currentPage, topMarkets]);
 
   return (
     <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-6 px-4 py-6">
@@ -182,19 +240,14 @@ export default function AnalysisPage() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <StatPill label="Markets" value={String(topMarkets.length)} />
+          <StatPill label="Markets" value={`${pagedMarkets.length}/${topMarkets.length}`} />
           <StatPill label="Whales" value={String(whales.length)} />
           <StatPill label="Updated" value={smart?.generated_at ? new Date(smart.generated_at).toLocaleTimeString() : "..."} />
         </div>
       </div>
 
       {isLoading ? (
-        <div className="flex h-[60vh] items-center justify-center">
-          <div className="flex items-center gap-3 text-muted-foreground">
-            <Loader2 className="h-5 w-5 animate-spin" />
-            <span className="font-mono text-xs">Collecting smart money flow...</span>
-          </div>
-        </div>
+        <LoadingState />
       ) : (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           {/* AI Picks */}
@@ -242,9 +295,32 @@ export default function AnalysisPage() {
           <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Smart Money Flow</h2>
         </div>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-          {topMarkets.map((m) => (
-            <MarketSignalCard key={m.market_id} market={m} />
-          ))}
+          {pagedMarkets.length ? (
+            pagedMarkets.map((m) => <MarketSignalCard key={m.market_id} market={m} />)
+          ) : (
+            <Card className="border-dashed border-border/70 bg-card/40 p-6 text-center text-sm text-muted-foreground">
+              No markets available.
+            </Card>
+          )}
+        </div>
+        <div className="flex items-center justify-center gap-3">
+          <button
+            className="rounded-md border border-border/70 bg-card/60 px-3 py-1 text-xs font-medium text-foreground/80 transition hover:bg-card disabled:opacity-50"
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={currentPage === 1}
+          >
+            Prev
+          </button>
+          <span className="text-xs font-mono text-muted-foreground">
+            Page {currentPage} / {totalPages}
+          </span>
+          <button
+            className="rounded-md border border-border/70 bg-card/60 px-3 py-1 text-xs font-medium text-foreground/80 transition hover:bg-card disabled:opacity-50"
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={currentPage === totalPages}
+          >
+            Next
+          </button>
         </div>
       </div>
     </div>
