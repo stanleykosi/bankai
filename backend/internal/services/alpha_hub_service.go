@@ -616,6 +616,13 @@ func (s *AlphaHubService) consumeRecentTrades(ctx context.Context, window time.D
 	seen := make(map[string]struct{})
 	out := make([]clob.TradeEvent, 0, len(merged))
 
+	withWallet := 0
+	for _, ev := range merged {
+		if strings.TrimSpace(ev.Taker) != "" || strings.TrimSpace(ev.Maker) != "" {
+			withWallet++
+		}
+	}
+
 	for _, ev := range merged {
 		key := ev.ID
 		if key == "" && ev.MatchTime > 0 {
@@ -639,6 +646,9 @@ func (s *AlphaHubService) consumeRecentTrades(ctx context.Context, window time.D
 	if len(out) == 0 {
 		return out, fmt.Errorf("no trades available in window")
 	}
+
+	logger.Info("AlphaHub: trade fetch summary window=%v merged=%d deduped=%d withWallet=%d",
+		window, len(merged), len(out), withWallet)
 
 	return out, nil
 }
