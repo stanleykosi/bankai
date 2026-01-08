@@ -104,6 +104,7 @@ type Trade struct {
 	Value                 float64 `json:"value"`
 	Maker                 string  `json:"maker"`
 	Taker                 string  `json:"taker"`
+	ProxyWallet           string  `json:"proxyWallet"`
 	MakerIsBuyer          bool    `json:"makerIsBuyer"`
 	TradeOwner            string  `json:"tradeOwner"`
 	Slug                  string  `json:"slug"`

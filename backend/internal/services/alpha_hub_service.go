@@ -544,7 +544,7 @@ func (s *AlphaHubService) consumeRecentTrades(ctx context.Context, window time.D
 	now := time.Now().Unix()
 	start := now - int64(window.Seconds())
 
-	// 1) Primary source: Data API paginated over the window
+	// 1) Primary source: Data API (proxyWallet available without user filter)
 	if s.dataAPIClient != nil {
 		after := time.Unix(start, 0).UTC().Format(time.RFC3339)
 		offset := 0
@@ -568,11 +568,18 @@ func (s *AlphaHubService) consumeRecentTrades(ctx context.Context, window time.D
 				}
 				taker := strings.TrimSpace(t.Taker)
 				maker := strings.TrimSpace(t.Maker)
+				proxy := strings.TrimSpace(t.ProxyWallet)
 				if taker == "" {
 					taker = strings.TrimSpace(t.TradeOwner)
 				}
+				if taker == "" {
+					taker = proxy
+				}
 				if maker == "" {
 					maker = strings.TrimSpace(t.TradeOwner)
+				}
+				if maker == "" {
+					maker = proxy
 				}
 				merged = append(merged, clob.TradeEvent{
 					ID:        t.ID,
@@ -612,16 +619,16 @@ func (s *AlphaHubService) consumeRecentTrades(ctx context.Context, window time.D
 		}
 	}
 
-	// Deduplicate by tx hash + market if available
-	seen := make(map[string]struct{})
-	out := make([]clob.TradeEvent, 0, len(merged))
-
 	withWallet := 0
 	for _, ev := range merged {
 		if strings.TrimSpace(ev.Taker) != "" || strings.TrimSpace(ev.Maker) != "" {
 			withWallet++
 		}
 	}
+
+	// Deduplicate by tx hash + market if available
+	seen := make(map[string]struct{})
+	out := make([]clob.TradeEvent, 0, len(merged))
 
 	for _, ev := range merged {
 		key := ev.ID
