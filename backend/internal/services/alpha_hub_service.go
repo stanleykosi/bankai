@@ -522,21 +522,18 @@ func (s *AlphaHubService) getWalletTier(ctx context.Context, address string, cac
 		return cached
 	}
 
-	stats, err := s.profileService.GetTraderStats(ctx, address)
+	// Use lightweight stats lookup with short timeout to avoid blocking
+	winRate, realized, err := s.getLightweightWalletStats(ctx, address)
 	if err != nil {
-		logger.Error("AlphaHub: stats fetch failed for %s: %v", address, err)
+		// Graceful degradation: default to Bronze tier on failure
+		logger.Error("AlphaHub: lightweight stats fetch failed for %s: %v", address, err)
 	}
+
 	tier := "Bronze"
-	winRate := 0.0
-	realized := 0.0
-	if stats != nil {
-		winRate = stats.WinRate / 100
-		realized = stats.RealizedPnL
-		if stats.WinRate >= 70 && stats.RealizedPnL > 0 {
-			tier = "Gold"
-		} else if stats.WinRate >= 60 {
-			tier = "Silver"
-		}
+	if winRate >= 0.70 && realized > 0 {
+		tier = "Gold"
+	} else if winRate >= 0.60 {
+		tier = "Silver"
 	}
 
 	snapshot := WalletSnapshot{
@@ -547,6 +544,72 @@ func (s *AlphaHubService) getWalletTier(ctx context.Context, address string, cac
 	}
 	cache[address] = snapshot
 	return snapshot
+}
+
+// getLightweightWalletStats fetches only the minimal data needed for wallet tier classification.
+// Uses a short timeout and only fetches closed positions (single API call) instead of the full
+// GetTraderStats which makes 7+ sequential API calls.
+func (s *AlphaHubService) getLightweightWalletStats(ctx context.Context, address string) (winRate float64, realizedPnL float64, err error) {
+	if s.dataAPIClient == nil {
+		return 0, 0, fmt.Errorf("data API client not configured")
+	}
+
+	// Check Redis cache first for previously computed lightweight stats
+	cacheKey := fmt.Sprintf("alphahub:wallet:%s", address)
+	if s.redis != nil {
+		if cached, cacheErr := s.redis.HGetAll(ctx, cacheKey).Result(); cacheErr == nil && len(cached) > 0 {
+			if wr, ok := cached["win_rate"]; ok {
+				winRate, _ = parseFloat(wr)
+			}
+			if pnl, ok := cached["realized_pnl"]; ok {
+				realizedPnL, _ = parseFloat(pnl)
+			}
+			return winRate, realizedPnL, nil
+		}
+	}
+
+	// Use a short timeout context to avoid blocking the entire request
+	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	// Fetch closed positions only - single API call instead of 7+
+	closedPositions, err := s.dataAPIClient.GetClosedPositions(timeoutCtx, address, 200, 0)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	// Calculate win rate and realized PnL from closed positions
+	var winningTrades, losingTrades int
+	for _, pos := range closedPositions {
+		realizedPnL += pos.RealizedPnL
+		if pos.RealizedPnL > 0 {
+			winningTrades++
+		} else if pos.RealizedPnL < 0 {
+			losingTrades++
+		}
+	}
+
+	totalTrades := winningTrades + losingTrades
+	if totalTrades > 0 {
+		winRate = float64(winningTrades) / float64(totalTrades)
+	}
+
+	// Cache the result for 2 minutes
+	if s.redis != nil {
+		_ = s.redis.HSet(ctx, cacheKey, map[string]interface{}{
+			"win_rate":     fmt.Sprintf("%f", winRate),
+			"realized_pnl": fmt.Sprintf("%f", realizedPnL),
+		}).Err()
+		_ = s.redis.Expire(ctx, cacheKey, 2*time.Minute).Err()
+	}
+
+	return winRate, realizedPnL, nil
+}
+
+func parseFloat(s string) (float64, error) {
+	var f float64
+	_, err := fmt.Sscanf(s, "%f", &f)
+	return f, err
 }
 
 func scoreMarket(m MarketSignal) float64 {
