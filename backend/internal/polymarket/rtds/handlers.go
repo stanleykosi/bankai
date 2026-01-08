@@ -47,7 +47,7 @@ type BaseMessage struct {
 	EventType string `json:"event_type"`
 }
 
-const tradeBufferTTL = 6 * time.Hour
+const tradeBufferTTL = 30 * time.Hour
 
 // PriceChange represents a single update in the new Sept 2025 schema
 type PriceChange struct {

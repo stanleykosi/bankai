@@ -166,7 +166,7 @@ export default function AnalysisPage() {
   const smart = smartQuery.data;
   const ai = aiQuery.data;
 
-  const topMarkets = smart?.markets?.slice(0, 6) ?? [];
+  const topMarkets = smart?.markets?.slice(0, 12) ?? [];
   const whales = smart?.whales?.slice(0, 15) ?? [];
 
   return (

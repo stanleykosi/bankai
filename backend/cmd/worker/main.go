@@ -33,7 +33,7 @@ import (
 	"github.com/bankai-project/backend/internal/services"
 )
 
-const maxTrackedAssets = 800
+const maxTrackedAssets = 0 // 0 => subscribe to all active markets
 
 func main() {
 	logger.Info("🔥 Starting Bankai Worker...")
@@ -158,7 +158,11 @@ func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds
 	}
 
 	// 4. Include any ad-hoc stream requests (e.g., markets opened in the UI)
-	if requested, err := ms.PopRequestedStreamTokens(ctx, maxTrackedAssets*2); err != nil {
+	requestLimit := maxTrackedAssets * 2
+	if requestLimit <= 0 {
+		requestLimit = 2000
+	}
+	if requested, err := ms.PopRequestedStreamTokens(ctx, requestLimit); err != nil {
 		logger.Error("Failed to pop requested stream tokens: %v", err)
 	} else if len(requested) > 0 {
 		logger.Info("Including %d requested assets in subscription set...", len(requested))
@@ -209,7 +213,7 @@ func watchStreamRequests(ctx context.Context, ms *services.MarketService, ws *rt
 }
 
 func persistMarketsLoop(ctx context.Context, ms *services.MarketService) {
-	ticker := time.NewTicker(10 * time.Minute)
+	ticker := time.NewTicker(12 * time.Hour) // reduce DB writes to twice a day
 	defer ticker.Stop()
 
 	for {

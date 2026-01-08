@@ -22,7 +22,7 @@ const (
 	defaultSmartMoneyTTL   = 45 * time.Second
 	defaultWhaleThreshold  = 1_000.0
 	defaultAIMarketLimit   = 10
-	defaultNewsMarketLimit = 3
+	defaultNewsMarketLimit = 10
 	maxWhalesToEnrich      = 200
 	washTradeWindow        = 10 * time.Minute
 	washTradeSizeThreshold = 0.10 // 10% size similarity window
@@ -30,7 +30,7 @@ const (
 	walletStatsTimeout     = 4 * time.Second
 	tavilySearchTimeout    = 15 * time.Second
 	maxGlobalTrades        = 500
-	tradeBufferTTL         = 6 * time.Hour
+	tradeBufferTTL         = 30 * time.Hour
 	minResolutionHorizon   = 6 * time.Hour
 	maxResolutionHorizon   = 60 * 24 * time.Hour
 )
@@ -65,6 +65,9 @@ type MarketSignal struct {
 	Title         string           `json:"title"`
 	Slug          string           `json:"slug"`
 	Category      string           `json:"category"`
+	Status        string           `json:"status,omitempty"`
+	Rules         string           `json:"rules,omitempty"`
+	CreatedAt     string           `json:"created_at,omitempty"`
 	Resolution    string           `json:"resolves_at,omitempty"`
 	YesPrice      float64          `json:"yes_price"`
 	BestBid       float64          `json:"best_bid"`
@@ -275,6 +278,9 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 		if wallet == "" {
 			wallet = strings.TrimSpace(t.Maker)
 		}
+		if wallet == "" {
+			wallet = strings.TrimSpace(t.TradeOwner)
+		}
 
 		value := t.Value
 		if value == 0 && t.Price > 0 && t.Size > 0 {
@@ -470,6 +476,15 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 			agg.Title = metadata.Title
 			agg.Slug = metadata.Slug
 			agg.Category = metadata.Category
+			agg.Rules = metadata.ResolutionRules
+			if metadata.Active && !metadata.Closed {
+				agg.Status = "active"
+			} else if metadata.Closed {
+				agg.Status = "closed"
+			}
+			if metadata.CreatedAt.Unix() > 0 {
+				agg.CreatedAt = metadata.CreatedAt.UTC().Format(time.RFC3339)
+			}
 			if metadata.EndDate != nil {
 				agg.Resolution = metadata.EndDate.UTC().Format(time.RFC3339)
 			}
@@ -549,41 +564,23 @@ func (s *AlphaHubService) consumeRecentTrades(ctx context.Context, window time.D
 		}
 	}
 
-	// 2) If empty, backfill from Data API global trades
-	if len(merged) == 0 && s.dataAPIClient != nil {
-		after := time.Unix(start, 0).UTC().Format(time.RFC3339)
-		apiTrades, err := s.dataAPIClient.GetGlobalTrades(ctx, &data_api.TradesParams{
-			After: after,
-			Limit: maxGlobalTrades,
-		})
-		if err != nil {
-			logger.Error("AlphaHub: data API global trades failed: %v", err)
-		} else {
-			for _, t := range apiTrades {
-				matchTime := normalizeTradeTimestamp(t.Timestamp)
-				merged = append(merged, clob.TradeEvent{
-					ID:        t.ID,
-					Market:    t.ConditionID,
-					TokenID:   t.TokenID,
-					Side:      clob.OrderSide(strings.ToUpper(strings.TrimSpace(t.Side))),
-					Price:     t.Price,
-					Size:      t.Size,
-					Value:     resolveTradeValue(t.Value, t.Price, t.Size),
-					Taker:     t.Taker,
-					Maker:     t.Maker,
-					MatchTime: matchTime,
-				})
-			}
-		}
-	}
-
 	// Deduplicate by tx hash + market if available
 	seen := make(map[string]struct{})
 	out := make([]clob.TradeEvent, 0, len(merged))
+
+	if len(merged) == 0 {
+		logger.Info("AlphaHub: no RTDS trades found in window; ensure RTDS worker is populating Redis")
+		return out, fmt.Errorf("no RTDS trades available")
+	}
+
 	for _, ev := range merged {
 		key := ev.ID
 		if key == "" && ev.MatchTime > 0 {
-			key = fmt.Sprintf("%s-%d-%s", ev.Market, ev.MatchTime, ev.Taker)
+			addr := ev.Taker
+			if addr == "" {
+				addr = ev.Maker
+			}
+			key = fmt.Sprintf("%s-%d-%s", ev.Market, ev.MatchTime, addr)
 		}
 		if key == "" {
 			out = append(out, ev)
@@ -804,7 +801,7 @@ func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoney
 		Model:      s.openaiClient.Model(),
 	}
 
-	if s.redis != nil {
+	if s.redis != nil && len(resp.Picks) > 0 {
 		if data, err := json.Marshal(resp); err == nil {
 			_ = s.redis.Set(ctx, cacheKey, data, 5*time.Minute).Err()
 		}
