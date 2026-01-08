@@ -23,7 +23,7 @@ import (
 const (
 	defaultSmartMoneyTTL   = 90 * time.Second
 	defaultWhaleThreshold  = 1_000.0
-	defaultAIMarketLimit   = 10
+	defaultAIMarketLimit   = 50
 	maxWhalesToEnrich      = 200
 	washTradeWindow        = 10 * time.Minute
 	washTradeSizeThreshold = 0.10 // 10% size similarity window
@@ -37,6 +37,7 @@ const (
 	maxSubgraphTrades      = 60000
 	subgraphCacheTTL       = 90 * time.Second
 	tradeBufferTTL         = 30 * time.Hour
+	maxDisplayedWhales     = 20
 	minResolutionHorizon   = 6 * time.Hour
 	maxResolutionHorizon   = 60 * 24 * time.Hour
 )
@@ -188,6 +189,7 @@ type SmartMoneyResponse struct {
 	WindowSeconds int            `json:"window_seconds"`
 	Markets       []MarketSignal `json:"markets"`
 	Whales        []WhaleEvent   `json:"whales"`
+	WhaleTotal    int            `json:"whale_total,omitempty"`
 	GeneratedAt   time.Time      `json:"generated_at"`
 }
 
@@ -260,6 +262,7 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 	walletTierCache := make(map[string]WalletSnapshot)
 	marketAgg := make(map[string]*MarketSignal)
 	whales := make([]WhaleEvent, 0)
+	whaleTotal := 0
 	entrySums := make(map[string]struct {
 		Notional float64
 		Size     float64
@@ -434,6 +437,7 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 			RealizedPnL: tierInfo.RealizedPnL,
 			IsWashTrade: pw.isWash,
 		})
+		whaleTotal++
 	}
 	logger.Info("AlphaHub: whale tier enrichment completed, whales=%d, washWhales=%d, walletsCached=%d, elapsed=%v",
 		len(whales), washWhaleCount, len(walletTierCache), time.Since(whaleEnrichStart))
@@ -470,6 +474,12 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 			whales[i].Title = meta.Title
 			whales[i].SpreadBps = spreadToBps(meta.Spread)
 		}
+	}
+	sort.Slice(whales, func(i, j int) bool {
+		return whales[i].Timestamp.After(whales[j].Timestamp)
+	})
+	if len(whales) > maxDisplayedWhales {
+		whales = whales[:maxDisplayedWhales]
 	}
 
 	signals := make([]MarketSignal, 0, len(marketAgg))
@@ -516,6 +526,10 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 				agg.SmartMoney.AvgEntryVsMidBps = ((avgEntry - mid) / mid) * 10000
 				agg.SmartMoney.AvgEntryVsMidBps = clamp(agg.SmartMoney.AvgEntryVsMidBps, -5000, 5000)
 			}
+		} else {
+			// Fallback to prevent blank UI cards when metadata is missing (e.g., archived market still trading)
+			agg.Title = marketID
+			agg.Slug = marketID
 		}
 
 		// Skip markets that only contained wash trades within the window
@@ -538,6 +552,7 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 		WindowSeconds: int(window.Seconds()),
 		Markets:       signals,
 		Whales:        whales,
+		WhaleTotal:    whaleTotal,
 		GeneratedAt:   time.Now().UTC(),
 	}
 
@@ -554,6 +569,8 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 func (s *AlphaHubService) consumeRecentTrades(ctx context.Context, window time.Duration) ([]clob.TradeEvent, error) {
 	var merged []clob.TradeEvent
 	start := time.Now().Unix() - int64(window.Seconds())
+	now := time.Now().Unix()
+	latestSeen := start
 
 	cacheKey := fmt.Sprintf("alphahub:trades:subgraph:%d", int(window.Seconds()))
 
@@ -580,6 +597,30 @@ func (s *AlphaHubService) consumeRecentTrades(ctx context.Context, window time.D
 			if s.redis != nil && len(subgraphTrades) > 0 {
 				if data, marshalErr := json.Marshal(subgraphTrades); marshalErr == nil {
 					_ = s.redis.Set(ctx, cacheKey, data, subgraphCacheTTL).Err()
+				}
+			}
+			for _, t := range subgraphTrades {
+				if t.MatchTime > latestSeen {
+					latestSeen = t.MatchTime
+				}
+			}
+		}
+	}
+
+	// Supplement with RTDS trades for near-real-time fills after the freshest subgraph trade
+	rtdsStart := latestSeen + 1
+	if s.redis != nil && rtdsStart <= now {
+		for ts := rtdsStart; ts <= now; ts += 60 {
+			key := fmt.Sprintf("rtds:trades:%d", ts/60)
+			raw, err := s.redis.LRange(ctx, key, 0, -1).Result()
+			if err != nil && err != redis.Nil {
+				logger.Error("AlphaHub: trade buffer read failed for %s: %v", key, err)
+				continue
+			}
+			for _, item := range raw {
+				var ev clob.TradeEvent
+				if err := json.Unmarshal([]byte(item), &ev); err == nil && ev.MatchTime >= start {
+					merged = append(merged, ev)
 				}
 			}
 		}
@@ -620,8 +661,19 @@ func (s *AlphaHubService) consumeRecentTrades(ctx context.Context, window time.D
 		return out, fmt.Errorf("no trades available in window")
 	}
 
-	logger.Info("AlphaHub: trade fetch summary window=%v merged=%d deduped=%d withWallet=%d",
-		window, len(merged), len(out), withWallet)
+	uniqueMarkets := make(map[string]struct{})
+	for _, ev := range out {
+		if strings.TrimSpace(ev.Market) != "" {
+			uniqueMarkets[strings.TrimSpace(ev.Market)] = struct{}{}
+		}
+	}
+	marketCount := len(uniqueMarkets)
+	avgTradesPerMarket := 0.0
+	if marketCount > 0 {
+		avgTradesPerMarket = float64(len(out)) / float64(marketCount)
+	}
+	logger.Info("AlphaHub: trade fetch summary window=%v merged=%d deduped=%d withWallet=%d markets=%d avgTradesPerMarket=%.2f",
+		window, len(merged), len(out), withWallet, marketCount, avgTradesPerMarket)
 
 	return out, nil
 }
