@@ -616,6 +616,68 @@ func (s *MarketService) GetMarketByConditionID(ctx context.Context, conditionID 
 	return &market, nil
 }
 
+// GetMarketsByConditionIDs fetches multiple markets by condition_ids from Redis cache.
+// Uses the active markets cache which contains all active markets.
+// Markets not in cache are skipped (likely resolved/closed).
+func (s *MarketService) GetMarketsByConditionIDs(ctx context.Context, conditionIDs []string) (map[string]*models.Market, error) {
+	if len(conditionIDs) == 0 {
+		return make(map[string]*models.Market), nil
+	}
+
+	result := make(map[string]*models.Market)
+
+	// Load all active markets from Redis cache
+	cachedMarkets, cacheErr := s.loadActiveMarketsFromCache(ctx)
+	if cacheErr != nil {
+		// If cache unavailable, try to sync it
+		if s.GammaClient != nil {
+			if syncErr := s.syncActiveMarketsCache(ctx); syncErr == nil {
+				cachedMarkets, cacheErr = s.loadActiveMarketsFromCache(ctx)
+			}
+		}
+	}
+
+	if cacheErr != nil || len(cachedMarkets) == 0 {
+		return result, nil // Return empty if cache unavailable
+	}
+
+	// Build a map for O(1) lookups
+	cacheMap := make(map[string]*models.Market)
+	for i := range cachedMarkets {
+		cacheMap[cachedMarkets[i].ConditionID] = &cachedMarkets[i]
+	}
+
+	// Look up each requested ID in the cache map
+	for _, id := range conditionIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if cached, ok := cacheMap[id]; ok {
+			result[id] = cached
+		}
+		// Markets not in cache are skipped (likely resolved/closed)
+	}
+
+	// Attach realtime prices to all markets
+	if len(result) > 0 {
+		marketSlice := make([]models.Market, 0, len(result))
+		for _, m := range result {
+			if m != nil {
+				marketSlice = append(marketSlice, *m)
+			}
+		}
+		s.attachRealtimePrices(ctx, marketSlice)
+
+		// Update the result map with price-enriched markets
+		for i := range marketSlice {
+			result[marketSlice[i].ConditionID] = &marketSlice[i]
+		}
+	}
+
+	return result, nil
+}
+
 // GetMarketBySlug fetches a single market by its slug and attaches the latest price snapshot.
 func (s *MarketService) GetMarketBySlug(ctx context.Context, slug string) (*models.Market, error) {
 	if slug == "" {

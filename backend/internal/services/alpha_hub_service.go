@@ -272,14 +272,26 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 	logger.Info("AlphaHub: whale tier enrichment completed, whales=%d, walletsCached=%d, elapsed=%v",
 		len(whales), len(walletTierCache), time.Since(whaleEnrichStart))
 
-	// Hydrate market metadata and compute scores
+	// Hydrate market metadata and compute scores using batch query
 	marketHydrateStart := time.Now()
+
+	// Collect all market IDs for batch query
+	marketIDs := make([]string, 0, len(marketAgg))
+	for marketID := range marketAgg {
+		marketIDs = append(marketIDs, marketID)
+	}
+
+	// Single batch query instead of N individual queries
+	marketsMap, batchErr := s.marketService.GetMarketsByConditionIDs(ctx, marketIDs)
+	if batchErr != nil {
+		logger.Error("AlphaHub: batch market query failed: %v", batchErr)
+	}
+	logger.Info("AlphaHub: batch market query completed, requested=%d, found=%d, elapsed=%v",
+		len(marketIDs), len(marketsMap), time.Since(marketHydrateStart))
+
 	signals := make([]MarketSignal, 0, len(marketAgg))
 	for marketID, agg := range marketAgg {
-		metadata, mErr := s.marketService.GetMarketByConditionID(ctx, marketID)
-		if mErr != nil {
-			logger.Error("AlphaHub: failed to get market meta %s: %v", marketID, mErr)
-		}
+		metadata := marketsMap[marketID]
 		if metadata != nil {
 			// Filter by resolution horizon
 			if metadata.EndDate != nil {
