@@ -25,7 +25,7 @@ func TestFetchOrderFilledEventsSmoke(t *testing.T) {
 	client := NewSubgraphClient(cfg)
 	since := time.Now().Add(-1 * time.Hour)
 
-	events, err := client.FetchOrderFilledEvents(context.Background(), since, 1, 2)
+	events, err := client.FetchOrderFilledEvents(context.Background(), since, 2)
 	if err != nil {
 		t.Fatalf("FetchOrderFilledEvents failed: %v", err)
 	}

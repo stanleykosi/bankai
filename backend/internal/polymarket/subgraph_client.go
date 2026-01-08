@@ -22,9 +22,9 @@ const (
 )
 
 var orderFilledQuery = `
-query ($timestamp: BigInt!, $minSize: BigInt!) {
+query ($timestamp: BigInt!) {
   orderFilledEvents(
-    where: { timestamp_gt: $timestamp, makerAmountFilled_gt: $minSize }
+    where: { timestamp_gt: $timestamp }
     first: 1000
     orderBy: timestamp
     orderDirection: asc
@@ -85,8 +85,7 @@ func NewSubgraphClient(cfg *config.Config) *SubgraphClient {
 }
 
 // FetchOrderFilledEvents returns order fills after the provided timestamp, paginated by timestamp cursor.
-// minMakerAmount is expressed in atomic units (1e6 = 1.0 for USDC/tokens).
-func (c *SubgraphClient) FetchOrderFilledEvents(ctx context.Context, since time.Time, minMakerAmount int64, maxPages int) ([]OrderFilledEvent, error) {
+func (c *SubgraphClient) FetchOrderFilledEvents(ctx context.Context, since time.Time, maxPages int) ([]OrderFilledEvent, error) {
 	if c == nil {
 		return nil, fmt.Errorf("subgraph client is not configured")
 	}
@@ -95,9 +94,6 @@ func (c *SubgraphClient) FetchOrderFilledEvents(ctx context.Context, since time.
 	}
 	if maxPages <= 0 {
 		maxPages = defaultSubgraphMaxPages
-	}
-	if minMakerAmount < 0 {
-		minMakerAmount = 0
 	}
 
 	cursor := since.Unix()
@@ -108,7 +104,7 @@ func (c *SubgraphClient) FetchOrderFilledEvents(ctx context.Context, since time.
 	results := make([]OrderFilledEvent, 0)
 
 	for page := 0; page < maxPages; page++ {
-		pageEvents, err := c.queryOrderFills(ctx, cursor, minMakerAmount)
+		pageEvents, err := c.queryOrderFills(ctx, cursor)
 		if err != nil {
 			return results, err
 		}
@@ -133,12 +129,11 @@ func (c *SubgraphClient) FetchOrderFilledEvents(ctx context.Context, since time.
 	return results, nil
 }
 
-func (c *SubgraphClient) queryOrderFills(ctx context.Context, timestamp int64, minMakerAmount int64) ([]OrderFilledEvent, error) {
+func (c *SubgraphClient) queryOrderFills(ctx context.Context, timestamp int64) ([]OrderFilledEvent, error) {
 	payload := map[string]interface{}{
 		"query": orderFilledQuery,
 		"variables": map[string]interface{}{
 			"timestamp": timestamp,
-			"minSize":   minMakerAmount,
 		},
 	}
 

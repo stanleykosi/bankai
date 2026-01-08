@@ -33,7 +33,6 @@ const (
 	maxGlobalTrades        = 500
 	dataAPIMaxPages        = 3
 	subgraphMaxPages       = 80
-	subgraphMinMakerAmount = int64(1)
 	subgraphMinNotionalUSD = 1.0
 	maxSubgraphTrades      = 60000
 	subgraphCacheTTL       = 90 * time.Second
@@ -632,7 +631,7 @@ func (s *AlphaHubService) fetchSubgraphTrades(ctx context.Context, start int64) 
 		return nil, 0, fmt.Errorf("subgraph client not configured")
 	}
 
-	events, err := s.subgraphClient.FetchOrderFilledEvents(ctx, time.Unix(start, 0), subgraphMinMakerAmount, subgraphMaxPages)
+	events, err := s.subgraphClient.FetchOrderFilledEvents(ctx, time.Unix(start, 0), subgraphMaxPages)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -642,17 +641,22 @@ func (s *AlphaHubService) fetchSubgraphTrades(ctx context.Context, start int64) 
 		return nil, 0, err
 	}
 
-	type assetRef struct {
+	assetLookup := make(map[string]struct {
 		MarketID string
 		TokenID  string
-	}
-	assetLookup := make(map[string]assetRef, len(assets)*2)
+	}, len(assets)*2)
 	for _, asset := range assets {
 		if asset.TokenIDYes != "" {
-			assetLookup[strings.ToLower(strings.TrimSpace(asset.TokenIDYes))] = assetRef{MarketID: asset.ConditionID, TokenID: asset.TokenIDYes}
+			assetLookup[strings.ToLower(strings.TrimSpace(asset.TokenIDYes))] = struct {
+				MarketID string
+				TokenID  string
+			}{MarketID: asset.ConditionID, TokenID: asset.TokenIDYes}
 		}
 		if asset.TokenIDNo != "" {
-			assetLookup[strings.ToLower(strings.TrimSpace(asset.TokenIDNo))] = assetRef{MarketID: asset.ConditionID, TokenID: asset.TokenIDNo}
+			assetLookup[strings.ToLower(strings.TrimSpace(asset.TokenIDNo))] = struct {
+				MarketID string
+				TokenID  string
+			}{MarketID: asset.ConditionID, TokenID: asset.TokenIDNo}
 		}
 	}
 
@@ -685,7 +689,6 @@ func (s *AlphaHubService) mapOrderFilledEvent(ev polymarket.OrderFilledEvent, as
 	MarketID string
 	TokenID  string
 }) (clob.TradeEvent, bool) {
-	collateral := strings.ToLower(strings.TrimSpace(s.subgraphClient.CollateralAssetID))
 	makerAsset := strings.ToLower(strings.TrimSpace(ev.MakerAssetID))
 	takerAsset := strings.ToLower(strings.TrimSpace(ev.TakerAssetID))
 
@@ -703,12 +706,12 @@ func (s *AlphaHubService) mapOrderFilledEvent(ev polymarket.OrderFilledEvent, as
 	)
 
 	switch {
-	case makerAsset == collateral:
+	case s.isCollateralAsset(makerAsset):
 		tokenAsset = takerAsset
 		tokenAtomic = takerAmt
 		collateralAtomic = makerAmt
 		side = clob.SELL
-	case takerAsset == collateral:
+	case s.isCollateralAsset(takerAsset):
 		tokenAsset = makerAsset
 		tokenAtomic = makerAmt
 		collateralAtomic = takerAmt
@@ -743,6 +746,28 @@ func (s *AlphaHubService) mapOrderFilledEvent(ev polymarket.OrderFilledEvent, as
 		Maker:     ev.Maker,
 		MatchTime: matchTime,
 	}, true
+}
+
+func (s *AlphaHubService) isCollateralAsset(assetID string) bool {
+	assetID = strings.ToLower(strings.TrimSpace(assetID))
+	if assetID == "0" {
+		return true
+	}
+	if assetID == "" {
+		return false
+	}
+	if s.subgraphClient != nil {
+		collateral := strings.ToLower(strings.TrimSpace(s.subgraphClient.CollateralAssetID))
+		if collateral != "" && assetID == collateral {
+			return true
+		}
+	}
+	switch assetID {
+	case "usdc", "usdc.e", "usdc.e-18", "usdc-6":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseAtomicAmount(raw string) float64 {
