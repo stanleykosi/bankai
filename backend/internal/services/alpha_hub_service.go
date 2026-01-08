@@ -135,15 +135,21 @@ func NewAlphaHubService(marketService *MarketService, profileService *ProfileSer
 // GetSmartMoneySignals aggregates last-hour trades, tags wallets by tier, and computes per-market scores.
 // Source of trades: RTDS-ingested trades buffered in Redis (no CLOB /data/trades dependency).
 func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.Duration) (*SmartMoneyResponse, error) {
+	startTime := time.Now()
+	logger.Info("AlphaHub: GetSmartMoneySignals started, window=%v", window)
+
 	cacheKey := fmt.Sprintf("analysis:smart:%d", int(window.Seconds()))
 	if cached, err := s.redis.Get(ctx, cacheKey).Bytes(); err == nil && len(cached) > 0 {
 		var resp SmartMoneyResponse
 		if unmarshalErr := json.Unmarshal(cached, &resp); unmarshalErr == nil {
+			logger.Info("AlphaHub: returning cached response, elapsed=%v", time.Since(startTime))
 			return &resp, nil
 		}
 	}
 
+	tradesStart := time.Now()
 	trades, err := s.consumeRecentTrades(ctx, window)
+	logger.Info("AlphaHub: consumeRecentTrades completed, count=%d, elapsed=%v", len(trades), time.Since(tradesStart))
 	if err != nil {
 		logger.Error("AlphaHub: trades fetch failed: %v", err)
 		// Degrade gracefully with empty signals
@@ -163,6 +169,15 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 		Size     float64
 	})
 
+	// Track potential whale trades for tier enrichment later
+	type potentialWhale struct {
+		trade  clob.TradeEvent
+		wallet string
+		value  float64
+	}
+	potentialWhales := make([]potentialWhale, 0)
+
+	aggregationStart := time.Now()
 	for _, t := range trades {
 		marketID := strings.TrimSpace(t.Market)
 		if marketID == "" {
@@ -172,7 +187,6 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 		if wallet == "" {
 			wallet = strings.TrimSpace(t.Maker)
 		}
-		tierInfo := s.getWalletTier(ctx, wallet, walletTierCache)
 
 		value := t.Value
 		if value == 0 && t.Price > 0 && t.Size > 0 {
@@ -185,42 +199,20 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 			marketAgg[marketID] = agg
 		}
 
-		if tierInfo.Address != "" {
-			agg.SmartMoney.WalletsConsidered++
-			agg.WalletsSample = append(agg.WalletsSample, tierInfo)
-		}
-
+		// Aggregate trade data without wallet tier lookup
 		switch t.Side {
 		case clob.BUY:
 			agg.SmartMoney.NetBuyUSD += value
 			agg.SmartMoney.BuysCount++
-			switch tierInfo.Tier {
-			case "Gold":
-				agg.SmartMoney.GoldBuys += value
-			case "Silver":
-				agg.SmartMoney.SilverBuys += value
-			default:
-				agg.SmartMoney.BronzeBuys += value
-			}
+			agg.SmartMoney.BronzeBuys += value // Default to bronze, will be corrected for whales
 		case clob.SELL:
 			agg.SmartMoney.NetSellUSD += value
 			agg.SmartMoney.SellsCount++
 		}
 
+		// Track potential whale trades for later tier enrichment
 		if value >= defaultWhaleThreshold {
-			whales = append(whales, WhaleEvent{
-				Timestamp:   time.Unix(t.MatchTime, 0).UTC(),
-				MarketID:    marketID,
-				TokenID:     t.TokenID,
-				Side:        string(t.Side),
-				SizeUSD:     value,
-				Price:       t.Price,
-				Wallet:      wallet,
-				WalletTier:  tierInfo.Tier,
-				WinRate:     tierInfo.WinRate,
-				RealizedPnL: tierInfo.RealizedPnL,
-			})
-			agg.SmartMoney.WhaleHitsCount++
+			potentialWhales = append(potentialWhales, potentialWhale{trade: t, wallet: wallet, value: value})
 		}
 
 		// Track average entry vs mid (weighted)
@@ -231,8 +223,57 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 			entrySums[marketID] = cur
 		}
 	}
+	logger.Info("AlphaHub: trade aggregation completed, markets=%d, potentialWhales=%d, elapsed=%v",
+		len(marketAgg), len(potentialWhales), time.Since(aggregationStart))
+
+	// Only fetch wallet tiers for potential whale trades (limited to reduce API calls)
+	whaleEnrichStart := time.Now()
+	maxWhalesToEnrich := 50 // Limit to avoid too many API calls
+	if len(potentialWhales) > maxWhalesToEnrich {
+		potentialWhales = potentialWhales[:maxWhalesToEnrich]
+	}
+	for _, pw := range potentialWhales {
+		tierInfo := s.getWalletTier(ctx, pw.wallet, walletTierCache)
+
+		agg := marketAgg[pw.trade.Market]
+		if agg != nil {
+			if tierInfo.Address != "" {
+				agg.SmartMoney.WalletsConsidered++
+				agg.WalletsSample = append(agg.WalletsSample, tierInfo)
+			}
+
+			// Correct the tier distribution for this whale trade
+			switch tierInfo.Tier {
+			case "Gold":
+				agg.SmartMoney.GoldBuys += pw.value
+				agg.SmartMoney.BronzeBuys -= pw.value // Remove from default bronze
+			case "Silver":
+				agg.SmartMoney.SilverBuys += pw.value
+				agg.SmartMoney.BronzeBuys -= pw.value // Remove from default bronze
+			}
+		}
+
+		whales = append(whales, WhaleEvent{
+			Timestamp:   time.Unix(pw.trade.MatchTime, 0).UTC(),
+			MarketID:    pw.trade.Market,
+			TokenID:     pw.trade.TokenID,
+			Side:        string(pw.trade.Side),
+			SizeUSD:     pw.value,
+			Price:       pw.trade.Price,
+			Wallet:      pw.wallet,
+			WalletTier:  tierInfo.Tier,
+			WinRate:     tierInfo.WinRate,
+			RealizedPnL: tierInfo.RealizedPnL,
+		})
+		if agg != nil {
+			agg.SmartMoney.WhaleHitsCount++
+		}
+	}
+	logger.Info("AlphaHub: whale tier enrichment completed, whales=%d, walletsCached=%d, elapsed=%v",
+		len(whales), len(walletTierCache), time.Since(whaleEnrichStart))
 
 	// Hydrate market metadata and compute scores
+	marketHydrateStart := time.Now()
 	signals := make([]MarketSignal, 0, len(marketAgg))
 	for marketID, agg := range marketAgg {
 		metadata, mErr := s.marketService.GetMarketByConditionID(ctx, marketID)
@@ -274,6 +315,7 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 		agg.Score = scoreMarket(*agg)
 		signals = append(signals, *agg)
 	}
+	logger.Info("AlphaHub: market hydration completed, signals=%d, elapsed=%v", len(signals), time.Since(marketHydrateStart))
 
 	sort.Slice(signals, func(i, j int) bool {
 		if signals[i].Score == signals[j].Score {
@@ -293,6 +335,7 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 		_ = s.redis.Set(ctx, cacheKey, data, defaultSmartMoneyTTL).Err()
 	}
 
+	logger.Info("AlphaHub: GetSmartMoneySignals completed, totalElapsed=%v", time.Since(startTime))
 	return &resp, nil
 }
 
@@ -427,11 +470,11 @@ func valueEdgeScore(m MarketSignal) float64 {
 
 // GenerateAIPicks runs the Alpha Hub prompt against the smart-money payload and optional Tavily news.
 func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoneyResponse) (*AIResponse, error) {
+	startTime := time.Now()
+	logger.Info("AlphaHub: GenerateAIPicks started")
+
 	if s.openaiClient == nil {
 		return nil, fmt.Errorf("openai client not configured")
-	}
-	if s.tavilyClient == nil {
-		return nil, fmt.Errorf("tavily client not configured")
 	}
 	if smart == nil || len(smart.Markets) == 0 {
 		// Graceful fallback: no signals yet; return empty AI response.
@@ -443,17 +486,19 @@ func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoney
 		if cached, err := s.redis.Get(ctx, cacheKey).Bytes(); err == nil && len(cached) > 0 {
 			var cachedResp AIResponse
 			if err := json.Unmarshal(cached, &cachedResp); err == nil {
+				logger.Info("AlphaHub: GenerateAIPicks returning cached response, elapsed=%v", time.Since(startTime))
 				return &cachedResp, nil
 			}
 		}
 	}
 
+	// Limit to top 5 markets to reduce Tavily calls
 	topMarkets := smart.Markets
-	if len(topMarkets) > defaultAIMarketLimit {
-		topMarkets = topMarkets[:defaultAIMarketLimit]
+	if len(topMarkets) > 5 {
+		topMarkets = topMarkets[:5]
 	}
 
-	// Enrich with news for top markets (required for analysis richness)
+	// Enrich with news for top markets (optional - continue even if it fails)
 	type newsItem struct {
 		Title   string  `json:"title"`
 		URL     string  `json:"url"`
@@ -461,20 +506,31 @@ func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoney
 		Score   float64 `json:"score"`
 	}
 	newsByMarket := make(map[string][]newsItem)
-	for _, m := range topMarkets {
-		results, err := s.tavilyClient.Search(ctx, m.Title, "polymarket.com")
-		if err != nil {
-			logger.Error("AlphaHub: tavily search failed for %s: %v", m.MarketID, err)
-			return nil, fmt.Errorf("tavily failed for %s: %w", m.MarketID, err)
+
+	// Only do news enrichment if Tavily client is configured
+	if s.tavilyClient != nil {
+		newsStart := time.Now()
+		for _, m := range topMarkets {
+			// Use a short timeout for each Tavily search
+			searchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			results, err := s.tavilyClient.Search(searchCtx, m.Title, "polymarket.com")
+			cancel()
+
+			if err != nil {
+				logger.Error("AlphaHub: tavily search failed for %s: %v (continuing without news)", m.MarketID, err)
+				continue // Don't fail the entire request, just skip news for this market
+			}
+			for _, r := range results {
+				newsByMarket[m.MarketID] = append(newsByMarket[m.MarketID], newsItem{
+					Title:   r.Title,
+					URL:     r.URL,
+					Content: r.Content,
+					Score:   r.Score,
+				})
+			}
 		}
-		for _, r := range results {
-			newsByMarket[m.MarketID] = append(newsByMarket[m.MarketID], newsItem{
-				Title:   r.Title,
-				URL:     r.URL,
-				Content: r.Content,
-				Score:   r.Score,
-			})
-		}
+		logger.Info("AlphaHub: Tavily news enrichment completed, markets=%d, newsItems=%d, elapsed=%v",
+			len(topMarkets), len(newsByMarket), time.Since(newsStart))
 	}
 
 	payload := map[string]interface{}{
@@ -485,9 +541,12 @@ func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoney
 		"data_freshness_secs": int(time.Since(smart.GeneratedAt).Seconds()),
 	}
 	userPromptBytes, _ := json.Marshal(payload)
+
+	openaiStart := time.Now()
 	content, err := s.openaiClient.Analyze(ctx, prompts.AlphaHubSystemPrompt, string(userPromptBytes))
+	logger.Info("AlphaHub: OpenAI analyze completed, elapsed=%v", time.Since(openaiStart))
 	if err != nil {
-		logger.Error("AlphaHub: OpenAI analyze failed: %v | payload=%s", err, string(userPromptBytes))
+		logger.Error("AlphaHub: OpenAI analyze failed: %v", err)
 		return nil, err
 	}
 
@@ -510,6 +569,7 @@ func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoney
 		}
 	}
 
+	logger.Info("AlphaHub: GenerateAIPicks completed, picks=%d, totalElapsed=%v", len(resp.Picks), time.Since(startTime))
 	return resp, nil
 }
 
