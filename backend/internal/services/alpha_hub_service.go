@@ -832,31 +832,33 @@ func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoney
 		return &AIResponse{RawContent: content, Model: s.openaiClient.Model()}, nil
 	}
 
-	// If the model returns too few picks, backfill with top markets to keep UX dense.
-	seen := make(map[string]struct{})
-	for _, p := range parsed.AIPicks {
-		seen[p.MarketID] = struct{}{}
-	}
-	for _, m := range topMarkets {
-		if len(parsed.AIPicks) >= defaultAIMarketLimit {
-			break
+	// Only backfill if model returned nothing to keep AI copy intact.
+	if len(parsed.AIPicks) == 0 {
+		seen := make(map[string]struct{})
+		for _, p := range parsed.AIPicks {
+			seen[p.MarketID] = struct{}{}
 		}
-		if _, ok := seen[m.MarketID]; ok {
-			continue
+		for _, m := range topMarkets {
+			if len(parsed.AIPicks) >= defaultAIMarketLimit {
+				break
+			}
+			if _, ok := seen[m.MarketID]; ok {
+				continue
+			}
+			action := "monitor"
+			if m.SmartMoney.NetBuyUSD > m.SmartMoney.NetSellUSD {
+				action = "buy_yes"
+			}
+			parsed.AIPicks = append(parsed.AIPicks, AIPick{
+				MarketID:       m.MarketID,
+				Slug:           m.Slug,
+				Title:          m.Title,
+				ProbabilityYes: m.YesPrice,
+				Conviction:     "Medium",
+				Action:         action,
+				Rationale:      fmt.Sprintf("Net buy $%.0fk, spread %.0fbps, momentum 1h %.2f.", m.SmartMoney.NetBuyUSD/1000, m.SpreadBps, m.Momentum1h),
+			})
 		}
-		action := "monitor"
-		if m.SmartMoney.NetBuyUSD > m.SmartMoney.NetSellUSD {
-			action = "buy_yes"
-		}
-		parsed.AIPicks = append(parsed.AIPicks, AIPick{
-			MarketID:       m.MarketID,
-			Slug:           m.Slug,
-			Title:          m.Title,
-			ProbabilityYes: m.YesPrice,
-			Conviction:     "Medium",
-			Action:         action,
-			Rationale:      fmt.Sprintf("Net buy $%.0fk, spread %.0fbps, momentum 1h %.2f.", m.SmartMoney.NetBuyUSD/1000, m.SpreadBps, m.Momentum1h),
-		})
 	}
 
 	resp := &AIResponse{
