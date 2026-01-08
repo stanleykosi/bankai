@@ -278,9 +278,6 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 		if wallet == "" {
 			wallet = strings.TrimSpace(t.Maker)
 		}
-		if wallet == "" {
-			wallet = strings.TrimSpace(t.TradeOwner)
-		}
 
 		value := t.Value
 		if value == 0 && t.Price > 0 && t.Size > 0 {
