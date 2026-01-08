@@ -238,7 +238,7 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 	}
 
 	if s.dataAPIClient == nil {
-		logger.Warn("AlphaHub: data API client not configured; wallet tiers will default to Bronze")
+		logger.Info("AlphaHub: data API client not configured; wallet tiers will default to Bronze")
 	}
 
 	walletTierCache := make(map[string]WalletSnapshot)
