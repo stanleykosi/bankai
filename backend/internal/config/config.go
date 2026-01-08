@@ -91,6 +91,7 @@ func Load() (*Config, error) {
 		Polymarket: PolymarketConfig{
 			ClobURL:       getEnv("POLYMARKET_CLOB_URL", "https://clob.polymarket.com"),
 			GammaURL:      getEnv("POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com"),
+			DataAPIURL:    getEnv("POLYMARKET_DATA_API_URL", "https://data-api.polymarket.com"),
 			BuilderAPIKey: sanitizeCredential(getEnv("POLY_BUILDER_API_KEY", "")),
 			BuilderSecret: sanitizeCredential(getEnv("POLY_BUILDER_SECRET", "")), // Often empty/not used for local signing depending on setup, but good to have
 			BuilderPass:   sanitizeCredential(getEnv("POLY_BUILDER_PASSPHRASE", "")),

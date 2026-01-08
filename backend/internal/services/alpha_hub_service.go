@@ -30,6 +30,7 @@ const (
 	walletStatsTimeout     = 4 * time.Second
 	tavilySearchTimeout    = 15 * time.Second
 	maxGlobalTrades        = 500
+	dataAPIMaxPages        = 3
 	tradeBufferTTL         = 30 * time.Hour
 	minResolutionHorizon   = 6 * time.Hour
 	maxResolutionHorizon   = 60 * 24 * time.Hour
@@ -543,7 +544,57 @@ func (s *AlphaHubService) consumeRecentTrades(ctx context.Context, window time.D
 	now := time.Now().Unix()
 	start := now - int64(window.Seconds())
 
-	// 1) Try cached RTDS trades
+	// 1) Primary source: Data API paginated over the window
+	if s.dataAPIClient != nil {
+		after := time.Unix(start, 0).UTC().Format(time.RFC3339)
+		offset := 0
+		for page := 0; page < dataAPIMaxPages; page++ {
+			apiTrades, err := s.dataAPIClient.GetGlobalTrades(ctx, &data_api.TradesParams{
+				After:  after,
+				Limit:  maxGlobalTrades,
+				Offset: offset,
+			})
+			if err != nil {
+				logger.Error("AlphaHub: data API global trades failed (page %d offset %d): %v", page, offset, err)
+				break
+			}
+			if len(apiTrades) == 0 {
+				break
+			}
+			for _, t := range apiTrades {
+				matchTime := normalizeTradeTimestamp(t.Timestamp)
+				if matchTime < start {
+					continue
+				}
+				taker := strings.TrimSpace(t.Taker)
+				maker := strings.TrimSpace(t.Maker)
+				if taker == "" {
+					taker = strings.TrimSpace(t.TradeOwner)
+				}
+				if maker == "" {
+					maker = strings.TrimSpace(t.TradeOwner)
+				}
+				merged = append(merged, clob.TradeEvent{
+					ID:        t.ID,
+					Market:    t.ConditionID,
+					TokenID:   t.TokenID,
+					Side:      clob.OrderSide(strings.ToUpper(strings.TrimSpace(t.Side))),
+					Price:     t.Price,
+					Size:      t.Size,
+					Value:     resolveTradeValue(t.Value, t.Price, t.Size),
+					Taker:     taker,
+					Maker:     maker,
+					MatchTime: matchTime,
+				})
+			}
+			if len(apiTrades) < maxGlobalTrades || offset >= 1000 {
+				break
+			}
+			offset += maxGlobalTrades
+		}
+	}
+
+	// 2) Supplement with cached RTDS trades for near-real-time fills
 	if s.redis != nil {
 		for ts := start; ts <= now; ts += 60 {
 			key := fmt.Sprintf("rtds:trades:%d", ts/60)
@@ -565,11 +616,6 @@ func (s *AlphaHubService) consumeRecentTrades(ctx context.Context, window time.D
 	seen := make(map[string]struct{})
 	out := make([]clob.TradeEvent, 0, len(merged))
 
-	if len(merged) == 0 {
-		logger.Info("AlphaHub: no RTDS trades found in window; ensure RTDS worker is populating Redis")
-		return out, fmt.Errorf("no RTDS trades available")
-	}
-
 	for _, ev := range merged {
 		key := ev.ID
 		if key == "" && ev.MatchTime > 0 {
@@ -588,6 +634,10 @@ func (s *AlphaHubService) consumeRecentTrades(ctx context.Context, window time.D
 		}
 		seen[key] = struct{}{}
 		out = append(out, ev)
+	}
+
+	if len(out) == 0 {
+		return out, fmt.Errorf("no trades available in window")
 	}
 
 	return out, nil

@@ -33,7 +33,10 @@ import (
 	"github.com/bankai-project/backend/internal/services"
 )
 
-const maxTrackedAssets = 0 // 0 => subscribe to all active markets
+const (
+	maxTrackedAssets = 1200 // cap subscriptions to relevant active markets
+	enableDBWrites   = false
+)
 
 func main() {
 	logger.Info("🔥 Starting Bankai Worker...")
@@ -75,7 +78,9 @@ func main() {
 
 	go watchStreamRequests(ctx, marketService, wsClient)
 
-	go persistMarketsLoop(ctx, marketService)
+	if enableDBWrites {
+		go persistMarketsLoop(ctx, marketService)
+	}
 
 	// 6. Subscription Loop
 	// Periodically fetch "Active Markets" and subscribe to their tokens
@@ -121,16 +126,18 @@ func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds
 	logger.Info("🔄 Syncing market subscriptions...")
 
 	// 1. Ensure our local DB has fresh data from Gamma
-	// Sync both active markets and fresh drops
+	// Sync active markets (cache only; no DB writes)
 	if err := ms.SyncActiveMarkets(ctx); err != nil {
 		logger.Error("Failed to sync active markets from Gamma: %v", err)
 		return
 	}
 
-	// Also sync fresh drops to populate that endpoint
-	if err := ms.SyncFreshDrops(ctx); err != nil {
-		logger.Error("Failed to sync fresh drops from Gamma: %v", err)
-		// Don't return - continue with active markets even if fresh drops fail
+	// Optional: skip fresh drops to avoid DB upserts when writes are disabled
+	if enableDBWrites {
+		if err := ms.SyncFreshDrops(ctx); err != nil {
+			logger.Error("Failed to sync fresh drops from Gamma: %v", err)
+			// Don't return - continue with active markets even if fresh drops fail
+		}
 	}
 
 	if persist {
