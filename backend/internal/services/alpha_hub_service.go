@@ -20,7 +20,7 @@ import (
 
 const (
 	defaultSmartMoneyTTL   = 45 * time.Second
-	defaultWhaleThreshold  = 5_000.0
+	defaultWhaleThreshold  = 1_000.0
 	defaultAIMarketLimit   = 10
 	defaultNewsMarketLimit = 3
 	maxWhalesToEnrich      = 200
@@ -305,6 +305,7 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 		isWash bool
 	}
 	potentialWhales := make([]potentialWhale, 0)
+	topTrades := make([]enrichedTrade, 0, len(enriched))
 
 	aggregationStart := time.Now()
 	for _, t := range enriched {
@@ -320,6 +321,10 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 		if agg == nil {
 			agg = &MarketSignal{MarketID: marketID}
 			marketAgg[marketID] = agg
+		}
+
+		if wallet != "" {
+			topTrades = append(topTrades, t)
 		}
 
 		if value >= defaultWhaleThreshold && wallet != "" {
@@ -354,6 +359,23 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 
 	// Only fetch wallet tiers for potential whale trades (limited to reduce API calls)
 	whaleEnrichStart := time.Now()
+	if len(potentialWhales) == 0 && len(topTrades) > 0 {
+		// Fallback: take top-value trades as whale candidates so UI is not empty
+		sort.Slice(topTrades, func(i, j int) bool { return topTrades[i].value > topTrades[j].value })
+		limit := maxWhalesToEnrich
+		if limit > len(topTrades) {
+			limit = len(topTrades)
+		}
+		for i := 0; i < limit; i++ {
+			pw := topTrades[i]
+			potentialWhales = append(potentialWhales, potentialWhale{
+				trade:  pw.trade,
+				wallet: pw.wallet,
+				value:  pw.value,
+				isWash: false,
+			})
+		}
+	}
 	if len(potentialWhales) > maxWhalesToEnrich {
 		potentialWhales = potentialWhales[:maxWhalesToEnrich]
 	}
@@ -467,6 +489,7 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 			if sums, ok := entrySums[marketID]; ok && sums.Size > 0 && mid > 0 {
 				avgEntry := sums.Notional / sums.Size
 				agg.SmartMoney.AvgEntryVsMidBps = ((avgEntry - mid) / mid) * 10000
+				agg.SmartMoney.AvgEntryVsMidBps = clamp(agg.SmartMoney.AvgEntryVsMidBps, -5000, 5000)
 			}
 		}
 
@@ -746,6 +769,33 @@ func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoney
 	}
 	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
 		return &AIResponse{RawContent: content, Model: s.openaiClient.Model()}, nil
+	}
+
+	// If the model returns too few picks, backfill with top markets to keep UX dense.
+	seen := make(map[string]struct{})
+	for _, p := range parsed.AIPicks {
+		seen[p.MarketID] = struct{}{}
+	}
+	for _, m := range topMarkets {
+		if len(parsed.AIPicks) >= defaultAIMarketLimit {
+			break
+		}
+		if _, ok := seen[m.MarketID]; ok {
+			continue
+		}
+		action := "monitor"
+		if m.SmartMoney.NetBuyUSD > m.SmartMoney.NetSellUSD {
+			action = "buy_yes"
+		}
+		parsed.AIPicks = append(parsed.AIPicks, AIPick{
+			MarketID:       m.MarketID,
+			Slug:           m.Slug,
+			Title:          m.Title,
+			ProbabilityYes: m.YesPrice,
+			Conviction:     "Medium",
+			Action:         action,
+			Rationale:      fmt.Sprintf("Net buy $%.0fk, spread %.0fbps, momentum 1h %.2f.", m.SmartMoney.NetBuyUSD/1000, m.SpreadBps, m.Momentum1h),
+		})
 	}
 
 	resp := &AIResponse{
