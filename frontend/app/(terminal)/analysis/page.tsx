@@ -79,10 +79,18 @@ function WhaleRow({ whale }: { whale: WhaleEvent }) {
   return (
     <div className="grid grid-cols-6 items-center gap-3 rounded-md border border-border/50 bg-card/40 px-3 py-2 text-xs font-mono">
       <span className="text-muted-foreground">{new Date(whale.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-      <span className={cn("uppercase", whale.side === "BUY" ? "text-emerald-400" : "text-rose-400")}>{whale.side}</span>
+      <div className="flex items-center gap-2">
+        <span className={cn("uppercase", whale.side === "BUY" ? "text-emerald-400" : "text-rose-400")}>{whale.side}</span>
+        {whale.is_wash_trade ? (
+          <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-300">Wash</span>
+        ) : null}
+      </div>
       <span className="text-foreground">{formatDollars(whale.size_usd)} USDC</span>
       <span className="truncate text-muted-foreground">{whale.wallet_tier || "N/A"}</span>
-      <span className="truncate text-muted-foreground">{whale.title || whale.market_id}</span>
+      <div className="truncate text-muted-foreground">
+        <div className="truncate">{whale.title || whale.market_id}</div>
+        {typeof whale.spread_bps === "number" ? <div className="text-[10px] text-foreground/70">Spread {whale.spread_bps.toFixed(0)} bps</div> : null}
+      </div>
       <span className="text-muted-foreground">{(whale.win_rate * 100).toFixed(0)}%</span>
     </div>
   );

@@ -53,6 +53,7 @@ export type WhaleEvent = {
   slug?: string;
   title?: string;
   spread_bps?: number;
+  is_wash_trade: boolean;
 };
 
 export type SmartMoneyResponse = {
