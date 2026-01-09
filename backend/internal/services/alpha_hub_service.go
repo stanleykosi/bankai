@@ -45,7 +45,7 @@ const (
 	dailySnapshotTTL       = 26 * time.Hour
 	dailySnapshotLockTTL   = 15 * time.Minute
 	aiDailyChunkMarkets    = 150
-	aiNewsResultsPerMarket = 2
+	aiNewsResultsPerMarket = 1
 	aiMaxCompletionTokens  = 5000
 	newsContentRuneLimit   = 300
 	dailySnapshotPrefix    = "analysis:daily"

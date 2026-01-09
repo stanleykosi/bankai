@@ -30,7 +30,7 @@ import (
 const (
 	DefaultBaseURL   = "https://openrouter.ai/api/v1/chat/completions"
 	DefaultModel     = "minimax/minimax-m2.1"
-	requestTimeout   = 120 * time.Second
+	requestTimeout   = 300 * time.Second
 	defaultMaxTokens = 10000 // High limit for comprehensive analysis with full context
 	maxAnalyzeTries  = 3
 	retryBaseDelay   = 400 * time.Millisecond
@@ -50,12 +50,12 @@ type Client struct {
 }
 
 type ChatRequest struct {
-	Model          string                 `json:"model"`
-	Messages       []Message              `json:"messages"`
-	Temperature    float64                `json:"temperature"`
-	MaxTokens      int                    `json:"max_tokens,omitempty"`
-	ResponseFormat *ResponseFormat        `json:"response_format,omitempty"`
-	Reasoning      *ReasoningConfig       `json:"reasoning,omitempty"`
+	Model          string           `json:"model"`
+	Messages       []Message        `json:"messages"`
+	Temperature    float64          `json:"temperature"`
+	MaxTokens      int              `json:"max_tokens,omitempty"`
+	ResponseFormat *ResponseFormat  `json:"response_format,omitempty"`
+	Reasoning      *ReasoningConfig `json:"reasoning,omitempty"`
 }
 
 type ResponseFormat struct {
