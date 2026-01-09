@@ -101,7 +101,7 @@ func main() {
 
 		first := true
 		// Initial sync (also persists to Postgres)
-		syncSubscriptions(ctx, marketService, wsClient, first)
+		syncSubscriptions(ctx, marketService, wsClient, cfg, first)
 		first = false
 
 		for {
@@ -109,7 +109,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				syncSubscriptions(ctx, marketService, wsClient, first)
+				syncSubscriptions(ctx, marketService, wsClient, cfg, first)
 			}
 		}
 	}()
@@ -133,7 +133,7 @@ func main() {
 
 // syncSubscriptions fetches active markets and subscribes to their tokens.
 // Optionally persists markets on the first run to avoid empty DB reads after restarts.
-func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds.Client, persist bool) {
+func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds.Client, cfg *config.Config, persist bool) {
 	logger.Info("🔄 Syncing market subscriptions...")
 
 	// 1. Ensure our local DB has fresh data from Gamma

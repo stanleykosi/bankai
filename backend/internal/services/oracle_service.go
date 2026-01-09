@@ -31,10 +31,10 @@ import (
 )
 
 const (
-	maxSourceEntries       = 5  // Use all 5 Tavily results for maximum context
-	maxSourceContentLength = 0  // 0 = no truncation, send full content
-	maxRulesLength         = 0  // 0 = no truncation, send full resolution rules
-	maxDescriptionLength   = 0  // 0 = no truncation, send full description
+	maxSourceEntries       = 5 // Use all 5 Tavily results for maximum context
+	maxSourceContentLength = 0 // 0 = no truncation, send full content
+	maxRulesLength         = 0 // 0 = no truncation, send full resolution rules
+	maxDescriptionLength   = 0 // 0 = no truncation, send full description
 	maxDisplaySpread       = 0.10
 )
 
@@ -120,7 +120,7 @@ func (s *OracleService) AnalyzeMarket(ctx context.Context, conditionID string) (
 		"polymarket.com",
 		"www.polymarket.com",
 	}
-	searchResults, err := s.Tavily.Search(ctx, query, excludeDomains...)
+	searchResults, err := s.Tavily.Search(ctx, query, maxSourceEntries, excludeDomains...)
 	if err != nil {
 		logger.Error("Oracle search failed for %s: %v", conditionID, err)
 		searchResults = nil
@@ -133,7 +133,7 @@ func (s *OracleService) AnalyzeMarket(ctx context.Context, conditionID string) (
 	// - Redis fields (via attachRealtimePrices): YesPrice, NoPrice, YesBestBid/Ask, NoBestBid/Ask (token-specific)
 	// - TrendingScore: NOT available for single market fetches (only computed for market lanes)
 	contextBuilder := strings.Builder{}
-	
+
 	// Add current date/time context for temporal analysis
 	currentTime := time.Now().UTC()
 	contextBuilder.WriteString("=== TEMPORAL CONTEXT ===\n")
@@ -141,32 +141,32 @@ func (s *OracleService) AnalyzeMarket(ctx context.Context, conditionID string) (
 	contextBuilder.WriteString(fmt.Sprintf("Current Date: %s\n", currentTime.Format("2006-01-02")))
 	contextBuilder.WriteString(fmt.Sprintf("Current Year: %d\n", currentTime.Year()))
 	contextBuilder.WriteString("\n")
-	
+
 	contextBuilder.WriteString("=== MARKET INFORMATION ===\n")
 	contextBuilder.WriteString(fmt.Sprintf("Title: %s\n", market.Title))
-	
+
 	if desc := strings.TrimSpace(market.Description); desc != "" {
 		// No truncation - send full description for maximum context
 		contextBuilder.WriteString(fmt.Sprintf("Description: %s\n", desc))
 	}
-	
+
 	if rules := strings.TrimSpace(market.ResolutionRules); rules != "" {
 		// No truncation - send full resolution rules for maximum context
 		contextBuilder.WriteString(fmt.Sprintf("Resolution Rules: %s\n", rules))
 	}
-	
+
 	if market.Category != "" {
 		contextBuilder.WriteString(fmt.Sprintf("Category: %s\n", market.Category))
 	}
-	
+
 	if len(market.Tags) > 0 {
 		contextBuilder.WriteString(fmt.Sprintf("Tags: %s\n", strings.Join(market.Tags, ", ")))
 	}
-	
+
 	if market.Outcomes != "" {
 		contextBuilder.WriteString(fmt.Sprintf("Outcomes: %s\n", market.Outcomes))
 	}
-	
+
 	// Date information
 	if market.StartDate != nil {
 		contextBuilder.WriteString(fmt.Sprintf("Start Date: %s\n", market.StartDate.Format(time.RFC3339)))
@@ -177,7 +177,7 @@ func (s *OracleService) AnalyzeMarket(ctx context.Context, conditionID string) (
 	if market.EventStartTime != nil {
 		contextBuilder.WriteString(fmt.Sprintf("Event Start Time: %s\n", market.EventStartTime.Format(time.RFC3339)))
 	}
-	
+
 	// Market status
 	statusParts := []string{}
 	if market.Closed {
@@ -198,7 +198,7 @@ func (s *OracleService) AnalyzeMarket(ctx context.Context, conditionID string) (
 	if len(statusParts) > 0 {
 		contextBuilder.WriteString(fmt.Sprintf("Status: %s\n", strings.Join(statusParts, ", ")))
 	}
-	
+
 	// Price Information
 	contextBuilder.WriteString("\n=== PRICING DATA ===\n")
 	contextBuilder.WriteString("Display price rule: midpoint of best bid/ask unless spread > $0.10, then last trade price is shown.\n")
@@ -240,7 +240,7 @@ func (s *OracleService) AnalyzeMarket(ctx context.Context, conditionID string) (
 	if market.NoBestAsk > 0 {
 		contextBuilder.WriteString(fmt.Sprintf("NO Best Ask: %.4f\n", market.NoBestAsk))
 	}
-	
+
 	// Price Changes (momentum indicators)
 	priceChangeParts := []string{}
 	if market.OneHourPriceChange != 0 {
@@ -258,7 +258,7 @@ func (s *OracleService) AnalyzeMarket(ctx context.Context, conditionID string) (
 	if len(priceChangeParts) > 0 {
 		contextBuilder.WriteString(fmt.Sprintf("Price Changes: %s\n", strings.Join(priceChangeParts, ", ")))
 	}
-	
+
 	// Volume Metrics
 	contextBuilder.WriteString("\n=== VOLUME METRICS ===\n")
 	if market.Volume24h > 0 {
@@ -273,7 +273,7 @@ func (s *OracleService) AnalyzeMarket(ctx context.Context, conditionID string) (
 	if market.VolumeAllTime > 0 {
 		contextBuilder.WriteString(fmt.Sprintf("All-Time Volume: $%.2f\n", market.VolumeAllTime))
 	}
-	
+
 	// Liquidity Metrics
 	if market.Liquidity > 0 {
 		contextBuilder.WriteString(fmt.Sprintf("Liquidity: $%.2f\n", market.Liquidity))
@@ -281,18 +281,18 @@ func (s *OracleService) AnalyzeMarket(ctx context.Context, conditionID string) (
 	if market.LiquidityClob > 0 {
 		contextBuilder.WriteString(fmt.Sprintf("CLOB Liquidity: $%.2f\n", market.LiquidityClob))
 	}
-	
+
 	// Outcome Prices (if available)
 	if market.OutcomePrices != "" {
 		contextBuilder.WriteString(fmt.Sprintf("Outcome Prices: %s\n", market.OutcomePrices))
 	}
-	
+
 	// Market Quality Indicators
 	if market.Competitive > 0 {
 		contextBuilder.WriteString(fmt.Sprintf("Competitive Score: %.2f\n", market.Competitive))
 	}
 	// Note: TrendingScore is only computed for market lanes, not available for single market fetches
-	
+
 	// Market Timestamps
 	if market.MarketCreatedAt != nil {
 		contextBuilder.WriteString(fmt.Sprintf("Market Created: %s\n", market.MarketCreatedAt.Format(time.RFC3339)))
@@ -300,7 +300,7 @@ func (s *OracleService) AnalyzeMarket(ctx context.Context, conditionID string) (
 	if market.MarketUpdatedAt != nil {
 		contextBuilder.WriteString(fmt.Sprintf("Last Updated: %s\n", market.MarketUpdatedAt.Format(time.RFC3339)))
 	}
-	
+
 	contextBuilder.WriteString("\n=== RECENT SEARCH RESULTS ===\n")
 
 	var sources []Source
@@ -323,7 +323,7 @@ func (s *OracleService) AnalyzeMarket(ctx context.Context, conditionID string) (
 	}
 
 	// 4. Prompt Engineering
-systemPrompt := `You are Bankai Oracle, a precision prediction market analysis engine. Your sole purpose is to calculate the exact probability of a "YES" outcome for the given market using all available data.
+	systemPrompt := `You are Bankai Oracle, a precision prediction market analysis engine. Your sole purpose is to calculate the exact probability of a "YES" outcome for the given market using all available data.
 
 ANALYSIS METHODOLOGY:
 
@@ -388,7 +388,7 @@ Required JSON format:
   "reasoning": string     // 3-5 sentences: Concise synthesis of key factors that led to your probability estimate. Reference specific data points (prices, volume, news, dates) that influenced your decision. Be direct and factual.
 }`
 
-userPrompt := fmt.Sprintf(`Analyze this prediction market and calculate the probability of a YES outcome.
+	userPrompt := fmt.Sprintf(`Analyze this prediction market and calculate the probability of a YES outcome.
 
 You have been provided with:
 - Complete market description and resolution rules (read carefully - these define what YES means)
@@ -430,13 +430,13 @@ Return ONLY the JSON object with your analysis.
 	// 6. Parse Response
 	// First, try to extract JSON object directly (handles cases with reasoning text before/after)
 	cleanedResponse := extractJSONObject(rawResponse)
-	
+
 	// If no JSON found, try cleaning markdown fences
 	if !strings.Contains(cleanedResponse, "{") {
 		cleanedResponse = cleanJSONFence(rawResponse)
 		cleanedResponse = extractJSONObject(cleanedResponse)
 	}
-	
+
 	cleanedResponse = strings.TrimSpace(cleanedResponse)
 	if cleanedResponse == "" {
 		logger.Error("Cleaned LLM response empty for market %s | raw: %q", market.ConditionID, truncateForLog(rawResponse, 500))
@@ -469,7 +469,7 @@ Return ONLY the JSON object with your analysis.
 		llmResult.Reasoning = "Analysis completed but no reasoning provided."
 	}
 
-	logger.Info("Oracle parsed result for %s | prob=%.3f | sentiment=%s | reasoning_len=%d", 
+	logger.Info("Oracle parsed result for %s | prob=%.3f | sentiment=%s | reasoning_len=%d",
 		market.ConditionID, llmResult.Probability, llmResult.Sentiment, len(llmResult.Reasoning))
 
 	return &MarketAnalysis{
@@ -498,21 +498,21 @@ func extractJSONObject(s string) string {
 	if s == "" {
 		return s
 	}
-	
+
 	// Find the first '{' character
 	start := strings.IndexByte(s, '{')
 	if start == -1 {
 		return s
 	}
-	
+
 	// Track depth to find matching closing brace
 	depth := 0
 	inString := false
 	escapeNext := false
-	
+
 	for i := start; i < len(s); i++ {
 		char := s[i]
-		
+
 		// Handle escape sequences in strings
 		if escapeNext {
 			escapeNext = false
@@ -522,13 +522,13 @@ func extractJSONObject(s string) string {
 			escapeNext = true
 			continue
 		}
-		
+
 		// Track string boundaries
 		if char == '"' && !escapeNext {
 			inString = !inString
 			continue
 		}
-		
+
 		// Only count braces when not inside a string
 		if !inString {
 			switch char {
@@ -543,7 +543,7 @@ func extractJSONObject(s string) string {
 			}
 		}
 	}
-	
+
 	// If we didn't find a complete object, return what we have
 	return strings.TrimSpace(s[start:])
 }
