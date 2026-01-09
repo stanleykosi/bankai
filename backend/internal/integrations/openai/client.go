@@ -29,7 +29,7 @@ import (
 
 const (
 	DefaultBaseURL   = "https://openrouter.ai/api/v1/chat/completions"
-	DefaultModel     = "google/gemini-3-pro-preview"
+	DefaultModel     = "minimax/minimax-m2.1"
 	requestTimeout   = 120 * time.Second
 	defaultMaxTokens = 10000 // High limit for comprehensive analysis with full context
 	maxAnalyzeTries  = 3

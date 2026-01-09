@@ -73,6 +73,9 @@ type ServicesConfig struct {
 	PolygonRPCURL      string
 	SyncJobSecret      string
 	AIPicksMarketLimit int
+	AlphaSnapshotHour  int // UTC hour to run daily AI snapshot; -1 to run immediately
+	MaxTrackedAssets   int // RTDS subscription cap; 0 = no cap
+	StreamRecentHours  int // When >0, subscribe all markets with volume in the last N hours; 0 = use cap-only behavior
 }
 
 // Load reads .env file and populates the Config struct
@@ -108,10 +111,13 @@ func Load() (*Config, error) {
 			TavilyAPIKey:       getEnv("TAVILY_API_KEY", ""),
 			OpenAIAPIKey:       getEnv("OPENAI_API_KEY", ""),
 			OpenAIBaseURL:      getEnv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"),
-			OpenAIModel:        getEnv("OPENAI_MODEL", "google/gemini-3-pro-preview"),
+			OpenAIModel:        getEnv("OPENAI_MODEL", "minimax/minimax-m2.1"),
 			PolygonRPCURL:      getEnv("POLYGON_RPC_URL", ""),
 			SyncJobSecret:      getEnv("JOB_SYNC_SECRET", ""),
-			AIPicksMarketLimit: getEnvAsInt("AI_PICKS_MARKET_LIMIT", 10),
+			AIPicksMarketLimit: getEnvAsInt("AI_PICKS_MARKET_LIMIT", 0),
+			AlphaSnapshotHour:  getEnvAsInt("ALPHA_SNAPSHOT_HOUR_UTC", -1),
+			MaxTrackedAssets:   getEnvAsInt("STREAM_MAX_TRACKED_ASSETS", 1200),
+			StreamRecentHours:  getEnvAsInt("STREAM_RECENT_HOURS", 24),
 		},
 	}
 

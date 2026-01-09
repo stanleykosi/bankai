@@ -31,7 +31,7 @@ func NewAnalysisHandler(service *services.AlphaHubService) *AnalysisHandler {
 func (h *AnalysisHandler) GetSmartMoney(c *fiber.Ctx) error {
 	window := time.Duration(1440) * time.Minute // default 24h lookback
 	if raw := strings.TrimSpace(c.Query("window")); raw != "" {
-		if mins, err := strconv.Atoi(raw); err == nil && mins > 0 && mins <= 180 {
+		if mins, err := strconv.Atoi(raw); err == nil && mins > 0 && mins <= 1440 {
 			window = time.Duration(mins) * time.Minute
 		}
 	}
@@ -48,19 +48,26 @@ func (h *AnalysisHandler) GetSmartMoney(c *fiber.Ctx) error {
 func (h *AnalysisHandler) GetAIPicks(c *fiber.Ctx) error {
 	window := time.Duration(1440) * time.Minute // default 24h lookback
 	if raw := strings.TrimSpace(c.Query("window")); raw != "" {
-		if mins, err := strconv.Atoi(raw); err == nil && mins > 0 && mins <= 180 {
+		if mins, err := strconv.Atoi(raw); err == nil && mins > 0 && mins <= 1440 {
 			window = time.Duration(mins) * time.Minute
 		}
 	}
 
-	signals, err := h.Service.GetSmartMoneySignals(c.Context(), window)
+	force := strings.TrimSpace(c.Query("force")) == "1"
+	snapshot, err := h.Service.GetDailySnapshot(c.Context(), window, force)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-
-	ai, err := h.Service.GenerateAIPicks(c.Context(), signals)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	if snapshot == nil {
+		return c.JSON(&services.AIResponse{Picks: []services.AIPick{}})
 	}
-	return c.JSON(ai)
+	resp := snapshot.AI
+	resp.GeneratedAt = snapshot.GeneratedAt
+	resp.ExpiresAt = snapshot.ExpiresAt
+	resp.Stale = snapshot.Stale
+	resp.Source = snapshot.Source
+	resp.WindowSeconds = snapshot.WindowSeconds
+	resp.TokenEstimate = snapshot.TokenEstimate
+	resp.ChunkStats = snapshot.AI.ChunkStats
+	return c.JSON(resp)
 }

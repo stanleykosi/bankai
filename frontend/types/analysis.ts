@@ -73,8 +73,30 @@ export type AIPick = {
   rationale: string;
 };
 
+export type TokenEstimate = {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+};
+
+export type AIChunkMeta = {
+  chunk: number;
+  markets: number;
+  news_fetched: number;
+  token_estimate: TokenEstimate;
+};
+
 export type AIResponse = {
   ai_picks: AIPick[];
   raw_content?: string;
   model?: string;
+  generated_at?: string;
+  expires_at?: string;
+  window_seconds?: number;
+  source?: string;
+  stale?: boolean;
+  news_markets?: number;
+  chunks?: AIChunkMeta[];
+  token_estimate?: TokenEstimate;
+  completion_note?: string;
 };

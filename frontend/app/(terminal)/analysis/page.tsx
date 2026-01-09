@@ -201,13 +201,13 @@ export default function AnalysisPage() {
   });
 
   const aiQuery = useQuery({
-    queryKey: ["analysis", "ai", windowMinutes],
+    queryKey: ["analysis", "ai", "daily", windowMinutes],
     queryFn: () => fetchAIPicks(windowMinutes),
-    refetchInterval: 120_000,
-    enabled: Boolean(smartQuery.data),
+    refetchInterval: 15 * 60_000,
+    staleTime: 5 * 60_000,
   });
 
-  const isLoading = smartQuery.isLoading || (aiQuery.isLoading && !aiQuery.data);
+  const isLoading = (smartQuery.isLoading || aiQuery.isLoading) && (!smartQuery.data || !aiQuery.data);
   const smart = smartQuery.data;
   const ai = aiQuery.data;
 
@@ -227,6 +227,9 @@ export default function AnalysisPage() {
     return topMarkets.slice(start, start + pageSize);
   }, [currentPage, topMarkets]);
 
+  const aiGenerated = ai?.generated_at ? new Date(ai.generated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "...";
+  const aiStale = Boolean(ai?.stale);
+
   return (
     <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-6 px-4 py-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -243,6 +246,8 @@ export default function AnalysisPage() {
           <StatPill label="Markets" value={`${pagedMarkets.length}/${topMarkets.length}`} />
           <StatPill label="Whales" value={String(whales.length)} />
           <StatPill label="Updated" value={smart?.generated_at ? new Date(smart.generated_at).toLocaleTimeString() : "..."} />
+          <StatPill label="AI Picks" value={ai?.ai_picks?.length ? String(ai.ai_picks.length) : "..."} />
+          <StatPill label="AI Generated" value={aiGenerated} />
         </div>
       </div>
 
@@ -255,8 +260,16 @@ export default function AnalysisPage() {
             <div className="flex items-center gap-2">
               <Brain className="h-4 w-4 text-primary" />
               <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">AI Picks</h2>
+              {aiStale ? <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-300">Stale</span> : null}
+              <span className="text-[11px] text-muted-foreground">
+                Daily snapshot · {aiGenerated}
+              </span>
             </div>
-            {ai?.ai_picks?.length ? (
+            {aiQuery.isLoading && !ai?.ai_picks ? (
+              <Card className="border-dashed border-border/70 bg-card/40 p-6 text-center text-sm text-muted-foreground">
+                Loading daily AI picks...
+              </Card>
+            ) : ai?.ai_picks?.length ? (
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 {ai.ai_picks.map((pick) => (
                   <AIPickCard key={`${pick.market_id}-${pick.slug}`} pick={pick} />

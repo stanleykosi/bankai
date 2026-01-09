@@ -1542,6 +1542,11 @@ func trimMarketAssets(assets []MarketAsset, maxCount int) []MarketAsset {
 	return assets[:maxCount]
 }
 
+// TrimMarketAssetsByLiquidity is an exported helper to reuse the same ranking logic externally.
+func TrimMarketAssetsByLiquidity(assets []MarketAsset, maxCount int) []MarketAsset {
+	return trimMarketAssets(assets, maxCount)
+}
+
 func selectTopMarkets(markets []models.Market, max int) []models.Market {
 	if max <= 0 || len(markets) <= max {
 		return markets

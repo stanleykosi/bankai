@@ -22,10 +22,10 @@ import (
 )
 
 const (
-	defaultSmartMoneyTTL   = 90 * time.Second
-	defaultWhaleThreshold  = 1_000.0
-	defaultAIMarketLimit   = 50
-	defaultNewsMarketLimit = 50
+	defaultSmartMoneyTTL  = 90 * time.Second
+	defaultWhaleThreshold = 1_000.0
+	// Default chunk + limit safety nets (env-driven cap set to 0 = no limit)
+	defaultAIMarketLimit   = 150
 	maxWhalesToEnrich      = 200
 	washTradeWindow        = 10 * time.Minute
 	washTradeSizeThreshold = 0.10 // 10% size similarity window
@@ -42,6 +42,13 @@ const (
 	maxDisplayedWhales     = 20
 	minResolutionHorizon   = 6 * time.Hour
 	maxResolutionHorizon   = 60 * 24 * time.Hour
+	dailySnapshotTTL       = 26 * time.Hour
+	dailySnapshotLockTTL   = 15 * time.Minute
+	aiDailyChunkMarkets    = 150
+	aiNewsResultsPerMarket = 2
+	aiMaxCompletionTokens  = 5000
+	newsContentRuneLimit   = 300
+	dailySnapshotPrefix    = "analysis:daily"
 )
 
 // AlphaHubService orchestrates smart-money + whale flow + AI picks for the /analysis dashboard.
@@ -206,9 +213,52 @@ type AIPick struct {
 }
 
 type AIResponse struct {
-	Picks      []AIPick `json:"ai_picks"`
-	RawContent string   `json:"raw_content"`
-	Model      string   `json:"model"`
+	Picks          []AIPick      `json:"ai_picks"`
+	RawContent     string        `json:"raw_content,omitempty"`
+	Model          string        `json:"model,omitempty"`
+	GeneratedAt    time.Time     `json:"generated_at,omitempty"`
+	ExpiresAt      time.Time     `json:"expires_at,omitempty"`
+	WindowSeconds  int           `json:"window_seconds,omitempty"`
+	Source         string        `json:"source,omitempty"`
+	Stale          bool          `json:"stale,omitempty"`
+	NewsMarkets    int           `json:"news_markets,omitempty"`
+	ChunkStats     []AIChunkMeta `json:"chunks,omitempty"`
+	TokenEstimate  TokenEstimate `json:"token_estimate,omitempty"`
+	CompletionNote string        `json:"completion_note,omitempty"`
+}
+
+type TokenEstimate struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
+type AIChunkMeta struct {
+	Chunk         int           `json:"chunk"`
+	Markets       int           `json:"markets"`
+	NewsFetched   int           `json:"news_fetched"`
+	TokenEstimate TokenEstimate `json:"token_estimate"`
+}
+
+type AlphaSnapshot struct {
+	WindowSeconds int                `json:"window_seconds"`
+	GeneratedAt   time.Time          `json:"generated_at"`
+	ExpiresAt     time.Time          `json:"expires_at"`
+	SmartMoney    SmartMoneyResponse `json:"smart_money"`
+	AI            AIResponse         `json:"ai"`
+	NewsMarkets   int                `json:"news_markets"`
+	AICalls       int                `json:"ai_calls"`
+	TokenEstimate TokenEstimate      `json:"token_estimate"`
+	Source        string             `json:"source,omitempty"`
+	Stale         bool               `json:"stale"`
+	LastError     string             `json:"last_error,omitempty"`
+}
+
+type newsItem struct {
+	Title   string  `json:"title"`
+	URL     string  `json:"url"`
+	Content string  `json:"content"`
+	Score   float64 `json:"score"`
 }
 
 func NewAlphaHubService(marketService *MarketService, profileService *ProfileService, clobClient *clob.Client, tavilyClient *tavily.Client, openaiClient *openai.Client, dataAPIClient *data_api.Client, subgraphClient *polymarket.SubgraphClient, aiMarketLimit int, redis *redis.Client) *AlphaHubService {
@@ -940,144 +990,25 @@ func valueEdgeScore(m MarketSignal) float64 {
 
 // GenerateAIPicks runs the Alpha Hub prompt against the smart-money payload and optional Tavily news.
 func (s *AlphaHubService) GenerateAIPicks(ctx context.Context, smart *SmartMoneyResponse) (*AIResponse, error) {
-	startTime := time.Now()
-	logger.Info("AlphaHub: GenerateAIPicks started")
-
-	if s.openaiClient == nil {
-		return nil, fmt.Errorf("openai client not configured")
-	}
-	if smart == nil || len(smart.Markets) == 0 {
-		// Graceful fallback: no signals yet; return empty AI response.
-		return &AIResponse{Picks: []AIPick{}, RawContent: "", Model: s.openaiClient.Model()}, nil
-	}
-
-	cacheKey := fmt.Sprintf("analysis:ai:%d", smart.WindowSeconds)
-	if s.redis != nil {
-		if cached, err := s.redis.Get(ctx, cacheKey).Bytes(); err == nil && len(cached) > 0 {
-			var cachedResp AIResponse
-			if err := json.Unmarshal(cached, &cachedResp); err == nil {
-				logger.Info("AlphaHub: GenerateAIPicks returning cached response, elapsed=%v", time.Since(startTime))
-				return &cachedResp, nil
-			}
-		}
+	cfg := aiBuildConfig{
+		CacheKey:           fmt.Sprintf("analysis:ai:%d", smart.WindowSeconds),
+		CacheTTL:           5 * time.Minute,
+		MaxMarkets:         s.aiMarketLimit,
+		MaxMarketsPerChunk: 0, // single request for on-demand calls
+		NewsPerMarket:      aiNewsResultsPerMarket,
+		NewsCacheTTL:       45 * time.Minute,
+		Label:              "request",
 	}
 
-	// Limit to top markets for AI picks/news lookups
-	limit := s.aiMarketLimit
-	if limit <= 0 {
-		limit = defaultAIMarketLimit
-	}
-	topMarkets := smart.Markets
-	if len(topMarkets) > limit {
-		topMarkets = topMarkets[:limit]
-	}
-
-	// Enrich with news for top markets (optional - continue even if it fails)
-	type newsItem struct {
-		Title   string  `json:"title"`
-		URL     string  `json:"url"`
-		Content string  `json:"content"`
-		Score   float64 `json:"score"`
-	}
-	newsByMarket := make(map[string][]newsItem)
-
-	// Only do news enrichment if Tavily client is configured
-	if s.tavilyClient != nil {
-		newsStart := time.Now()
-		newsMarkets := topMarkets
-		maxNews := s.aiMarketLimit
-		if maxNews <= 0 {
-			maxNews = defaultAIMarketLimit
-		}
-		if maxNews < defaultNewsMarketLimit {
-			maxNews = defaultNewsMarketLimit
-		}
-		if len(newsMarkets) > maxNews {
-			newsMarkets = newsMarkets[:maxNews]
-		}
-
-		workerCount := 6
-		jobs := make(chan MarketSignal, len(newsMarkets))
-		var wg sync.WaitGroup
-		var mu sync.Mutex
-
-		for i := 0; i < workerCount; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for m := range jobs {
-					searchCtx, cancel := context.WithTimeout(ctx, tavilySearchTimeout)
-					results, err := s.tavilyClient.Search(searchCtx, m.Title, "polymarket.com")
-					cancel()
-
-					if err != nil {
-						logger.Error("AlphaHub: tavily search failed for %s: %v (continuing without news)", m.MarketID, err)
-						continue
-					}
-					if len(results) == 0 {
-						continue
-					}
-					mu.Lock()
-					for _, r := range results {
-						newsByMarket[m.MarketID] = append(newsByMarket[m.MarketID], newsItem{
-							Title:   r.Title,
-							URL:     r.URL,
-							Content: r.Content,
-							Score:   r.Score,
-						})
-					}
-					mu.Unlock()
-				}
-			}()
-		}
-
-		for _, m := range newsMarkets {
-			jobs <- m
-		}
-		close(jobs)
-		wg.Wait()
-
-		logger.Info("AlphaHub: Tavily news enrichment completed, markets=%d, newsItems=%d, elapsed=%v",
-			len(newsMarkets), len(newsByMarket), time.Since(newsStart))
-	}
-
-	payload := map[string]interface{}{
-		"markets":             topMarkets,
-		"whale_events":        smart.Whales,
-		"news":                newsByMarket,
-		"as_of":               time.Now().UTC().Format(time.RFC3339),
-		"data_freshness_secs": int(time.Since(smart.GeneratedAt).Seconds()),
-	}
-	userPromptBytes, _ := json.Marshal(payload)
-
-	openaiStart := time.Now()
-	content, err := s.openaiClient.Analyze(ctx, prompts.AlphaHubSystemPrompt, string(userPromptBytes))
-	logger.Info("AlphaHub: OpenAI analyze completed, elapsed=%v", time.Since(openaiStart))
+	resp, meta, err := s.generateAIPicksWithConfig(ctx, smart, cfg)
 	if err != nil {
-		logger.Error("AlphaHub: OpenAI analyze failed: %v", err)
 		return nil, err
 	}
-
-	var parsed struct {
-		AIPicks []AIPick `json:"ai_picks"`
+	if resp != nil && meta != nil {
+		resp.NewsMarkets = meta.NewsMarkets
+		resp.ChunkStats = meta.Chunks
+		resp.TokenEstimate = meta.TokenEstimate
 	}
-	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
-		return &AIResponse{RawContent: content, Model: s.openaiClient.Model()}, nil
-	}
-
-	resp := &AIResponse{
-		Picks:      parsed.AIPicks,
-		RawContent: content,
-		Model:      s.openaiClient.Model(),
-	}
-
-	if s.redis != nil && len(resp.Picks) > 0 {
-		if data, err := json.Marshal(resp); err == nil {
-			_ = s.redis.Set(ctx, cacheKey, data, 5*time.Minute).Err()
-		}
-	}
-
-	logger.Info("AlphaHub: GenerateAIPicks completed, picks=%d, totalElapsed=%v", len(resp.Picks), time.Since(startTime))
 	return resp, nil
 }
 
@@ -1218,4 +1149,449 @@ func clamp(val, min, max float64) float64 {
 		return max
 	}
 	return val
+}
+
+type aiBuildConfig struct {
+	CacheKey           string
+	CacheTTL           time.Duration
+	MaxMarkets         int
+	MaxMarketsPerChunk int
+	NewsPerMarket      int
+	NewsCacheTTL       time.Duration
+	ForceRefresh       bool
+	Label              string
+}
+
+type aiBuildMeta struct {
+	NewsMarkets   int
+	Chunks        []AIChunkMeta
+	TokenEstimate TokenEstimate
+}
+
+// generateAIPicksWithConfig builds AI picks with optional caching, chunking, and news controls.
+func (s *AlphaHubService) generateAIPicksWithConfig(ctx context.Context, smart *SmartMoneyResponse, cfg aiBuildConfig) (*AIResponse, *aiBuildMeta, error) {
+	startTime := time.Now()
+	if s.openaiClient == nil {
+		return nil, nil, fmt.Errorf("openai client not configured")
+	}
+	windowSeconds := 0
+	if smart != nil {
+		windowSeconds = smart.WindowSeconds
+	}
+	if smart == nil || len(smart.Markets) == 0 {
+		return &AIResponse{
+			Picks:         []AIPick{},
+			Model:         s.openaiClient.Model(),
+			WindowSeconds: windowSeconds,
+			Source:        cfg.Label,
+		}, &aiBuildMeta{}, nil
+	}
+
+	// Cache-first for identical requests
+	if cfg.CacheKey != "" && s.redis != nil && !cfg.ForceRefresh {
+		if cached, err := s.redis.Get(ctx, cfg.CacheKey).Bytes(); err == nil && len(cached) > 0 {
+			var resp AIResponse
+			if unmarshalErr := json.Unmarshal(cached, &resp); unmarshalErr == nil {
+				logger.Info("AlphaHub: returning cached AI picks for %s", cfg.CacheKey)
+				return &resp, &aiBuildMeta{}, nil
+			}
+		}
+	}
+
+	markets := smart.Markets
+	if cfg.MaxMarkets > 0 && len(markets) > cfg.MaxMarkets {
+		markets = markets[:cfg.MaxMarkets]
+	}
+
+	chunkSize := cfg.MaxMarketsPerChunk
+	if chunkSize <= 0 || chunkSize > len(markets) {
+		chunkSize = len(markets)
+	}
+	if chunkSize <= 0 {
+		chunkSize = defaultAIMarketLimit
+	}
+	if chunkSize > aiDailyChunkMarkets && cfg.Label == "daily_snapshot" {
+		chunkSize = aiDailyChunkMarkets
+	}
+
+	chunks := make([][]MarketSignal, 0)
+	for i := 0; i < len(markets); i += chunkSize {
+		end := i + chunkSize
+		if end > len(markets) {
+			end = len(markets)
+		}
+		chunks = append(chunks, markets[i:end])
+	}
+
+	allPicks := make([]AIPick, 0)
+	seen := make(map[string]struct{})
+	meta := &aiBuildMeta{}
+	chunkID := 0
+	for _, chunk := range chunks {
+		chunkID++
+		newsByMarket, newsMarkets := s.fetchNewsForMarkets(ctx, chunk, cfg.NewsPerMarket, cfg.NewsCacheTTL)
+		chunkWhales := filterWhalesForMarkets(smart.Whales, chunk)
+
+		payload := map[string]interface{}{
+			"markets":             chunk,
+			"whale_events":        chunkWhales,
+			"news":                newsByMarket,
+			"as_of":               time.Now().UTC().Format(time.RFC3339),
+			"data_freshness_secs": int(time.Since(smart.GeneratedAt).Seconds()),
+		}
+		userPromptBytes, _ := json.Marshal(payload)
+		estimate := tokenEstimateFromBytes(userPromptBytes, aiMaxCompletionTokens)
+		logger.Info("AlphaHub: AI chunk %d prepared (markets=%d news_markets=%d est_prompt_tokens=%d)", chunkID, len(chunk), newsMarkets, estimate.PromptTokens)
+
+		content, err := s.openaiClient.Analyze(ctx, prompts.AlphaHubSystemPrompt, string(userPromptBytes))
+		if err != nil {
+			logger.Error("AlphaHub: OpenAI analyze failed on chunk %d: %v", chunkID, err)
+			return nil, meta, err
+		}
+
+		var parsed struct {
+			AIPicks []AIPick `json:"ai_picks"`
+		}
+		if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+			return &AIResponse{
+				Picks:      []AIPick{},
+				RawContent: content,
+				Model:      s.openaiClient.Model(),
+				Source:     cfg.Label,
+			}, meta, nil
+		}
+
+		for _, pick := range parsed.AIPicks {
+			if pick.MarketID == "" {
+				continue
+			}
+			key := strings.ToLower(strings.TrimSpace(pick.MarketID))
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			allPicks = append(allPicks, pick)
+		}
+
+		meta.NewsMarkets += newsMarkets
+		meta.Chunks = append(meta.Chunks, AIChunkMeta{
+			Chunk:         chunkID,
+			Markets:       len(chunk),
+			NewsFetched:   newsMarkets,
+			TokenEstimate: estimate,
+		})
+		meta.TokenEstimate.PromptTokens += estimate.PromptTokens
+		meta.TokenEstimate.CompletionTokens += estimate.CompletionTokens
+	}
+	meta.TokenEstimate.TotalTokens = meta.TokenEstimate.PromptTokens + meta.TokenEstimate.CompletionTokens
+
+	resp := &AIResponse{
+		Picks:         allPicks,
+		Model:         s.openaiClient.Model(),
+		GeneratedAt:   time.Now().UTC(),
+		WindowSeconds: smart.WindowSeconds,
+		Source:        cfg.Label,
+		TokenEstimate: meta.TokenEstimate,
+		ChunkStats:    meta.Chunks,
+		NewsMarkets:   meta.NewsMarkets,
+	}
+
+	// Cache assembled response
+	if cfg.CacheKey != "" && s.redis != nil && len(resp.Picks) > 0 {
+		if data, err := json.Marshal(resp); err == nil {
+			_ = s.redis.Set(ctx, cfg.CacheKey, data, cfg.CacheTTL).Err()
+		}
+	}
+
+	logger.Info("AlphaHub: GenerateAIPicks completed via %s, picks=%d, chunks=%d, elapsed=%v",
+		cfg.Label, len(resp.Picks), len(chunks), time.Since(startTime))
+	return resp, meta, nil
+}
+
+// fetchNewsForMarkets pulls Tavily results (cached per-day) for each market in the slice.
+func (s *AlphaHubService) fetchNewsForMarkets(ctx context.Context, markets []MarketSignal, perMarket int, cacheTTL time.Duration) (map[string][]newsItem, int) {
+	newsByMarket := make(map[string][]newsItem)
+	if perMarket <= 0 {
+		perMarket = 1
+	}
+	if cacheTTL <= 0 {
+		cacheTTL = dailySnapshotTTL
+	}
+	if s.tavilyClient == nil {
+		return newsByMarket, 0
+	}
+
+	dateKey := time.Now().UTC().Format("2006-01-02")
+	type job struct {
+		market MarketSignal
+	}
+
+	jobs := make(chan job, len(markets))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	workerCount := 6
+	if workerCount > len(markets) {
+		workerCount = len(markets)
+	}
+	if workerCount == 0 {
+		return newsByMarket, 0
+	}
+
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				m := j.market
+				cacheKey := fmt.Sprintf("analysis:news:%s:%s", strings.ToLower(strings.TrimSpace(m.MarketID)), dateKey)
+
+				// Cache check
+				if s.redis != nil {
+					if cached, err := s.redis.Get(ctx, cacheKey).Bytes(); err == nil && len(cached) > 0 {
+						var items []newsItem
+						if unmarshalErr := json.Unmarshal(cached, &items); unmarshalErr == nil && len(items) > 0 {
+							mu.Lock()
+							newsByMarket[m.MarketID] = items
+							mu.Unlock()
+							continue
+						}
+					}
+				}
+
+				searchCtx, cancel := context.WithTimeout(ctx, tavilySearchTimeout)
+				results, err := s.tavilyClient.Search(searchCtx, m.Title, perMarket, "polymarket.com")
+				cancel()
+				if err != nil {
+					logger.Error("AlphaHub: tavily search failed for %s: %v (continuing without news)", m.MarketID, err)
+					continue
+				}
+				if len(results) == 0 {
+					continue
+				}
+
+				items := make([]newsItem, 0, len(results))
+				for idx, r := range results {
+					if idx >= perMarket {
+						break
+					}
+					items = append(items, newsItem{
+						Title:   strings.TrimSpace(r.Title),
+						URL:     strings.TrimSpace(r.URL),
+						Content: trimNewsContent(r.Content),
+						Score:   r.Score,
+					})
+				}
+
+				mu.Lock()
+				if len(items) > 0 {
+					newsByMarket[m.MarketID] = items
+					if s.redis != nil {
+						if data, err := json.Marshal(items); err == nil {
+							_ = s.redis.Set(ctx, cacheKey, data, cacheTTL).Err()
+						}
+					}
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+
+	for _, m := range markets {
+		jobs <- job{market: m}
+	}
+	close(jobs)
+	wg.Wait()
+
+	return newsByMarket, len(newsByMarket)
+}
+
+func trimNewsContent(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return content
+	}
+	runes := []rune(content)
+	if len(runes) > newsContentRuneLimit {
+		return string(runes[:newsContentRuneLimit])
+	}
+	return content
+}
+
+func tokenEstimateFromBytes(b []byte, completionCap int) TokenEstimate {
+	promptTokens := int(math.Ceil(float64(len(b)) / 4.0))
+	if completionCap <= 0 {
+		completionCap = aiMaxCompletionTokens
+	}
+	return TokenEstimate{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionCap,
+		TotalTokens:      promptTokens + completionCap,
+	}
+}
+
+func filterWhalesForMarkets(whales []WhaleEvent, markets []MarketSignal) []WhaleEvent {
+	if len(whales) == 0 || len(markets) == 0 {
+		return whales
+	}
+	set := make(map[string]struct{}, len(markets))
+	for _, m := range markets {
+		set[strings.ToLower(strings.TrimSpace(m.MarketID))] = struct{}{}
+	}
+	filtered := make([]WhaleEvent, 0, len(whales))
+	for _, w := range whales {
+		if _, ok := set[strings.ToLower(strings.TrimSpace(w.MarketID))]; ok {
+			filtered = append(filtered, w)
+		}
+	}
+	if len(filtered) == 0 {
+		return whales
+	}
+	return filtered
+}
+
+// GetDailySnapshot returns a cached (or freshly generated) daily AI + smart money snapshot.
+func (s *AlphaHubService) GetDailySnapshot(ctx context.Context, window time.Duration, force bool) (*AlphaSnapshot, error) {
+	if window <= 0 {
+		window = 24 * time.Hour
+	}
+	if s.redis == nil {
+		return s.buildDailySnapshot(ctx, window)
+	}
+
+	dateKey := time.Now().UTC().Format("2006-01-02")
+	snapshotKey := fmt.Sprintf("%s:%s", dailySnapshotPrefix, dateKey)
+	latestKey := fmt.Sprintf("%s:latest", dailySnapshotPrefix)
+	prevKey := fmt.Sprintf("%s:previous", dailySnapshotPrefix)
+	lockKey := fmt.Sprintf("%s:lock", dailySnapshotPrefix)
+
+	if !force {
+		if snap := s.loadSnapshot(ctx, snapshotKey); snap != nil {
+			logger.Info("AlphaHub: using daily snapshot cache for %s", dateKey)
+			return snap, nil
+		}
+		if snap := s.loadSnapshot(ctx, latestKey); snap != nil {
+			snap.Stale = true
+			logger.Info("AlphaHub: using latest snapshot as stale fallback for %s", dateKey)
+			return snap, nil
+		}
+	}
+
+	locked := s.tryAcquireLock(ctx, lockKey, dailySnapshotLockTTL)
+	snap, err := s.buildDailySnapshot(ctx, window)
+	if err != nil {
+		if cached := s.loadSnapshot(ctx, latestKey); cached != nil {
+			cached.Stale = true
+			cached.LastError = err.Error()
+			return cached, nil
+		}
+		return nil, err
+	}
+
+	s.saveSnapshot(ctx, snapshotKey, snap, dailySnapshotTTL)
+	s.saveSnapshot(ctx, latestKey, snap, dailySnapshotTTL)
+	s.saveSnapshot(ctx, prevKey, snap, 48*time.Hour)
+	if locked {
+		_ = s.redis.Del(ctx, lockKey).Err()
+	}
+	return snap, nil
+}
+
+func (s *AlphaHubService) buildDailySnapshot(ctx context.Context, window time.Duration) (*AlphaSnapshot, error) {
+	start := time.Now()
+	smart, err := s.GetSmartMoneySignals(ctx, window)
+	if err != nil {
+		return nil, err
+	}
+
+	aiResp, meta, err := s.generateAIPicksWithConfig(ctx, smart, aiBuildConfig{
+		CacheKey:           fmt.Sprintf("%s:ai:%s", dailySnapshotPrefix, time.Now().UTC().Format("2006-01-02")),
+		CacheTTL:           dailySnapshotTTL,
+		MaxMarkets:         0, // analyze everything in window
+		MaxMarketsPerChunk: aiDailyChunkMarkets,
+		NewsPerMarket:      aiNewsResultsPerMarket,
+		NewsCacheTTL:       dailySnapshotTTL,
+		Label:              "daily_snapshot",
+		ForceRefresh:       false,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if meta == nil {
+		meta = &aiBuildMeta{}
+	}
+
+	now := time.Now().UTC()
+	if aiResp != nil {
+		aiResp.GeneratedAt = now
+		aiResp.ExpiresAt = now.Add(24 * time.Hour)
+		aiResp.Source = "daily_snapshot"
+		aiResp.WindowSeconds = int(window.Seconds())
+	}
+
+	snapshot := &AlphaSnapshot{
+		WindowSeconds: int(window.Seconds()),
+		GeneratedAt:   now,
+		ExpiresAt:     now.Add(24 * time.Hour),
+		SmartMoney:    *smart,
+		NewsMarkets:   meta.NewsMarkets,
+		AICalls:       len(meta.Chunks),
+		Source:        "daily_snapshot",
+		TokenEstimate: meta.TokenEstimate,
+	}
+	if aiResp != nil {
+		snapshot.AI = *aiResp
+	}
+
+	logger.Info("AlphaHub: daily snapshot built in %v (markets=%d picks=%d)", time.Since(start), len(smart.Markets), len(snapshot.AI.Picks))
+	return snapshot, nil
+}
+
+func (s *AlphaHubService) loadSnapshot(ctx context.Context, key string) *AlphaSnapshot {
+	if s.redis == nil {
+		return nil
+	}
+	data, err := s.redis.Get(ctx, key).Bytes()
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	var snap AlphaSnapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return nil
+	}
+	return &snap
+}
+
+func (s *AlphaHubService) saveSnapshot(ctx context.Context, key string, snap *AlphaSnapshot, ttl time.Duration) {
+	if s.redis == nil || snap == nil {
+		return
+	}
+	if data, err := json.Marshal(snap); err == nil {
+		_ = s.redis.Set(ctx, key, data, ttl).Err()
+	}
+}
+
+func (s *AlphaHubService) tryAcquireLock(ctx context.Context, key string, ttl time.Duration) bool {
+	if s.redis == nil {
+		return true
+	}
+	ok, err := s.redis.SetNX(ctx, key, "1", ttl).Result()
+	if err != nil {
+		logger.Error("AlphaHub: failed to acquire lock %s: %v", key, err)
+		return false
+	}
+	return ok
+}
+
+// HasDailySnapshot returns true if a snapshot for the provided UTC date (YYYY-MM-DD) exists in Redis.
+func (s *AlphaHubService) HasDailySnapshot(ctx context.Context, dateKey string) bool {
+	if s.redis == nil || dateKey == "" {
+		return false
+	}
+	key := fmt.Sprintf("%s:%s", dailySnapshotPrefix, dateKey)
+	exists, err := s.redis.Exists(ctx, key).Result()
+	if err != nil {
+		logger.Error("AlphaHub: snapshot exists check failed for %s: %v", key, err)
+		return false
+	}
+	return exists > 0
 }

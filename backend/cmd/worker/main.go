@@ -27,16 +27,18 @@ import (
 
 	"github.com/bankai-project/backend/internal/config"
 	"github.com/bankai-project/backend/internal/db"
+	"github.com/bankai-project/backend/internal/integrations/openai"
+	"github.com/bankai-project/backend/internal/integrations/tavily"
 	"github.com/bankai-project/backend/internal/logger"
+	"github.com/bankai-project/backend/internal/polymarket"
+	"github.com/bankai-project/backend/internal/polymarket/clob"
+	"github.com/bankai-project/backend/internal/polymarket/data_api"
 	"github.com/bankai-project/backend/internal/polymarket/gamma"
 	"github.com/bankai-project/backend/internal/polymarket/rtds"
 	"github.com/bankai-project/backend/internal/services"
 )
 
-const (
-	maxTrackedAssets = 1200 // cap subscriptions to relevant active markets
-	enableDBWrites   = false
-)
+const enableDBWrites = false
 
 func main() {
 	logger.Info("🔥 Starting Bankai Worker...")
@@ -60,7 +62,15 @@ func main() {
 
 	// 3. Initialize Services
 	gammaClient := gamma.NewClient(cfg)
-	marketService := services.NewMarketService(pgDB, redisClient, gammaClient, nil)
+	clobClient := clob.NewClient(cfg)
+	dataAPIClient := data_api.NewClient(cfg)
+	openaiClient := openai.NewClient(cfg)
+	tavilyClient := tavily.NewClient(cfg)
+	subgraphClient := polymarket.NewSubgraphClient(cfg)
+
+	marketService := services.NewMarketService(pgDB, redisClient, gammaClient, clobClient)
+	profileService := services.NewProfileService(dataAPIClient, gammaClient, clobClient, redisClient)
+	alphaHubService := services.NewAlphaHubService(marketService, profileService, clobClient, tavilyClient, openaiClient, dataAPIClient, subgraphClient, cfg.Services.AIPicksMarketLimit, redisClient)
 	msgHandler := rtds.NewMessageHandler(pgDB, redisClient)
 	wsClient := rtds.NewClient(cfg, msgHandler)
 
@@ -77,6 +87,7 @@ func main() {
 	}()
 
 	go watchStreamRequests(ctx, marketService, wsClient)
+	go alphaHubDailyLoop(ctx, alphaHubService, cfg.Services.AlphaSnapshotHour)
 
 	if enableDBWrites {
 		go persistMarketsLoop(ctx, marketService)
@@ -146,8 +157,8 @@ func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds
 		}
 	}
 
-	// 2. Get prioritised market assets (top liquidity/volume)
-	marketAssets, err := ms.GetMarketAssets(ctx, maxTrackedAssets)
+	// 2. Get market assets
+	marketAssets, err := resolveMarketAssets(ctx, ms, cfg)
 	if err != nil {
 		logger.Error("Failed to get market assets: %v", err)
 		return
@@ -165,9 +176,9 @@ func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds
 	}
 
 	// 4. Include any ad-hoc stream requests (e.g., markets opened in the UI)
-	requestLimit := maxTrackedAssets * 2
+	requestLimit := cfg.Services.MaxTrackedAssets * 2
 	if requestLimit <= 0 {
-		requestLimit = 2000
+		requestLimit = 4000
 	}
 	if requested, err := ms.PopRequestedStreamTokens(ctx, requestLimit); err != nil {
 		logger.Error("Failed to pop requested stream tokens: %v", err)
@@ -231,6 +242,108 @@ func persistMarketsLoop(ctx context.Context, ms *services.MarketService) {
 			if err := ms.PersistActiveMarkets(ctx); err != nil {
 				logger.Error("PersistActiveMarkets failed: %v", err)
 			}
+		}
+	}
+}
+
+// resolveMarketAssets selects which markets to subscribe to for RTDS streams.
+// If STREAM_RECENT_HOURS > 0, include all markets with non-zero 24h volume (approximating "seen in last window").
+// Otherwise, cap to STREAM_MAX_TRACKED_ASSETS (0 = no cap).
+func resolveMarketAssets(ctx context.Context, ms *services.MarketService, cfg *config.Config) ([]services.MarketAsset, error) {
+	assets, err := ms.GetMarketAssets(ctx, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter to recent-volume markets if configured
+	if cfg.Services.StreamRecentHours > 0 {
+		filtered := make([]services.MarketAsset, 0, len(assets))
+		for _, a := range assets {
+			if a.Volume24h > 0 {
+				filtered = append(filtered, a)
+			}
+		}
+		assets = filtered
+	}
+
+	// Apply optional cap
+	maxAssets := cfg.Services.MaxTrackedAssets
+	if maxAssets > 0 && len(assets) > maxAssets {
+		assets = services.TrimMarketAssetsByLiquidity(assets, maxAssets)
+	}
+	return assets, nil
+}
+
+// alphaHubDailyLoop precomputes the /analysis snapshot once per day to keep the UI instant and avoid per-request LLM/Tavily calls.
+func alphaHubDailyLoop(ctx context.Context, svc *services.AlphaHubService, snapshotHourUTC int) {
+	if svc == nil {
+		return
+	}
+
+	run := func(tag string) {
+		if _, err := svc.GetDailySnapshot(ctx, 24*time.Hour, false); err != nil {
+			logger.Error("AlphaHub daily snapshot (%s) failed: %v", tag, err)
+		}
+	}
+
+	waitUntil := func(targetHour int) time.Duration {
+		now := time.Now().UTC()
+		if targetHour < 0 || targetHour > 23 {
+			return 0
+		}
+		today := time.Date(now.Year(), now.Month(), now.Day(), targetHour, 0, 0, 0, time.UTC)
+		if now.After(today) || now.Equal(today) {
+			// schedule for next day
+			next := today.Add(24 * time.Hour)
+			return next.Sub(now)
+		}
+		return today.Sub(now)
+	}
+
+	dateKey := time.Now().UTC().Format("2006-01-02")
+	// If snapshot already exists for today, don't rerun on deploy.
+	hasSnapshot := svc.HasDailySnapshot(ctx, dateKey)
+
+	if snapshotHourUTC < 0 {
+		// Immediate run if missing; skip if already present to survive redeploys.
+		if !hasSnapshot {
+			logger.Info("AlphaHub: running daily snapshot now (no existing cache for %s)", dateKey)
+			run("startup")
+		} else {
+			logger.Info("AlphaHub: snapshot already exists for %s, skipping startup run", dateKey)
+		}
+	} else {
+		// Run immediately if we're past the target hour and no snapshot exists; otherwise wait until the target hour.
+		now := time.Now().UTC()
+		if now.Hour() >= snapshotHourUTC && !hasSnapshot {
+			logger.Info("AlphaHub: running daily snapshot now (past target hour %d, no cache for %s)", snapshotHourUTC, dateKey)
+			run("startup-after-hour")
+		} else {
+			delay := waitUntil(snapshotHourUTC)
+			if delay > 0 {
+				logger.Info("AlphaHub daily snapshot scheduled in %v (UTC hour=%d)", delay, snapshotHourUTC)
+				timer := time.NewTimer(delay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+					run("scheduled-wait")
+				}
+			}
+		}
+	}
+
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			logger.Info("AlphaHub: running scheduled daily snapshot")
+			run("scheduled")
 		}
 	}
 }
