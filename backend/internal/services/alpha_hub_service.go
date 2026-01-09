@@ -1111,6 +1111,16 @@ func parseFloat(s string) (float64, error) {
 	return f, err
 }
 
+func extractJSONObject(content string) string {
+	trimmed := strings.TrimSpace(content)
+	start := strings.Index(trimmed, "{")
+	end := strings.LastIndex(trimmed, "}")
+	if start >= 0 && end > start {
+		return trimmed[start : end+1]
+	}
+	return trimmed
+}
+
 func scoreMarket(m MarketSignal) float64 {
 	liquidityPenalty := 0.0
 	if m.SpreadBps > 150 {
@@ -1252,7 +1262,9 @@ func (s *AlphaHubService) generateAIPicksWithConfig(ctx context.Context, smart *
 		var parsed struct {
 			AIPicks []AIPick `json:"ai_picks"`
 		}
-		if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		payload := extractJSONObject(content)
+		if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+			logger.Error("AlphaHub: failed to parse AI picks JSON: %v", err)
 			return &AIResponse{
 				Picks:      []AIPick{},
 				RawContent: content,
