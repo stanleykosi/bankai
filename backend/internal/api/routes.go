@@ -127,6 +127,8 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	analysis := v1.Group("/analysis")
 	analysis.Get("/smart-money", analysisHandler.GetSmartMoney)
 	analysis.Get("/ai-picks", analysisHandler.GetAIPicks)
+	analysis.Post("/ai-picks/cancel", analysisHandler.CancelAIPicks)
+	analysis.Post("/ai-picks/resume", analysisHandler.ResumeAIPicks)
 
 	// Profile Routes (Public - trader profiles are public)
 	profile := v1.Group("/profile")

@@ -52,6 +52,8 @@ const (
 	aiGlobalRankCandidates = 80
 	newsContentRuneLimit   = 300
 	dailySnapshotPrefix    = "analysis:daily"
+	aiCancelPrefix         = "analysis:ai:cancel"
+	aiCancelTTL            = 30 * time.Minute
 )
 
 // AlphaHubService orchestrates smart-money + whale flow + AI picks for the /analysis dashboard.
@@ -1236,7 +1238,13 @@ func (s *AlphaHubService) generateAIPicksWithConfig(ctx context.Context, smart *
 	meta := &aiBuildMeta{}
 	chunkID := 0
 	chunkErrors := 0
+	cancelled := false
 	for _, chunk := range chunks {
+		if s.shouldCancelAIPicks(ctx, cfg.Label) {
+			logger.Info("AlphaHub: AI picks cancelled before chunk %d (label=%s)", chunkID+1, cfg.Label)
+			cancelled = true
+			break
+		}
 		chunkID++
 		newsByMarket, newsMarkets := s.fetchNewsForMarkets(ctx, chunk, cfg.NewsPerMarket, cfg.NewsCacheTTL)
 		chunkWhales := filterWhalesForMarkets(smart.Whales, chunk)
@@ -1295,9 +1303,14 @@ func (s *AlphaHubService) generateAIPicksWithConfig(ctx context.Context, smart *
 	if len(allPicks) == 0 && chunkErrors > 0 {
 		return nil, meta, fmt.Errorf("all ai chunks failed (%d/%d)", chunkErrors, len(chunks))
 	}
+	if cancelled && len(allPicks) == 0 {
+		return nil, meta, fmt.Errorf("ai picks cancelled")
+	}
 
 	globalRankNote := ""
-	if cfg.GlobalRank && smart != nil {
+	if cancelled {
+		globalRankNote = "cancelled"
+	} else if cfg.GlobalRank && smart != nil {
 		maxPicks := cfg.GlobalRankMaxPicks
 		if maxPicks <= 0 {
 			maxPicks = aiGlobalRankMaxPicks
@@ -1340,9 +1353,12 @@ func (s *AlphaHubService) generateAIPicksWithConfig(ctx context.Context, smart *
 			resp.CompletionNote = globalRankNote
 		}
 	}
+	if cancelled {
+		resp.CompletionNote = strings.TrimSpace(strings.TrimPrefix(resp.CompletionNote, ";"))
+	}
 
 	// Cache assembled response
-	if cfg.CacheKey != "" && s.redis != nil && len(resp.Picks) > 0 {
+	if cfg.CacheKey != "" && s.redis != nil && len(resp.Picks) > 0 && !cancelled {
 		if data, err := json.Marshal(resp); err == nil {
 			_ = s.redis.Set(ctx, cfg.CacheKey, data, cfg.CacheTTL).Err()
 		}
@@ -1364,6 +1380,9 @@ func (s *AlphaHubService) runGlobalRank(ctx context.Context, smart *SmartMoneyRe
 	}
 	if smart == nil || len(picks) == 0 {
 		return nil, nil, fmt.Errorf("no candidates for global rank")
+	}
+	if s.shouldCancelAIPicks(ctx, cfg.Label) {
+		return nil, nil, fmt.Errorf("ai picks cancelled")
 	}
 
 	maxPicks := cfg.GlobalRankMaxPicks
@@ -1487,6 +1506,53 @@ func (s *AlphaHubService) runGlobalRank(ctx context.Context, smart *SmartMoneyRe
 	}
 
 	return filtered, meta, nil
+}
+
+func (s *AlphaHubService) aiCancelKey(label string) string {
+	if strings.TrimSpace(label) == "" {
+		label = "daily_snapshot"
+	}
+	return fmt.Sprintf("%s:%s", aiCancelPrefix, label)
+}
+
+func (s *AlphaHubService) shouldCancelAIPicks(ctx context.Context, label string) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	if s.redis == nil {
+		return false
+	}
+	key := s.aiCancelKey(label)
+	exists, err := s.redis.Exists(ctx, key).Result()
+	if err != nil {
+		logger.Error("AlphaHub: cancel check failed for %s: %v", key, err)
+		return false
+	}
+	return exists > 0
+}
+
+func (s *AlphaHubService) CancelAIPicks(ctx context.Context, label string) error {
+	if s.redis == nil {
+		return fmt.Errorf("redis not configured")
+	}
+	key := s.aiCancelKey(label)
+	if err := s.redis.Set(ctx, key, time.Now().UTC().Format(time.RFC3339), aiCancelTTL).Err(); err != nil {
+		return err
+	}
+	logger.Info("AlphaHub: cancellation requested for %s", key)
+	return nil
+}
+
+func (s *AlphaHubService) ResumeAIPicks(ctx context.Context, label string) error {
+	if s.redis == nil {
+		return fmt.Errorf("redis not configured")
+	}
+	key := s.aiCancelKey(label)
+	if err := s.redis.Del(ctx, key).Err(); err != nil {
+		return err
+	}
+	logger.Info("AlphaHub: cancellation cleared for %s", key)
+	return nil
 }
 
 func ParseAIPicksFromContent(content string) ([]AIPick, error) {

@@ -80,3 +80,29 @@ func (h *AnalysisHandler) GetAIPicks(c *fiber.Ctx) error {
 	}
 	return c.JSON(resp)
 }
+
+// CancelAIPicks requests cancellation of the current AI picks run.
+// POST /api/v1/analysis/ai-picks/cancel?label=daily_snapshot
+func (h *AnalysisHandler) CancelAIPicks(c *fiber.Ctx) error {
+	label := strings.TrimSpace(c.Query("label"))
+	if label == "" {
+		label = "daily_snapshot"
+	}
+	if err := h.Service.CancelAIPicks(c.Context(), label); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"status": "cancel_requested", "label": label})
+}
+
+// ResumeAIPicks clears a cancellation flag for AI picks runs.
+// POST /api/v1/analysis/ai-picks/resume?label=daily_snapshot
+func (h *AnalysisHandler) ResumeAIPicks(c *fiber.Ctx) error {
+	label := strings.TrimSpace(c.Query("label"))
+	if label == "" {
+		label = "daily_snapshot"
+	}
+	if err := h.Service.ResumeAIPicks(c.Context(), label); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"status": "cancel_cleared", "label": label})
+}
