@@ -71,6 +71,7 @@ type ServicesConfig struct {
 	OpenAIBaseURL      string
 	OpenAIModel        string
 	OpenAIMaxTokens    int
+	OpenAIMaxContext   int
 	PolygonRPCURL      string
 	SyncJobSecret      string
 	AIPicksMarketLimit int
@@ -114,6 +115,7 @@ func Load() (*Config, error) {
 			OpenAIBaseURL:      getEnv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"),
 			OpenAIModel:        getEnv("OPENAI_MODEL", "minimax/minimax-m2.1"),
 			OpenAIMaxTokens:    getEnvAsInt("OPENAI_MAX_TOKENS", 10000),
+			OpenAIMaxContext:   getEnvAsInt("OPENAI_MAX_CONTEXT_TOKENS", 204800),
 			PolygonRPCURL:      getEnv("POLYGON_RPC_URL", ""),
 			SyncJobSecret:      getEnv("JOB_SYNC_SECRET", ""),
 			AIPicksMarketLimit: getEnvAsInt("AI_PICKS_MARKET_LIMIT", 0),

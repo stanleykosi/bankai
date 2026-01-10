@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"strings"
@@ -48,6 +49,7 @@ type Client struct {
 	baseURL    string
 	model      string
 	maxTokens  int
+	maxContext int
 }
 
 type ChatRequest struct {
@@ -110,12 +112,17 @@ func NewClient(cfg *config.Config) *Client {
 	if maxTokens <= 0 {
 		maxTokens = defaultMaxTokens
 	}
+	maxContext := cfg.Services.OpenAIMaxContext
+	if maxContext <= 0 {
+		maxContext = 204800
+	}
 
 	return &Client{
-		apiKey:    cfg.Services.OpenAIAPIKey,
-		baseURL:   baseURL,
-		model:     model,
-		maxTokens: maxTokens,
+		apiKey:     cfg.Services.OpenAIAPIKey,
+		baseURL:    baseURL,
+		model:      model,
+		maxTokens:  maxTokens,
+		maxContext: maxContext,
 		httpClient: &http.Client{
 			Timeout: requestTimeout,
 		},
@@ -141,12 +148,27 @@ func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (
 			{Role: "user", Content: userPrompt},
 		},
 		Temperature: 0.1,
-		MaxTokens:   c.maxTokens,
 		// Enforce JSON output format
 		ResponseFormat: &ResponseFormat{
 			Type: "json_object",
 		},
 	}
+	maxTokens := c.maxTokens
+	if maxTokens <= 0 {
+		maxTokens = defaultMaxTokens
+	}
+	if c.maxContext > 0 {
+		promptTokens := estimatePromptTokens(systemPrompt, userPrompt)
+		budget := c.maxContext - promptTokens - 256
+		if budget < 256 {
+			budget = 256
+		}
+		if maxTokens > budget {
+			logger.Info("OpenAI: clamping max_tokens from %d to %d (prompt_tokens=%d context_limit=%d)", maxTokens, budget, promptTokens, c.maxContext)
+			maxTokens = budget
+		}
+	}
+	payload.MaxTokens = maxTokens
 
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -177,6 +199,11 @@ func (c *Client) Model() string {
 
 func (c *Client) MaxTokens() int {
 	return c.maxTokens
+}
+
+func estimatePromptTokens(systemPrompt, userPrompt string) int {
+	total := len(systemPrompt) + len(userPrompt)
+	return int(math.Ceil(float64(total) / 4.0))
 }
 
 func (c *Client) analyzeOnce(ctx context.Context, bodyBytes []byte) (string, error) {
