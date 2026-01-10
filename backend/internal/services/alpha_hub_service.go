@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bankai-project/backend/internal/integrations/openai"
@@ -18,7 +19,6 @@ import (
 	"github.com/bankai-project/backend/internal/polymarket/data_api"
 	"github.com/bankai-project/backend/internal/services/prompts"
 	"github.com/redis/go-redis/v9"
-	"sync"
 )
 
 const (
@@ -44,9 +44,12 @@ const (
 	maxResolutionHorizon   = 60 * 24 * time.Hour
 	dailySnapshotTTL       = 26 * time.Hour
 	dailySnapshotLockTTL   = 15 * time.Minute
-	aiDailyChunkMarkets    = 150
+	aiDailyChunkMarkets    = 100
 	aiNewsResultsPerMarket = 1
-	aiMaxCompletionTokens  = 5000
+	aiMaxCompletionTokens  = 10000
+	aiMaxPicksPerChunk     = 10
+	aiGlobalRankMaxPicks   = 10
+	aiGlobalRankCandidates = 80
 	newsContentRuneLimit   = 300
 	dailySnapshotPrefix    = "analysis:daily"
 )
@@ -210,6 +213,7 @@ type AIPick struct {
 	Conviction     string  `json:"conviction"`
 	Action         string  `json:"action"`
 	Rationale      string  `json:"rationale"`
+	Score          float64 `json:"score,omitempty"`
 }
 
 type AIResponse struct {
@@ -1160,6 +1164,9 @@ type aiBuildConfig struct {
 	NewsCacheTTL       time.Duration
 	ForceRefresh       bool
 	Label              string
+	GlobalRank         bool
+	GlobalRankMaxPicks int
+	GlobalRankMaxCands int
 }
 
 type aiBuildMeta struct {
@@ -1222,11 +1229,13 @@ func (s *AlphaHubService) generateAIPicksWithConfig(ctx context.Context, smart *
 		}
 		chunks = append(chunks, markets[i:end])
 	}
+	logger.Info("AlphaHub: AI chunking label=%s markets=%d chunk_size=%d chunks=%d", cfg.Label, len(markets), chunkSize, len(chunks))
 
 	allPicks := make([]AIPick, 0)
 	seen := make(map[string]struct{})
 	meta := &aiBuildMeta{}
 	chunkID := 0
+	chunkErrors := 0
 	for _, chunk := range chunks {
 		chunkID++
 		newsByMarket, newsMarkets := s.fetchNewsForMarkets(ctx, chunk, cfg.NewsPerMarket, cfg.NewsCacheTTL)
@@ -1240,30 +1249,27 @@ func (s *AlphaHubService) generateAIPicksWithConfig(ctx context.Context, smart *
 			"data_freshness_secs": int(time.Since(smart.GeneratedAt).Seconds()),
 		}
 		userPromptBytes, _ := json.Marshal(payload)
-		estimate := tokenEstimateFromBytes(userPromptBytes, aiMaxCompletionTokens)
+		estimate := tokenEstimateFromBytes(userPromptBytes, s.openaiClient.MaxTokens())
 		logger.Info("AlphaHub: AI chunk %d prepared (markets=%d news_markets=%d est_prompt_tokens=%d)", chunkID, len(chunk), newsMarkets, estimate.PromptTokens)
 
 		content, err := s.openaiClient.Analyze(ctx, prompts.AlphaHubSystemPrompt, string(userPromptBytes))
 		if err != nil {
+			chunkErrors++
 			logger.Error("AlphaHub: OpenAI analyze failed on chunk %d: %v", chunkID, err)
-			return nil, meta, err
+			continue
 		}
 
-		var parsed struct {
-			AIPicks []AIPick `json:"ai_picks"`
+		parsedPicks, parseErr := ParseAIPicksFromContent(content)
+		if parseErr != nil {
+			chunkErrors++
+			logger.Error("AlphaHub: failed to parse AI picks JSON on chunk %d: %v", chunkID, parseErr)
+			continue
 		}
-		jsonPayload := extractJSONObject(content)
-		if err := json.Unmarshal([]byte(jsonPayload), &parsed); err != nil {
-			logger.Error("AlphaHub: failed to parse AI picks JSON: %v", err)
-			return &AIResponse{
-				Picks:      []AIPick{},
-				RawContent: content,
-				Model:      s.openaiClient.Model(),
-				Source:     cfg.Label,
-			}, meta, nil
+		if len(parsedPicks) > aiMaxPicksPerChunk {
+			parsedPicks = parsedPicks[:aiMaxPicksPerChunk]
 		}
 
-		for _, pick := range parsed.AIPicks {
+		for _, pick := range parsedPicks {
 			if pick.MarketID == "" {
 				continue
 			}
@@ -1285,6 +1291,33 @@ func (s *AlphaHubService) generateAIPicksWithConfig(ctx context.Context, smart *
 		meta.TokenEstimate.PromptTokens += estimate.PromptTokens
 		meta.TokenEstimate.CompletionTokens += estimate.CompletionTokens
 	}
+
+	if len(allPicks) == 0 && chunkErrors > 0 {
+		return nil, meta, fmt.Errorf("all ai chunks failed (%d/%d)", chunkErrors, len(chunks))
+	}
+
+	globalRankNote := ""
+	if cfg.GlobalRank && smart != nil {
+		maxPicks := cfg.GlobalRankMaxPicks
+		if maxPicks <= 0 {
+			maxPicks = aiGlobalRankMaxPicks
+		}
+		if len(allPicks) > maxPicks {
+			ranked, rankMeta, rankErr := s.runGlobalRank(ctx, smart, allPicks, cfg)
+			if rankErr != nil {
+				globalRankNote = fmt.Sprintf("global_rank_failed: %v", rankErr)
+			} else if rankMeta != nil && len(ranked) > 0 {
+				allPicks = ranked
+				meta.NewsMarkets += rankMeta.NewsFetched
+				rankMeta.Chunk = len(meta.Chunks) + 1
+				meta.Chunks = append(meta.Chunks, *rankMeta)
+				meta.TokenEstimate.PromptTokens += rankMeta.TokenEstimate.PromptTokens
+				meta.TokenEstimate.CompletionTokens += rankMeta.TokenEstimate.CompletionTokens
+				globalRankNote = fmt.Sprintf("global_ranked:%d", len(allPicks))
+			}
+		}
+	}
+
 	meta.TokenEstimate.TotalTokens = meta.TokenEstimate.PromptTokens + meta.TokenEstimate.CompletionTokens
 
 	resp := &AIResponse{
@@ -1297,6 +1330,16 @@ func (s *AlphaHubService) generateAIPicksWithConfig(ctx context.Context, smart *
 		ChunkStats:    meta.Chunks,
 		NewsMarkets:   meta.NewsMarkets,
 	}
+	if chunkErrors > 0 {
+		resp.CompletionNote = fmt.Sprintf("partial_results: %d/%d chunks failed", chunkErrors, len(chunks))
+	}
+	if globalRankNote != "" {
+		if resp.CompletionNote != "" {
+			resp.CompletionNote = resp.CompletionNote + "; " + globalRankNote
+		} else {
+			resp.CompletionNote = globalRankNote
+		}
+	}
 
 	// Cache assembled response
 	if cfg.CacheKey != "" && s.redis != nil && len(resp.Picks) > 0 {
@@ -1308,6 +1351,168 @@ func (s *AlphaHubService) generateAIPicksWithConfig(ctx context.Context, smart *
 	logger.Info("AlphaHub: GenerateAIPicks completed via %s, picks=%d, chunks=%d, elapsed=%v",
 		cfg.Label, len(resp.Picks), len(chunks), time.Since(startTime))
 	return resp, meta, nil
+}
+
+type globalRankCandidate struct {
+	Market MarketSignal
+	Score  float64
+}
+
+func (s *AlphaHubService) runGlobalRank(ctx context.Context, smart *SmartMoneyResponse, picks []AIPick, cfg aiBuildConfig) ([]AIPick, *AIChunkMeta, error) {
+	if s.openaiClient == nil {
+		return nil, nil, fmt.Errorf("openai client not configured")
+	}
+	if smart == nil || len(picks) == 0 {
+		return nil, nil, fmt.Errorf("no candidates for global rank")
+	}
+
+	maxPicks := cfg.GlobalRankMaxPicks
+	if maxPicks <= 0 {
+		maxPicks = aiGlobalRankMaxPicks
+	}
+	maxCands := cfg.GlobalRankMaxCands
+	if maxCands <= 0 {
+		maxCands = aiGlobalRankCandidates
+	}
+
+	marketByID := make(map[string]MarketSignal, len(smart.Markets))
+	for _, m := range smart.Markets {
+		key := strings.ToLower(strings.TrimSpace(m.MarketID))
+		if key != "" {
+			marketByID[key] = m
+		}
+	}
+
+	candidates := make([]globalRankCandidate, 0, len(picks))
+	seen := make(map[string]struct{})
+	for _, pick := range picks {
+		key := strings.ToLower(strings.TrimSpace(pick.MarketID))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		market, ok := marketByID[key]
+		if !ok {
+			continue
+		}
+		score := pick.Score
+		if score <= 0 {
+			score = market.Score
+		}
+		seen[key] = struct{}{}
+		candidates = append(candidates, globalRankCandidate{Market: market, Score: score})
+	}
+
+	if len(candidates) == 0 {
+		return nil, nil, fmt.Errorf("no valid candidates for global rank")
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].Score > candidates[j].Score
+	})
+	if maxCands > 0 && len(candidates) > maxCands {
+		candidates = candidates[:maxCands]
+	}
+
+	candidateMarkets := make([]MarketSignal, 0, len(candidates))
+	candidateIDs := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		candidateMarkets = append(candidateMarkets, c.Market)
+		candidateIDs = append(candidateIDs, c.Market.MarketID)
+	}
+
+	newsByMarket, newsMarkets := s.fetchNewsForMarkets(ctx, candidateMarkets, cfg.NewsPerMarket, cfg.NewsCacheTTL)
+	candidateWhales := filterWhalesForMarkets(smart.Whales, candidateMarkets)
+
+	payload := map[string]interface{}{
+		"markets":               candidateMarkets,
+		"whale_events":          candidateWhales,
+		"news":                  newsByMarket,
+		"candidate_market_ids":  candidateIDs,
+		"global_rank_max_picks": maxPicks,
+		"as_of":                 time.Now().UTC().Format(time.RFC3339),
+		"data_freshness_secs":   int(time.Since(smart.GeneratedAt).Seconds()),
+	}
+	userPromptBytes, _ := json.Marshal(payload)
+	estimate := tokenEstimateFromBytes(userPromptBytes, s.openaiClient.MaxTokens())
+	logger.Info("AlphaHub: AI global rank prepared (candidates=%d news_markets=%d est_prompt_tokens=%d)", len(candidateMarkets), newsMarkets, estimate.PromptTokens)
+
+	content, err := s.openaiClient.Analyze(ctx, prompts.AlphaHubGlobalRankPrompt, string(userPromptBytes))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	parsedPicks, parseErr := ParseAIPicksFromContent(content)
+	if parseErr != nil {
+		return nil, nil, parseErr
+	}
+	if maxPicks > 0 && len(parsedPicks) > maxPicks {
+		parsedPicks = parsedPicks[:maxPicks]
+	}
+
+	candidateSet := make(map[string]struct{}, len(candidateMarkets))
+	for _, id := range candidateIDs {
+		key := strings.ToLower(strings.TrimSpace(id))
+		if key != "" {
+			candidateSet[key] = struct{}{}
+		}
+	}
+	filtered := make([]AIPick, 0, len(parsedPicks))
+	seen = make(map[string]struct{})
+	for _, pick := range parsedPicks {
+		key := strings.ToLower(strings.TrimSpace(pick.MarketID))
+		if key == "" {
+			continue
+		}
+		if _, ok := candidateSet[key]; !ok {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		filtered = append(filtered, pick)
+	}
+	if len(filtered) == 0 {
+		return nil, nil, fmt.Errorf("global rank produced no valid picks")
+	}
+
+	meta := &AIChunkMeta{
+		Chunk:         0,
+		Markets:       len(candidateMarkets),
+		NewsFetched:   newsMarkets,
+		TokenEstimate: estimate,
+	}
+
+	return filtered, meta, nil
+}
+
+func ParseAIPicksFromContent(content string) ([]AIPick, error) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil, fmt.Errorf("empty ai content")
+	}
+	cleaned := cleanJSONFence(content)
+	cleaned = strings.TrimSpace(cleaned)
+	if strings.HasPrefix(cleaned, "\"") && strings.HasSuffix(cleaned, "\"") {
+		if unquoted, err := strconv.Unquote(cleaned); err == nil {
+			cleaned = strings.TrimSpace(unquoted)
+		}
+	}
+
+	var parsed struct {
+		AIPicks []AIPick `json:"ai_picks"`
+	}
+	jsonPayload := extractJSONObject(cleaned)
+	if strings.TrimSpace(jsonPayload) == "" {
+		return nil, fmt.Errorf("empty ai json payload")
+	}
+	if err := json.Unmarshal([]byte(jsonPayload), &parsed); err != nil {
+		return nil, err
+	}
+	return parsed.AIPicks, nil
 }
 
 // fetchNewsForMarkets pulls Tavily results (cached per-day) for each market in the slice.
@@ -1468,10 +1673,16 @@ func (s *AlphaHubService) GetDailySnapshot(ctx context.Context, window time.Dura
 
 	if !force {
 		if snap := s.loadSnapshot(ctx, snapshotKey); snap != nil {
+			if s.rehydrateSnapshotFromRawContent(ctx, snapshotKey, snap) {
+				logger.Info("AlphaHub: rehydrated cached snapshot from raw content for %s", dateKey)
+			}
 			logger.Info("AlphaHub: using daily snapshot cache for %s", dateKey)
 			return snap, nil
 		}
 		if snap := s.loadSnapshot(ctx, latestKey); snap != nil {
+			if s.rehydrateSnapshotFromRawContent(ctx, latestKey, snap) {
+				logger.Info("AlphaHub: rehydrated latest snapshot from raw content for %s", dateKey)
+			}
 			snap.Stale = true
 			logger.Info("AlphaHub: using latest snapshot as stale fallback for %s", dateKey)
 			return snap, nil
@@ -1482,6 +1693,9 @@ func (s *AlphaHubService) GetDailySnapshot(ctx context.Context, window time.Dura
 	snap, err := s.buildDailySnapshot(ctx, window)
 	if err != nil {
 		if cached := s.loadSnapshot(ctx, latestKey); cached != nil {
+			if s.rehydrateSnapshotFromRawContent(ctx, latestKey, cached) {
+				logger.Info("AlphaHub: rehydrated latest snapshot from raw content for %s", dateKey)
+			}
 			cached.Stale = true
 			cached.LastError = err.Error()
 			return cached, nil
@@ -1496,6 +1710,26 @@ func (s *AlphaHubService) GetDailySnapshot(ctx context.Context, window time.Dura
 		_ = s.redis.Del(ctx, lockKey).Err()
 	}
 	return snap, nil
+}
+
+func (s *AlphaHubService) rehydrateSnapshotFromRawContent(ctx context.Context, key string, snap *AlphaSnapshot) bool {
+	if snap == nil || len(snap.AI.Picks) > 0 || strings.TrimSpace(snap.AI.RawContent) == "" {
+		return false
+	}
+	parsedPicks, err := ParseAIPicksFromContent(snap.AI.RawContent)
+	if err != nil || len(parsedPicks) == 0 {
+		logger.Error("AlphaHub: failed to parse cached raw content for %s: %v", key, err)
+		return false
+	}
+	snap.AI.Picks = parsedPicks
+	snap.AI.RawContent = ""
+	snap.AI.CompletionNote = "recovered_from_cached_raw_content"
+	if s.redis != nil {
+		if data, err := json.Marshal(snap); err == nil {
+			_ = s.redis.Set(ctx, key, data, dailySnapshotTTL).Err()
+		}
+	}
+	return true
 }
 
 func (s *AlphaHubService) buildDailySnapshot(ctx context.Context, window time.Duration) (*AlphaSnapshot, error) {
@@ -1514,6 +1748,9 @@ func (s *AlphaHubService) buildDailySnapshot(ctx context.Context, window time.Du
 		NewsCacheTTL:       dailySnapshotTTL,
 		Label:              "daily_snapshot",
 		ForceRefresh:       false,
+		GlobalRank:         true,
+		GlobalRankMaxPicks: aiGlobalRankMaxPicks,
+		GlobalRankMaxCands: aiGlobalRankCandidates,
 	})
 	if err != nil {
 		return nil, err

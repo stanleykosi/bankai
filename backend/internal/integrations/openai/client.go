@@ -31,7 +31,7 @@ const (
 	DefaultBaseURL   = "https://openrouter.ai/api/v1/chat/completions"
 	DefaultModel     = "minimax/minimax-m2.1"
 	requestTimeout   = 300 * time.Second
-	defaultMaxTokens = 10000 // High limit for comprehensive analysis with full context
+	defaultMaxTokens = 10000 // Balanced limit for structured JSON output
 	maxAnalyzeTries  = 3
 	retryBaseDelay   = 400 * time.Millisecond
 )
@@ -47,6 +47,7 @@ type Client struct {
 	httpClient *http.Client
 	baseURL    string
 	model      string
+	maxTokens  int
 }
 
 type ChatRequest struct {
@@ -105,11 +106,16 @@ func NewClient(cfg *config.Config) *Client {
 	if model == "" {
 		model = DefaultModel
 	}
+	maxTokens := cfg.Services.OpenAIMaxTokens
+	if maxTokens <= 0 {
+		maxTokens = defaultMaxTokens
+	}
 
 	return &Client{
-		apiKey:  cfg.Services.OpenAIAPIKey,
-		baseURL: baseURL,
-		model:   model,
+		apiKey:    cfg.Services.OpenAIAPIKey,
+		baseURL:   baseURL,
+		model:     model,
+		maxTokens: maxTokens,
 		httpClient: &http.Client{
 			Timeout: requestTimeout,
 		},
@@ -135,15 +141,10 @@ func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (
 			{Role: "user", Content: userPrompt},
 		},
 		Temperature: 0.1,
-		MaxTokens:   defaultMaxTokens,
+		MaxTokens:   c.maxTokens,
 		// Enforce JSON output format
 		ResponseFormat: &ResponseFormat{
 			Type: "json_object",
-		},
-		// Exclude reasoning tokens from content field, but allow unlimited reasoning internally
-		// The model can reason as much as it wants, but only the final JSON output appears in content
-		Reasoning: &ReasoningConfig{
-			Exclude: true, // Reasoning happens internally but is excluded from the content field
 		},
 	}
 
@@ -172,6 +173,10 @@ func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (
 // Model returns the model name being used by this client
 func (c *Client) Model() string {
 	return c.model
+}
+
+func (c *Client) MaxTokens() int {
+	return c.maxTokens
 }
 
 func (c *Client) analyzeOnce(ctx context.Context, bodyBytes []byte) (string, error) {
@@ -239,7 +244,7 @@ func (c *Client) analyzeOnce(ctx context.Context, bodyBytes []byte) (string, err
 
 		// If truncated due to length, the model used all tokens for reasoning without generating content
 		if finishReason == "length" {
-			return "", fmt.Errorf("openai response truncated: model consumed all %d tokens in reasoning without generating content. Consider increasing max_tokens further", defaultMaxTokens)
+			return "", fmt.Errorf("openai response truncated: model consumed all %d tokens in reasoning without generating content. Consider increasing max_tokens further", c.maxTokens)
 		}
 		return "", fmt.Errorf("openai response missing content (finish_reason: %s)", finishReason)
 	}

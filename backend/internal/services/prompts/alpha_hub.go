@@ -18,9 +18,10 @@ INPUTS PROVIDED
 METHOD
 1) Discard stale data (>600s) or mark missing; never invent IDs/titles.
 2) Per market compute time_to_resolution_bucket (ending_soon<72h | near_term 3–14d | long_tail>14d), smart_money_conviction (weighted Gold>Silver>Bronze, down-weight wallets_considered<3), divergence (buying_into_dip|with_trend|fighting_trend|neutral), liquidity_guard (spread_bps>150 or depth_usd_1pct<500 => avoid unless whale conviction extreme), resolution_guard (ambiguity_score>0.4 caps conviction to Medium), news_impact (recent ≤24h boosts confidence, none/old adds uncertainty).
-3) Score (0–100): smart_money 30%, fundamentals/rules 15%, momentum 15%, liquidity/spread 10%, news 10%, resolution_risk penalty up to 20, value/edge 20%. Value/edge: prefer price band 0.15–0.85; penalize >0.90 unless there is clear edge (smart entry cheaper than current, near-term resolution, solid liquidity).
+3) Score (0–100): smart_money 30%, fundamentals/rules 15%, momentum 15%, liquidity/spread 10%, news 10%, resolution_risk penalty up to 20, value/edge 20%. Value/edge is the profitability proxy: prefer price band 0.15–0.85; penalize >0.90 unless there is clear edge (smart entry cheaper than current, near-term resolution, solid liquidity).
 4) Return probability_yes in [0,1] that can diverge from price when justified; explain divergence briefly. Conviction: High≥75, Medium 50–74, Low<50. Labels: ending_soon|momentum|value|event_risk|illiquid. Mark as value when meaningful upside remains (not near-certain pricing) and/or smart entry edge exists.
-5) If critical inputs missing (market_id/title or pricing), return empty ai_picks and list missing in "missing".
+5) Output at most 10 ai_picks total, ordered by score desc. Prefer quality over coverage.
+6) If critical inputs missing (market_id/title or pricing), return empty ai_picks and list missing in "missing".
 
 OUTPUT FORMAT (JSON ONLY)
 {
@@ -75,4 +76,12 @@ OUTPUT FORMAT (JSON ONLY)
 }
 
 If JSON cannot be produced, return: {"ai_picks":[],"whale_tape":[],"explainability":{"method":"error","data_staleness_secs":null,"missing":["reason"]}}
+`
+
+// AlphaHubGlobalRankPrompt reuses the base prompt but enforces a global ranking pass.
+const AlphaHubGlobalRankPrompt = AlphaHubSystemPrompt + `
+
+GLOBAL RANKING PASS
+- The provided markets are already shortlisted candidates. Only select ai_picks from these markets.
+- Respect candidate_market_ids if supplied; never invent new market IDs.
 `

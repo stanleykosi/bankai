@@ -69,5 +69,14 @@ func (h *AnalysisHandler) GetAIPicks(c *fiber.Ctx) error {
 	resp.WindowSeconds = snapshot.WindowSeconds
 	resp.TokenEstimate = snapshot.TokenEstimate
 	resp.ChunkStats = snapshot.AI.ChunkStats
+	if len(resp.Picks) == 0 && strings.TrimSpace(resp.RawContent) != "" {
+		if picks, err := services.ParseAIPicksFromContent(resp.RawContent); err == nil && len(picks) > 0 {
+			resp.Picks = picks
+			resp.RawContent = ""
+			if resp.CompletionNote == "" {
+				resp.CompletionNote = "recovered_from_cached_raw_content"
+			}
+		}
+	}
 	return c.JSON(resp)
 }
