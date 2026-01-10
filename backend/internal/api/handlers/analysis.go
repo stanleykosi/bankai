@@ -10,6 +10,9 @@
 package handlers
 
 import (
+	"bufio"
+	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -79,6 +82,107 @@ func (h *AnalysisHandler) GetAIPicks(c *fiber.Ctx) error {
 		}
 	}
 	return c.JSON(resp)
+}
+
+// GetSnapshot returns the cached daily snapshot without triggering a rebuild.
+// GET /api/v1/analysis/snapshot?window=1440
+func (h *AnalysisHandler) GetSnapshot(c *fiber.Ctx) error {
+	window := time.Duration(1440) * time.Minute
+	if raw := strings.TrimSpace(c.Query("window")); raw != "" {
+		if mins, err := strconv.Atoi(raw); err == nil && mins > 0 && mins <= 1440 {
+			window = time.Duration(mins) * time.Minute
+		}
+	}
+
+	snap, err := h.Service.GetCachedDailySnapshot(c.Context(), window)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	if snap == nil {
+		now := time.Now().UTC()
+		return c.JSON(&services.AlphaSnapshot{
+			WindowSeconds: int(window.Seconds()),
+			GeneratedAt:   now,
+			ExpiresAt:     now.Add(24 * time.Hour),
+			SmartMoney: services.SmartMoneyResponse{
+				WindowSeconds: int(window.Seconds()),
+				Markets:       []services.MarketSignal{},
+				Whales:        []services.WhaleEvent{},
+				GeneratedAt:   now,
+			},
+			AI: services.AIResponse{
+				Picks: []services.AIPick{},
+			},
+			Source:    "cache_miss",
+			Stale:     true,
+			LastError: "snapshot_missing",
+		})
+	}
+	return c.JSON(snap)
+}
+
+// StreamWhaleUpdates streams live whale-sized trades over SSE.
+// GET /api/v1/analysis/whales/stream
+func (h *AnalysisHandler) StreamWhaleUpdates(c *fiber.Ctx) error {
+	streamHub := h.Service.WhaleStreamHub()
+	if streamHub == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "whale stream is not available",
+		})
+	}
+
+	c.Set("Content-Type", "text/event-stream")
+	c.Set("Cache-Control", "no-cache")
+	c.Set("Connection", "keep-alive")
+
+	requestCtx := c.Context()
+	ctx, cancel := context.WithCancel(context.Background())
+	msgCh, unsubscribe := streamHub.Subscribe()
+
+	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
+		defer func() {
+			cancel()
+			unsubscribe()
+		}()
+
+		requestDone := requestCtx.Done()
+
+		for {
+			select {
+			case <-requestDone:
+				return
+			case <-ctx.Done():
+				return
+			case msg, ok := <-msgCh:
+				if !ok {
+					return
+				}
+				fmt.Fprintf(w, "data: %s\n\n", msg)
+				if err := w.Flush(); err != nil {
+					return
+				}
+			}
+		}
+	})
+
+	return nil
+}
+
+// GetRecentWhales returns the latest live whales buffered in Redis.
+// GET /api/v1/analysis/whales/recent?limit=15
+func (h *AnalysisHandler) GetRecentWhales(c *fiber.Ctx) error {
+	limit := 15
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
+	whales, err := h.Service.GetRecentWhales(c.Context(), limit)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(whales)
 }
 
 // CancelAIPicks requests cancellation of the current AI picks run.

@@ -100,3 +100,17 @@ export type AIResponse = {
   token_estimate?: TokenEstimate;
   completion_note?: string;
 };
+
+export type AlphaSnapshot = {
+  window_seconds: number;
+  generated_at: string;
+  expires_at: string;
+  smart_money: SmartMoneyResponse;
+  ai: AIResponse;
+  news_markets?: number;
+  ai_calls?: number;
+  token_estimate?: TokenEstimate;
+  source?: string;
+  stale?: boolean;
+  last_error?: string;
+};

@@ -6,13 +6,14 @@
 
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, Brain, Flame, Loader2, Sparkles, Zap } from "lucide-react";
 
 import { Card } from "@/components/ui/card";
-import { fetchAIPicks, fetchSmartMoney } from "@/lib/analysis";
+import { API_BASE_URL } from "@/lib/api";
+import { fetchAnalysisSnapshot, fetchRecentWhales } from "@/lib/analysis";
 import type { AIPick, MarketSignal, WhaleEvent } from "@/types/analysis";
 import { cn } from "@/lib/utils";
 
@@ -79,6 +80,7 @@ function getConvictionClass(conviction: string) {
 }
 
 function WhaleRow({ whale }: { whale: WhaleEvent }) {
+  const winRateLabel = whale.win_rate >= 0 ? `${(whale.win_rate * 100).toFixed(0)}%` : "--";
   return (
     <div className="grid grid-cols-6 items-center gap-3 rounded-md border border-border/50 bg-card/40 px-3 py-2 text-xs font-mono">
       <span className="text-muted-foreground">{new Date(whale.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
@@ -94,7 +96,7 @@ function WhaleRow({ whale }: { whale: WhaleEvent }) {
         <div className="truncate">{whale.title || whale.market_id}</div>
         {typeof whale.spread_bps === "number" ? <div className="text-[10px] text-foreground/70">Spread {whale.spread_bps.toFixed(0)} bps</div> : null}
       </div>
-      <span className="text-muted-foreground">{(whale.win_rate * 100).toFixed(0)}%</span>
+      <span className="text-muted-foreground">{winRateLabel}</span>
     </div>
   );
 }
@@ -157,10 +159,8 @@ function LoadingState() {
       <div className="flex items-center gap-3 text-muted-foreground">
         <Loader2 className="h-5 w-5 animate-spin" />
         <div className="space-y-1">
-          <div className="font-mono text-xs text-foreground/80">Building Alpha Hub insights...</div>
-          <div className="text-xs text-muted-foreground">
-            Smart money + whales load first; AI picks/news can take up to ~5 minutes.
-          </div>
+          <div className="font-mono text-xs text-foreground/80">Loading Alpha Hub snapshot...</div>
+          <div className="text-xs text-muted-foreground">Fetching cached AI + smart money + whale tape.</div>
         </div>
       </div>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -194,25 +194,76 @@ function LoadingState() {
 }
 
 export default function AnalysisPage() {
-  const smartQuery = useQuery({
-    queryKey: ["analysis", "smart", windowMinutes],
-    queryFn: () => fetchSmartMoney(windowMinutes),
-    refetchInterval: 60_000,
+  const [liveWhales, setLiveWhales] = useState<WhaleEvent[]>([]);
+  const snapshotQuery = useQuery({
+    queryKey: ["analysis", "snapshot", windowMinutes],
+    queryFn: () => fetchAnalysisSnapshot(windowMinutes),
+    refetchInterval: 5 * 60_000,
+    staleTime: 60_000,
   });
 
-  const aiQuery = useQuery({
-    queryKey: ["analysis", "ai", "daily", windowMinutes],
-    queryFn: () => fetchAIPicks(windowMinutes),
-    refetchInterval: 15 * 60_000,
-    staleTime: 5 * 60_000,
-  });
-
-  const isLoading = (smartQuery.isLoading || aiQuery.isLoading) && (!smartQuery.data || !aiQuery.data);
-  const smart = smartQuery.data;
-  const ai = aiQuery.data;
+  const snapshot = snapshotQuery.data;
+  const isLoading = snapshotQuery.isLoading && !snapshot;
+  const smart = snapshot?.smart_money;
+  const ai = snapshot?.ai;
 
   const topMarkets = smart?.markets?.slice(0, maxDisplayMarkets) ?? [];
-  const whales = smart?.whales?.slice(0, 15) ?? [];
+  useEffect(() => {
+    let cancelled = false;
+    const loadRecentWhales = async () => {
+      try {
+        const recent = await fetchRecentWhales(15);
+        if (!cancelled) {
+          setLiveWhales((prev) => {
+            const merged: WhaleEvent[] = [];
+            const seen = new Set<string>();
+            const add = (whale: WhaleEvent) => {
+              const key = `${whale.market_id}-${whale.ts}-${whale.side}-${whale.size_usd}`;
+              if (seen.has(key)) return;
+              seen.add(key);
+              merged.push(whale);
+            };
+            prev.forEach(add);
+            recent.forEach(add);
+            return merged.slice(0, 15);
+          });
+        }
+      } catch {
+      }
+    };
+
+    loadRecentWhales();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const streamUrl = `${API_BASE_URL}/api/v1/analysis/whales/stream`;
+    const source = new EventSource(streamUrl);
+
+    source.onmessage = (event) => {
+      if (!event.data) return;
+      try {
+        const payload = JSON.parse(event.data) as WhaleEvent;
+        const key = `${payload.market_id}-${payload.ts}-${payload.side}-${payload.size_usd}`;
+        setLiveWhales((prev) => {
+          if (prev.some((item) => `${item.market_id}-${item.ts}-${item.side}-${item.size_usd}` === key)) {
+            return prev;
+          }
+          const next = [payload, ...prev];
+          return next.slice(0, 15);
+        });
+      } catch {
+      }
+    };
+
+    return () => {
+      source.close();
+    };
+  }, []);
+
+  const whales = useMemo(() => liveWhales.slice(0, 15), [liveWhales]);
 
   const totalPages = useMemo(() => {
     const pages = Math.ceil(topMarkets.length / pageSize);
@@ -228,7 +279,7 @@ export default function AnalysisPage() {
   }, [currentPage, topMarkets]);
 
   const aiGenerated = ai?.generated_at ? new Date(ai.generated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "...";
-  const aiStale = Boolean(ai?.stale);
+  const aiStale = Boolean(snapshot?.stale || ai?.stale);
 
   return (
     <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-6 px-4 py-6">
@@ -239,7 +290,7 @@ export default function AnalysisPage() {
           </div>
           <div>
             <h1 className="text-xl font-semibold text-foreground">Alpha Hub</h1>
-            <p className="text-sm text-muted-foreground">Smart Money flow, AI picks, and Whale activity (last {windowMinutes}m)</p>
+            <p className="text-sm text-muted-foreground">Smart Money flow, AI picks, and live whale activity.</p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -265,7 +316,7 @@ export default function AnalysisPage() {
                 Daily snapshot · {aiGenerated}
               </span>
             </div>
-            {aiQuery.isLoading && !ai?.ai_picks ? (
+            {snapshotQuery.isLoading && !ai?.ai_picks ? (
               <Card className="border-dashed border-border/70 bg-card/40 p-6 text-center text-sm text-muted-foreground">
                 Loading daily AI picks...
               </Card>
@@ -293,7 +344,7 @@ export default function AnalysisPage() {
                 whales.map((w, idx) => <WhaleRow whale={w} key={`${w.market_id}-${w.ts}-${idx}`} />)
               ) : (
                 <Card className="border-dashed border-border/70 bg-card/40 p-6 text-center text-sm text-muted-foreground">
-                  No whale prints in the last {windowMinutes} minutes.
+                  No live whale prints yet.
                 </Card>
               )}
             </div>

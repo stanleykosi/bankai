@@ -23,7 +23,6 @@ import (
 
 const (
 	defaultSmartMoneyTTL  = 90 * time.Second
-	defaultWhaleThreshold = 1_000.0
 	// Default chunk + limit safety nets (env-driven cap set to 0 = no limit)
 	defaultAIMarketLimit   = 150
 	maxWhalesToEnrich      = 200
@@ -67,6 +66,7 @@ type AlphaHubService struct {
 	subgraphClient *polymarket.SubgraphClient
 	redis          *redis.Client
 	aiMarketLimit  int
+	whaleStreamHub *WhaleStreamHub
 }
 
 type SmartMoneyStats struct {
@@ -271,6 +271,10 @@ func NewAlphaHubService(marketService *MarketService, profileService *ProfileSer
 	if subgraphClient == nil {
 		subgraphClient = polymarket.NewSubgraphClient(nil)
 	}
+	var whaleHub *WhaleStreamHub
+	if redis != nil {
+		whaleHub = NewWhaleStreamHub(redis)
+	}
 	return &AlphaHubService{
 		marketService:  marketService,
 		profileService: profileService,
@@ -281,7 +285,12 @@ func NewAlphaHubService(marketService *MarketService, profileService *ProfileSer
 		subgraphClient: subgraphClient,
 		redis:          redis,
 		aiMarketLimit:  aiMarketLimit,
+		whaleStreamHub: whaleHub,
 	}
+}
+
+func (s *AlphaHubService) WhaleStreamHub() *WhaleStreamHub {
+	return s.whaleStreamHub
 }
 
 // GetSmartMoneySignals aggregates last-hour trades, tags wallets by tier, and computes per-market scores.
@@ -404,7 +413,7 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 			topTrades = append(topTrades, t)
 		}
 
-		if value >= defaultWhaleThreshold && wallet != "" {
+		if value >= WhaleThresholdUSD && wallet != "" {
 			potentialWhales = append(potentialWhales, potentialWhale{trade: t.trade, wallet: wallet, value: value, isWash: isWash})
 		}
 
@@ -1720,6 +1729,32 @@ func filterWhalesForMarkets(whales []WhaleEvent, markets []MarketSignal) []Whale
 		return whales
 	}
 	return filtered
+}
+
+// GetCachedDailySnapshot returns the latest cached snapshot without triggering a rebuild.
+func (s *AlphaHubService) GetCachedDailySnapshot(ctx context.Context, window time.Duration) (*AlphaSnapshot, error) {
+	if window <= 0 {
+		window = 24 * time.Hour
+	}
+	if s.redis == nil {
+		return nil, nil
+	}
+
+	dateKey := time.Now().UTC().Format("2006-01-02")
+	snapshotKey := fmt.Sprintf("%s:%s", dailySnapshotPrefix, dateKey)
+	latestKey := fmt.Sprintf("%s:latest", dailySnapshotPrefix)
+
+	if snap := s.loadSnapshot(ctx, snapshotKey); snap != nil {
+		s.rehydrateSnapshotFromRawContent(ctx, snapshotKey, snap)
+		return snap, nil
+	}
+	if snap := s.loadSnapshot(ctx, latestKey); snap != nil {
+		s.rehydrateSnapshotFromRawContent(ctx, latestKey, snap)
+		snap.Stale = true
+		return snap, nil
+	}
+
+	return nil, nil
 }
 
 // GetDailySnapshot returns a cached (or freshly generated) daily AI + smart money snapshot.

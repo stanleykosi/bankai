@@ -125,8 +125,11 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 
 	// Analysis (Alpha Hub) Routes
 	analysis := v1.Group("/analysis")
+	analysis.Get("/snapshot", analysisHandler.GetSnapshot)
 	analysis.Get("/smart-money", analysisHandler.GetSmartMoney)
 	analysis.Get("/ai-picks", analysisHandler.GetAIPicks)
+	analysis.Get("/whales/recent", analysisHandler.GetRecentWhales)
+	analysis.Get("/whales/stream", analysisHandler.StreamWhaleUpdates)
 	analysis.Post("/ai-picks/cancel", analysisHandler.CancelAIPicks)
 	analysis.Post("/ai-picks/resume", analysisHandler.ResumeAIPicks)
 

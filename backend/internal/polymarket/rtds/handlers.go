@@ -292,6 +292,10 @@ func (h *MessageHandler) handleLastTrade(ctx context.Context, m *LastTradeMessag
 		return err
 	}
 
+	if volume >= services.WhaleThresholdUSD {
+		h.publishWhaleUpdate(ctx, m, volume, price, matchTime)
+	}
+
 	h.publishLastTradeUpdate(ctx, m)
 	return nil
 }
@@ -353,6 +357,42 @@ func (h *MessageHandler) publishLastTradeUpdate(ctx context.Context, m *LastTrad
 
 	if err := h.Redis.Publish(ctx, services.PriceUpdateChannel, data).Err(); err != nil {
 		log.Printf("Redis publish error: %v", err)
+	}
+}
+
+func (h *MessageHandler) publishWhaleUpdate(ctx context.Context, m *LastTradeMessage, volume float64, price float64, matchTime int64) {
+	if h.Redis == nil {
+		return
+	}
+
+	ts := time.Unix(matchTime, 0).UTC()
+	event := services.WhaleEvent{
+		Timestamp:   ts,
+		MarketID:    m.Market,
+		TokenID:     m.AssetID,
+		Side:        strings.ToUpper(m.Side),
+		SizeUSD:     volume,
+		Price:       price,
+		Wallet:      "",
+		WalletTier:  "LIVE",
+		WinRate:     -1,
+		RealizedPnL: 0,
+		IsWashTrade: false,
+	}
+
+	data, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+
+	pipe := h.Redis.Pipeline()
+	pipe.Publish(ctx, services.WhaleUpdateChannel, data)
+	pipe.LPush(ctx, services.WhaleRecentListKey, data)
+	pipe.LTrim(ctx, services.WhaleRecentListKey, 0, int64(services.WhaleRecentListMax-1))
+	pipe.Expire(ctx, services.WhaleRecentListKey, services.WhaleRecentListTTL)
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		log.Printf("Redis whale update error: %v", err)
 	}
 }
 
