@@ -64,20 +64,21 @@ type PolymarketConfig struct {
 
 // ServicesConfig holds external service keys (AI, Auth, etc.)
 type ServicesConfig struct {
-	ClerkSecretKey     string
-	ClerkJWKSURL       string // URL to fetch JSON Web Key Set for JWT validation
-	TavilyAPIKey       string
-	OpenAIAPIKey       string
-	OpenAIBaseURL      string
-	OpenAIModel        string
-	OpenAIMaxTokens    int
-	OpenAIMaxContext   int
-	PolygonRPCURL      string
-	SyncJobSecret      string
-	AIPicksMarketLimit int
-	AlphaSnapshotHour  int // UTC hour to run daily AI snapshot; -1 to run immediately
-	MaxTrackedAssets   int // RTDS subscription cap; 0 = no cap
-	StreamRecentHours  int // When >0, subscribe all markets with volume in the last N hours; 0 = subscribe all active markets
+	ClerkSecretKey      string
+	ClerkJWKSURL        string // URL to fetch JSON Web Key Set for JWT validation
+	TavilyAPIKey        string
+	OpenAIAPIKey        string
+	OpenAIBaseURL       string
+	OpenAIModel         string
+	OpenAIMaxTokens     int
+	OpenAIMaxContext    int
+	PolygonRPCURL       string
+	SyncJobSecret       string
+	AIPicksMarketLimit  int
+	AlphaSnapshotHour   int // UTC hour to run daily AI snapshot; -1 to run immediately
+	MaxTrackedAssets    int // RTDS subscription cap; 0 = no cap
+	StreamRecentHours   int // When >0, subscribe all markets with volume in the last N hours; 0 = subscribe all active markets
+	RTDSActivityEnabled bool
 }
 
 // Load reads .env file and populates the Config struct
@@ -108,20 +109,21 @@ func Load() (*Config, error) {
 			RelayerURL:           getEnv("POLYMARKET_RELAYER_URL", "https://relayer-v2.polymarket.com"),
 		},
 		Services: ServicesConfig{
-			ClerkSecretKey:     getEnv("CLERK_SECRET_KEY", ""),
-			ClerkJWKSURL:       getEnv("CLERK_JWKS_URL", ""),
-			TavilyAPIKey:       getEnv("TAVILY_API_KEY", ""),
-			OpenAIAPIKey:       getEnv("OPENAI_API_KEY", ""),
-			OpenAIBaseURL:      getEnv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"),
-			OpenAIModel:        getEnv("OPENAI_MODEL", "minimax/minimax-m2.1"),
-			OpenAIMaxTokens:    getEnvAsInt("OPENAI_MAX_TOKENS", 10000),
-			OpenAIMaxContext:   getEnvAsInt("OPENAI_MAX_CONTEXT_TOKENS", 204800),
-			PolygonRPCURL:      getEnv("POLYGON_RPC_URL", ""),
-			SyncJobSecret:      getEnv("JOB_SYNC_SECRET", ""),
-			AIPicksMarketLimit: getEnvAsInt("AI_PICKS_MARKET_LIMIT", 0),
-			AlphaSnapshotHour:  getEnvAsInt("ALPHA_SNAPSHOT_HOUR_UTC", -1),
-			MaxTrackedAssets:   getEnvAsInt("STREAM_MAX_TRACKED_ASSETS", 0),
-			StreamRecentHours:  getEnvAsInt("STREAM_RECENT_HOURS", 0),
+			ClerkSecretKey:      getEnv("CLERK_SECRET_KEY", ""),
+			ClerkJWKSURL:        getEnv("CLERK_JWKS_URL", ""),
+			TavilyAPIKey:        getEnv("TAVILY_API_KEY", ""),
+			OpenAIAPIKey:        getEnv("OPENAI_API_KEY", ""),
+			OpenAIBaseURL:       getEnv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"),
+			OpenAIModel:         getEnv("OPENAI_MODEL", "minimax/minimax-m2.1"),
+			OpenAIMaxTokens:     getEnvAsInt("OPENAI_MAX_TOKENS", 10000),
+			OpenAIMaxContext:    getEnvAsInt("OPENAI_MAX_CONTEXT_TOKENS", 204800),
+			PolygonRPCURL:       getEnv("POLYGON_RPC_URL", ""),
+			SyncJobSecret:       getEnv("JOB_SYNC_SECRET", ""),
+			AIPicksMarketLimit:  getEnvAsInt("AI_PICKS_MARKET_LIMIT", 0),
+			AlphaSnapshotHour:   getEnvAsInt("ALPHA_SNAPSHOT_HOUR_UTC", -1),
+			MaxTrackedAssets:    getEnvAsInt("STREAM_MAX_TRACKED_ASSETS", 0),
+			StreamRecentHours:   getEnvAsInt("STREAM_RECENT_HOURS", 0),
+			RTDSActivityEnabled: getEnvAsBool("RTDS_ACTIVITY_ENABLED", true),
 		},
 	}
 
@@ -167,4 +169,19 @@ func getEnvAsInt(key string, fallback int) int {
 		return value
 	}
 	return fallback
+}
+
+func getEnvAsBool(key string, fallback bool) bool {
+	valueStr := strings.TrimSpace(getEnv(key, ""))
+	if valueStr == "" {
+		return fallback
+	}
+	switch strings.ToLower(valueStr) {
+	case "1", "true", "t", "yes", "y":
+		return true
+	case "0", "false", "f", "no", "n":
+		return false
+	default:
+		return fallback
+	}
 }

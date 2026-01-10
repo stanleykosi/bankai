@@ -79,25 +79,88 @@ function getConvictionClass(conviction: string) {
   }
 }
 
+function getTierClass(tier?: string) {
+  switch ((tier || "").toLowerCase()) {
+    case "gold":
+      return "bg-amber-500/15 text-amber-300 border border-amber-500/30";
+    case "silver":
+      return "bg-slate-400/15 text-slate-200 border border-slate-400/30";
+    case "bronze":
+      return "bg-orange-500/15 text-orange-300 border border-orange-500/30";
+    case "new":
+      return "bg-emerald-500/10 text-emerald-200 border border-emerald-500/30";
+    default:
+      return "bg-muted text-foreground/80 border border-border/60";
+  }
+}
+
+function shortenWallet(wallet?: string) {
+  if (!wallet) return "--";
+  if (wallet.length <= 10) return wallet;
+  return `${wallet.slice(0, 6)}...${wallet.slice(-4)}`;
+}
+
 function WhaleRow({ whale }: { whale: WhaleEvent }) {
+  const isNewWallet = whale.win_rate < 0 || !whale.wallet_tier;
+  const tierLabel = isNewWallet ? "New" : whale.wallet_tier;
   const winRateLabel = whale.win_rate >= 0 ? `${(whale.win_rate * 100).toFixed(0)}%` : "--";
+  const priceLabel = whale.price >= 1 ? whale.price.toFixed(2) : whale.price.toFixed(3);
+  const marketHref = `/market/${whale.slug || whale.market_id}`;
+  const iconUrl = whale.market_icon || whale.market_image;
+  const pnlValue = whale.realized_pnl || 0;
+  const pnlLabel = pnlValue !== 0 ? `${pnlValue > 0 ? "+" : ""}${formatDollars(Math.abs(pnlValue))}` : "--";
+  const pnlClass = pnlValue > 0 ? "text-emerald-300" : pnlValue < 0 ? "text-rose-300" : "text-muted-foreground";
+
   return (
-    <div className="grid grid-cols-6 items-center gap-3 rounded-md border border-border/50 bg-card/40 px-3 py-2 text-xs font-mono">
-      <span className="text-muted-foreground">{new Date(whale.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-      <div className="flex items-center gap-2">
-        <span className={cn("uppercase", whale.side === "BUY" ? "text-emerald-400" : "text-rose-400")}>{whale.side}</span>
-        {whale.is_wash_trade ? (
-          <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-300">Wash</span>
-        ) : null}
-      </div>
-      <span className="text-foreground">{formatDollars(whale.size_usd)} USDC</span>
-      <span className="truncate text-muted-foreground">{whale.wallet_tier || "N/A"}</span>
-      <div className="truncate text-muted-foreground">
-        <div className="truncate">{whale.title || whale.market_id}</div>
-        {typeof whale.spread_bps === "number" ? <div className="text-[10px] text-foreground/70">Spread {whale.spread_bps.toFixed(0)} bps</div> : null}
-      </div>
-      <span className="text-muted-foreground">{winRateLabel}</span>
-    </div>
+    <Link href={marketHref} className="block">
+      <Card className="group border-border/60 bg-card/50 p-3 shadow-sm shadow-primary/10 transition hover:border-primary/40">
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-muted/40">
+            {iconUrl ? (
+              <img src={iconUrl} alt="" className="h-full w-full object-cover" loading="lazy" />
+            ) : (
+              <div className="h-7 w-7 rounded-full bg-muted/60" />
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <span>{new Date(whale.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                <span
+                  className={cn(
+                    "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase",
+                    whale.side === "BUY" ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300",
+                  )}
+                >
+                  {whale.side}
+                </span>
+                <span className="text-foreground">{formatDollars(whale.size_usd)} USDC</span>
+              </div>
+              <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                <span className={cn("rounded-full px-2 py-0.5 font-semibold uppercase", getTierClass(tierLabel))}>
+                  {tierLabel}
+                </span>
+                <span>WR {winRateLabel}</span>
+                <span className={pnlClass}>PNL {pnlLabel}</span>
+              </div>
+            </div>
+            <div className="mt-2 truncate text-sm font-semibold text-foreground transition group-hover:text-primary">
+              {whale.title || whale.market_id}
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+              <span className="rounded-full border border-border/60 px-2 py-0.5">Wallet {shortenWallet(whale.wallet)}</span>
+              <span className="rounded-full border border-border/60 px-2 py-0.5">Price {priceLabel}</span>
+              {typeof whale.spread_bps === "number" ? (
+                <span className="rounded-full border border-border/60 px-2 py-0.5">Spread {whale.spread_bps.toFixed(0)} bps</span>
+              ) : null}
+              {whale.is_wash_trade ? (
+                <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-300">Wash</span>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      </Card>
+    </Link>
   );
 }
 
@@ -240,26 +303,41 @@ export default function AnalysisPage() {
 
   useEffect(() => {
     const streamUrl = `${API_BASE_URL}/api/v1/analysis/whales/stream`;
-    const source = new EventSource(streamUrl);
+    let source: EventSource | null = null;
+    let retryHandle: ReturnType<typeof setTimeout> | null = null;
 
-    source.onmessage = (event) => {
-      if (!event.data) return;
-      try {
-        const payload = JSON.parse(event.data) as WhaleEvent;
-        const key = `${payload.market_id}-${payload.ts}-${payload.side}-${payload.size_usd}`;
-        setLiveWhales((prev) => {
-          if (prev.some((item) => `${item.market_id}-${item.ts}-${item.side}-${item.size_usd}` === key)) {
-            return prev;
-          }
-          const next = [payload, ...prev];
-          return next.slice(0, 15);
-        });
-      } catch {
-      }
+    const connect = () => {
+      source = new EventSource(streamUrl);
+
+      source.onmessage = (event) => {
+        if (!event.data) return;
+        try {
+          const payload = JSON.parse(event.data) as WhaleEvent;
+          const key = `${payload.market_id}-${payload.ts}-${payload.side}-${payload.size_usd}`;
+          setLiveWhales((prev) => {
+            if (prev.some((item) => `${item.market_id}-${item.ts}-${item.side}-${item.size_usd}` === key)) {
+              return prev;
+            }
+            const next = [payload, ...prev];
+            return next.slice(0, 15);
+          });
+        } catch {
+        }
+      };
+
+      source.onerror = () => {
+        source?.close();
+        retryHandle = setTimeout(connect, 3000);
+      };
     };
 
+    connect();
+
     return () => {
-      source.close();
+      if (retryHandle) {
+        clearTimeout(retryHandle);
+      }
+      source?.close();
     };
   }, []);
 

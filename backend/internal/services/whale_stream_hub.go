@@ -7,11 +7,13 @@ import (
 )
 
 const (
-	WhaleUpdateChannel = "analysis:whale_updates"
-	WhaleRecentListKey = "analysis:whales:recent"
-	WhaleRecentListMax = 200
-	WhaleRecentListTTL = 6 * time.Hour
-	WhaleThresholdUSD  = 1_000.0
+	WhaleUpdateChannel    = "analysis:whale_updates"
+	WhaleRecentListKey    = "analysis:whales:recent"
+	WhaleRecentListMax    = 200
+	WhaleRecentListTTL    = 6 * time.Hour
+	WhaleThresholdUSD     = 1_000.0
+	WhaleRTDSHeartbeatKey = "analysis:whales:rtds:heartbeat"
+	WhaleRTDSHeartbeatTTL = 2 * time.Minute
 )
 
 type WhaleStreamHub = PriceStreamHub

@@ -7,7 +7,7 @@
  * Key features:
  * - Handles the "Sept 2025" Price Change schema (breaking change support).
  * - Processes Orderbook Snapshots (`book`).
- * - Processes Trades (`last_trade_price`).
+ * - Processes Trades (`last_trade_price` / `last_trade`).
  * - Updates Redis with latest prices/velocity metrics.
  *
  * @dependencies
@@ -39,6 +39,7 @@ const (
 	EventTypePriceChange    = "price_change"
 	EventTypeBook           = "book"
 	EventTypeLastTradePrice = "last_trade_price"
+	EventTypeLastTrade      = "last_trade"
 	EventTypeTickSizeChange = "tick_size_change"
 )
 
@@ -166,7 +167,7 @@ func (h *MessageHandler) HandleMessage(ctx context.Context, msg []byte) error {
 		}
 		return h.handleBook(ctx, &m)
 
-	case EventTypeLastTradePrice:
+	case EventTypeLastTradePrice, EventTypeLastTrade:
 		var m LastTradeMessage
 		if err := json.Unmarshal(msg, &m); err != nil {
 			return err
@@ -292,9 +293,7 @@ func (h *MessageHandler) handleLastTrade(ctx context.Context, m *LastTradeMessag
 		return err
 	}
 
-	if volume >= services.WhaleThresholdUSD {
-		h.publishWhaleUpdate(ctx, m, volume, price, matchTime)
-	}
+	// Whale updates are sourced from RTDS activity; avoid duplicating via CLOB.
 
 	h.publishLastTradeUpdate(ctx, m)
 	return nil

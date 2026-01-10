@@ -134,6 +134,7 @@ func (h *AnalysisHandler) StreamWhaleUpdates(c *fiber.Ctx) error {
 	c.Set("Content-Type", "text/event-stream")
 	c.Set("Cache-Control", "no-cache")
 	c.Set("Connection", "keep-alive")
+	c.Set("X-Accel-Buffering", "no")
 
 	requestCtx := c.Context()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -146,6 +147,8 @@ func (h *AnalysisHandler) StreamWhaleUpdates(c *fiber.Ctx) error {
 		}()
 
 		requestDone := requestCtx.Done()
+		keepalive := time.NewTicker(15 * time.Second)
+		defer keepalive.Stop()
 
 		for {
 			select {
@@ -153,6 +156,11 @@ func (h *AnalysisHandler) StreamWhaleUpdates(c *fiber.Ctx) error {
 				return
 			case <-ctx.Done():
 				return
+			case <-keepalive.C:
+				fmt.Fprint(w, ": ping\n\n")
+				if err := w.Flush(); err != nil {
+					return
+				}
 			case msg, ok := <-msgCh:
 				if !ok {
 					return

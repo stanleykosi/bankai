@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	defaultSmartMoneyTTL  = 90 * time.Second
+	defaultSmartMoneyTTL = 90 * time.Second
 	// Default chunk + limit safety nets (env-driven cap set to 0 = no limit)
 	defaultAIMarketLimit   = 150
 	maxWhalesToEnrich      = 200
@@ -126,6 +126,8 @@ type WhaleEvent struct {
 	RealizedPnL float64   `json:"realized_pnl"`
 	Slug        string    `json:"slug,omitempty"`
 	Title       string    `json:"title,omitempty"`
+	MarketIcon  string    `json:"market_icon,omitempty"`
+	MarketImage string    `json:"market_image,omitempty"`
 	SpreadBps   float64   `json:"spread_bps,omitempty"`
 	IsWashTrade bool      `json:"is_wash_trade"`
 }
@@ -544,6 +546,12 @@ func (s *AlphaHubService) GetSmartMoneySignals(ctx context.Context, window time.
 		if meta := marketsMap[whales[i].MarketID]; meta != nil {
 			whales[i].Slug = meta.Slug
 			whales[i].Title = meta.Title
+			if meta.IconURL != "" {
+				whales[i].MarketIcon = meta.IconURL
+			} else {
+				whales[i].MarketIcon = meta.ImageURL
+			}
+			whales[i].MarketImage = meta.ImageURL
 			whales[i].SpreadBps = spreadToBps(meta.Spread)
 		}
 	}
@@ -1060,6 +1068,17 @@ func (s *AlphaHubService) getWalletTier(ctx context.Context, address string, cac
 	return snapshot
 }
 
+func (s *AlphaHubService) GetWalletSnapshot(ctx context.Context, address string) WalletSnapshot {
+	return s.getWalletTier(ctx, address, make(map[string]WalletSnapshot))
+}
+
+func (s *AlphaHubService) GetWalletSnapshotCached(ctx context.Context, address string, cache map[string]WalletSnapshot) WalletSnapshot {
+	if cache == nil {
+		cache = make(map[string]WalletSnapshot)
+	}
+	return s.getWalletTier(ctx, address, cache)
+}
+
 // getLightweightWalletStats fetches only the minimal data needed for wallet tier classification.
 // Uses a short timeout and only fetches closed positions (single API call) instead of the full
 // GetTraderStats which makes 7+ sequential API calls.
@@ -1106,6 +1125,9 @@ func (s *AlphaHubService) getLightweightWalletStats(ctx context.Context, address
 	totalTrades := winningTrades + losingTrades
 	if totalTrades > 0 {
 		winRate = float64(winningTrades) / float64(totalTrades)
+	}
+	if len(closedPositions) == 0 {
+		winRate = -1
 	}
 
 	// Cache the result for 2 minutes

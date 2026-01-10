@@ -73,6 +73,7 @@ func main() {
 	alphaHubService := services.NewAlphaHubService(marketService, profileService, clobClient, tavilyClient, openaiClient, dataAPIClient, subgraphClient, cfg.Services.AIPicksMarketLimit, redisClient)
 	msgHandler := rtds.NewMessageHandler(pgDB, redisClient)
 	wsClient := rtds.NewClient(cfg, msgHandler)
+	var activityClient *rtds.ActivityClient
 
 	// 4. Context with Cancellation
 	ctx, cancel := context.WithCancel(context.Background())
@@ -85,6 +86,16 @@ func main() {
 			// In prod, might want to restart the pod, but here we just log
 		}
 	}()
+
+	if cfg.Services.RTDSActivityEnabled {
+		activityHandler := rtds.NewActivityHandler(redisClient, alphaHubService)
+		activityClient = rtds.NewActivityClient(cfg, activityHandler)
+		go func() {
+			if err := activityClient.Connect(ctx); err != nil {
+				logger.Error("❌ RTDS Activity Client failed: %v", err)
+			}
+		}()
+	}
 
 	go watchStreamRequests(ctx, marketService, wsClient)
 	go alphaHubDailyLoop(ctx, alphaHubService, cfg.Services.AlphaSnapshotHour)
@@ -125,6 +136,11 @@ func main() {
 	// Close WebSocket connection gracefully
 	if err := wsClient.Close(); err != nil {
 		logger.Error("Error closing WebSocket: %v", err)
+	}
+	if activityClient != nil {
+		if err := activityClient.Close(); err != nil {
+			logger.Error("Error closing RTDS Activity WebSocket: %v", err)
+		}
 	}
 
 	time.Sleep(1 * time.Second) // Give connections time to close

@@ -52,6 +52,8 @@ export type WhaleEvent = {
   realized_pnl: number;
   slug?: string;
   title?: string;
+  market_icon?: string;
+  market_image?: string;
   spread_bps?: number;
   is_wash_trade: boolean;
 };
