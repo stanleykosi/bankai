@@ -106,14 +106,16 @@ function WhaleRow({ whale }: { whale: WhaleEvent }) {
   const winRateLabel = whale.win_rate >= 0 ? `${(whale.win_rate * 100).toFixed(0)}%` : "--";
   const priceLabel = whale.price >= 1 ? whale.price.toFixed(2) : whale.price.toFixed(3);
   const marketHref = `/market/${whale.slug || whale.market_id}`;
+  const traderHref = whale.wallet ? `/profile/${whale.wallet}` : "";
   const iconUrl = whale.market_icon || whale.market_image;
+  const traderLabel = whale.trader_name || shortenWallet(whale.wallet);
+  const outcomeLabel = whale.outcome ? whale.outcome.toUpperCase() : "--";
   const pnlValue = whale.realized_pnl || 0;
   const pnlLabel = pnlValue !== 0 ? `${pnlValue > 0 ? "+" : ""}${formatDollars(Math.abs(pnlValue))}` : "--";
   const pnlClass = pnlValue > 0 ? "text-emerald-300" : pnlValue < 0 ? "text-rose-300" : "text-muted-foreground";
 
   return (
-    <Link href={marketHref} className="block">
-      <Card className="group border-border/60 bg-card/50 p-3 shadow-sm shadow-primary/10 transition hover:border-primary/40">
+    <Card className="group border-border/60 bg-card/50 p-3 shadow-sm shadow-primary/10 transition hover:border-primary/40">
         <div className="flex items-start gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-muted/40">
             {iconUrl ? (
@@ -134,6 +136,9 @@ function WhaleRow({ whale }: { whale: WhaleEvent }) {
                 >
                   {whale.side}
                 </span>
+                <span className="rounded-full bg-muted/50 px-2 py-0.5 text-[10px] font-semibold uppercase text-foreground/80">
+                  {outcomeLabel}
+                </span>
                 <span className="text-foreground">{formatDollars(whale.size_usd)} USDC</span>
               </div>
               <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
@@ -144,11 +149,32 @@ function WhaleRow({ whale }: { whale: WhaleEvent }) {
                 <span className={pnlClass}>PNL {pnlLabel}</span>
               </div>
             </div>
-            <div className="mt-2 truncate text-sm font-semibold text-foreground transition group-hover:text-primary">
-              {whale.title || whale.market_id}
+            <div className="mt-2 flex items-center gap-2">
+              <Link
+                href={marketHref}
+                className="truncate text-sm font-semibold text-foreground transition hover:text-primary"
+              >
+                {whale.title || whale.market_id}
+              </Link>
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-              <span className="rounded-full border border-border/60 px-2 py-0.5">Wallet {shortenWallet(whale.wallet)}</span>
+              {traderHref ? (
+                <Link
+                  href={traderHref}
+                  className="flex items-center gap-1.5 rounded-full border border-border/60 px-2 py-0.5 hover:border-primary/40"
+                >
+                  <span className="flex h-4 w-4 items-center justify-center overflow-hidden rounded-full bg-muted/60 text-[10px] text-foreground/70">
+                    {whale.trader_image ? (
+                      <img src={whale.trader_image} alt="" className="h-full w-full object-cover" loading="lazy" />
+                    ) : (
+                      traderLabel.charAt(0).toUpperCase()
+                    )}
+                  </span>
+                  <span>{traderLabel}</span>
+                </Link>
+              ) : (
+                <span className="rounded-full border border-border/60 px-2 py-0.5">{traderLabel}</span>
+              )}
               <span className="rounded-full border border-border/60 px-2 py-0.5">Price {priceLabel}</span>
               {typeof whale.spread_bps === "number" ? (
                 <span className="rounded-full border border-border/60 px-2 py-0.5">Spread {whale.spread_bps.toFixed(0)} bps</span>
@@ -160,7 +186,6 @@ function WhaleRow({ whale }: { whale: WhaleEvent }) {
           </div>
         </div>
       </Card>
-    </Link>
   );
 }
 

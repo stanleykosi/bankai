@@ -280,10 +280,15 @@ type activityPayload struct {
 	Title           string      `json:"title"`
 	Icon            string      `json:"icon"`
 	Image           string      `json:"image"`
+	Outcome         string      `json:"outcome"`
+	OutcomeIndex    int         `json:"outcomeIndex"`
 	Side            string      `json:"side"`
 	Price           json.Number `json:"price"`
 	Size            json.Number `json:"size"`
 	ProxyWallet     string      `json:"proxyWallet"`
+	Pseudonym       string      `json:"pseudonym"`
+	Name            string      `json:"name"`
+	ProfileImage    string      `json:"profileImage"`
 	Timestamp       int64       `json:"timestamp"`
 	TransactionHash string      `json:"transactionHash"`
 }
@@ -363,6 +368,10 @@ func (h *ActivityHandler) HandleMessage(ctx context.Context, msg []byte) error {
 	if tier == "" {
 		tier = "Bronze"
 	}
+	traderName := strings.TrimSpace(payload.Pseudonym)
+	if traderName == "" {
+		traderName = strings.TrimSpace(payload.Name)
+	}
 
 	event := services.WhaleEvent{
 		Timestamp:   time.Unix(matchTime, 0).UTC(),
@@ -375,6 +384,9 @@ func (h *ActivityHandler) HandleMessage(ctx context.Context, msg []byte) error {
 		WalletTier:  tier,
 		WinRate:     snapshot.WinRate,
 		RealizedPnL: snapshot.RealizedPnL,
+		Outcome:     payload.Outcome,
+		TraderName:  traderName,
+		TraderImage: strings.TrimSpace(payload.ProfileImage),
 		Slug:        payload.Slug,
 		Title:       payload.Title,
 		MarketIcon:  payload.Icon,

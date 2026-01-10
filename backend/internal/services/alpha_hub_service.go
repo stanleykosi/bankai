@@ -124,6 +124,9 @@ type WhaleEvent struct {
 	WalletTier  string    `json:"wallet_tier"`
 	WinRate     float64   `json:"win_rate"`
 	RealizedPnL float64   `json:"realized_pnl"`
+	Outcome     string    `json:"outcome,omitempty"`
+	TraderName  string    `json:"trader_name,omitempty"`
+	TraderImage string    `json:"trader_image,omitempty"`
 	Slug        string    `json:"slug,omitempty"`
 	Title       string    `json:"title,omitempty"`
 	MarketIcon  string    `json:"market_icon,omitempty"`
