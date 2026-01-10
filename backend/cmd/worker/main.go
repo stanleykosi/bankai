@@ -248,7 +248,7 @@ func persistMarketsLoop(ctx context.Context, ms *services.MarketService) {
 
 // resolveMarketAssets selects which markets to subscribe to for RTDS streams.
 // If STREAM_RECENT_HOURS > 0, include all markets with non-zero 24h volume (approximating "seen in last window").
-// Otherwise, cap to STREAM_MAX_TRACKED_ASSETS (0 = no cap).
+// Otherwise, include all active markets and apply STREAM_MAX_TRACKED_ASSETS only if set (>0).
 func resolveMarketAssets(ctx context.Context, ms *services.MarketService, cfg *config.Config) ([]services.MarketAsset, error) {
 	assets, err := ms.GetMarketAssets(ctx, 0)
 	if err != nil {

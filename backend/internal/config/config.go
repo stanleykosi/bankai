@@ -77,7 +77,7 @@ type ServicesConfig struct {
 	AIPicksMarketLimit int
 	AlphaSnapshotHour  int // UTC hour to run daily AI snapshot; -1 to run immediately
 	MaxTrackedAssets   int // RTDS subscription cap; 0 = no cap
-	StreamRecentHours  int // When >0, subscribe all markets with volume in the last N hours; 0 = use cap-only behavior
+	StreamRecentHours  int // When >0, subscribe all markets with volume in the last N hours; 0 = subscribe all active markets
 }
 
 // Load reads .env file and populates the Config struct
@@ -120,8 +120,8 @@ func Load() (*Config, error) {
 			SyncJobSecret:      getEnv("JOB_SYNC_SECRET", ""),
 			AIPicksMarketLimit: getEnvAsInt("AI_PICKS_MARKET_LIMIT", 0),
 			AlphaSnapshotHour:  getEnvAsInt("ALPHA_SNAPSHOT_HOUR_UTC", -1),
-			MaxTrackedAssets:   getEnvAsInt("STREAM_MAX_TRACKED_ASSETS", 1200),
-			StreamRecentHours:  getEnvAsInt("STREAM_RECENT_HOURS", 24),
+			MaxTrackedAssets:   getEnvAsInt("STREAM_MAX_TRACKED_ASSETS", 0),
+			StreamRecentHours:  getEnvAsInt("STREAM_RECENT_HOURS", 0),
 		},
 	}
 
