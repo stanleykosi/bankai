@@ -50,6 +50,7 @@ export type WhaleEvent = {
   wallet_tier: string;
   win_rate: number;
   realized_pnl: number;
+  tx_hash?: string;
   outcome?: string;
   trader_name?: string;
   trader_image?: string;

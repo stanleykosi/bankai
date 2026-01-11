@@ -384,6 +384,7 @@ func (h *ActivityHandler) HandleMessage(ctx context.Context, msg []byte) error {
 		WalletTier:  tier,
 		WinRate:     snapshot.WinRate,
 		RealizedPnL: snapshot.RealizedPnL,
+		TxHash:      strings.TrimSpace(payload.TransactionHash),
 		Outcome:     payload.Outcome,
 		TraderName:  traderName,
 		TraderImage: strings.TrimSpace(payload.ProfileImage),

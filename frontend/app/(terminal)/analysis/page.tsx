@@ -21,6 +21,21 @@ const windowMinutes = 1440;
 const maxDisplayMarkets = 50;
 const pageSize = 10;
 const maxPages = 5;
+const whaleLimit = 15;
+
+const whaleKey = (whale: WhaleEvent) =>
+  whale.tx_hash ? `tx:${whale.tx_hash}` : `${whale.market_id}-${whale.ts}-${whale.side}-${whale.size_usd}`;
+
+const mergeWhales = (existing: WhaleEvent[], incoming: WhaleEvent[]) => {
+  const map = new Map<string, WhaleEvent>();
+  const merged = [...incoming, ...existing];
+  for (const whale of merged) {
+    map.set(whaleKey(whale), whale);
+  }
+  return Array.from(map.values())
+    .sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime())
+    .slice(0, whaleLimit);
+};
 
 const formatDollars = (value: number) =>
   value >= 1_000_000
@@ -300,28 +315,18 @@ export default function AnalysisPage() {
     let cancelled = false;
     const loadRecentWhales = async () => {
       try {
-        const recent = await fetchRecentWhales(15);
+        const recent = await fetchRecentWhales(whaleLimit);
         if (!cancelled) {
-          setLiveWhales((prev) => {
-            const merged: WhaleEvent[] = [];
-            const seen = new Set<string>();
-            const add = (whale: WhaleEvent) => {
-              const key = `${whale.market_id}-${whale.ts}-${whale.side}-${whale.size_usd}`;
-              if (seen.has(key)) return;
-              seen.add(key);
-              merged.push(whale);
-            };
-            prev.forEach(add);
-            recent.forEach(add);
-            return merged.slice(0, 15);
-          });
+          setLiveWhales((prev) => mergeWhales(prev, recent));
         }
       } catch {
       }
     };
 
     loadRecentWhales();
+    const poll = setInterval(loadRecentWhales, 15_000);
     return () => {
+      clearInterval(poll);
       cancelled = true;
     };
   }, []);
@@ -338,13 +343,8 @@ export default function AnalysisPage() {
         if (!event.data) return;
         try {
           const payload = JSON.parse(event.data) as WhaleEvent;
-          const key = `${payload.market_id}-${payload.ts}-${payload.side}-${payload.size_usd}`;
           setLiveWhales((prev) => {
-            if (prev.some((item) => `${item.market_id}-${item.ts}-${item.side}-${item.size_usd}` === key)) {
-              return prev;
-            }
-            const next = [payload, ...prev];
-            return next.slice(0, 15);
+            return mergeWhales(prev, [payload]);
           });
         } catch {
         }
@@ -366,7 +366,7 @@ export default function AnalysisPage() {
     };
   }, []);
 
-  const whales = useMemo(() => liveWhales.slice(0, 15), [liveWhales]);
+  const whales = useMemo(() => liveWhales.slice(0, whaleLimit), [liveWhales]);
 
   const totalPages = useMemo(() => {
     const pages = Math.ceil(topMarkets.length / pageSize);
