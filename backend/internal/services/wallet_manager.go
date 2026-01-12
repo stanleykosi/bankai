@@ -53,7 +53,7 @@ func NewWalletManager(db *gorm.DB, relayer *relayer.Client, gammaClient *gamma.C
 // GetUserWallet returns the wallet info for a user
 func (s *WalletManager) GetUserWallet(ctx context.Context, userID string) (*models.User, error) {
 	var user models.User
-	if err := s.DB.WithContext(ctx).Where("clerk_id = ?", userID).First(&user).Error; err != nil {
+	if err := s.DB.WithContext(ctx).Where("id = ?", userID).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, fmt.Errorf("user not found: %w", err)
 		}
@@ -63,9 +63,9 @@ func (s *WalletManager) GetUserWallet(ctx context.Context, userID string) (*mode
 }
 
 // EnsureWallet checks if a user has a Vault address. If not, it attempts to find or deploy one.
-func (s *WalletManager) EnsureWallet(ctx context.Context, clerkID string) (*models.User, error) {
+func (s *WalletManager) EnsureWallet(ctx context.Context, userID string) (*models.User, error) {
 	var user models.User
-	if err := s.DB.WithContext(ctx).Where("clerk_id = ?", clerkID).First(&user).Error; err != nil {
+	if err := s.DB.WithContext(ctx).Where("id = ?", userID).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, fmt.Errorf("user not found: %w", err)
 		}
@@ -75,9 +75,9 @@ func (s *WalletManager) EnsureWallet(ctx context.Context, clerkID string) (*mode
 	// 1. If Vault Address exists, ensure it matches the currently connected EOA.
 	if user.VaultAddress != "" {
 		if user.EOAAddress != "" && !s.vaultMatchesEOA(&user) {
-			logger.Info("Vault %s no longer matches EOA %s for user %s. Clearing cached vault.", user.VaultAddress, user.EOAAddress, user.ClerkID)
-			if err := s.ClearVaultAddress(ctx, user.ClerkID); err != nil {
-				logger.Error("Failed to clear mismatched vault for user %s: %v", user.ClerkID, err)
+			logger.Info("Vault %s no longer matches EOA %s for user %s. Clearing cached vault.", user.VaultAddress, user.EOAAddress, user.ID)
+			if err := s.ClearVaultAddress(ctx, user.ID.String()); err != nil {
+				logger.Error("Failed to clear mismatched vault for user %s: %v", user.ID, err)
 			} else {
 				user.VaultAddress = ""
 				user.WalletType = nil
@@ -90,7 +90,7 @@ func (s *WalletManager) EnsureWallet(ctx context.Context, clerkID string) (*mode
 	// 2. If user has no EOA address, they can't deploy a vault yet
 	// Return the user as-is - they need to connect a wallet first
 	if user.EOAAddress == "" {
-		logger.Info("User %s has no EOA address yet. Vault deployment requires a connected wallet.", user.ClerkID)
+		logger.Info("User %s has no EOA address yet. Vault deployment requires a connected wallet.", user.ID)
 		return &user, nil
 	}
 
@@ -100,8 +100,8 @@ func (s *WalletManager) EnsureWallet(ctx context.Context, clerkID string) (*mode
 
 	// Attempt discovery via Polymarket public-search before deploying.
 	if vaultAddr, walletType, err := s.lookupVaultAddress(ctx, user.EOAAddress); err == nil && vaultAddr != "" {
-		logger.Info("🔎 Located existing vault %s for user %s", vaultAddr, user.ClerkID)
-		if err := s.UpdateVaultAddress(ctx, user.ClerkID, vaultAddr, walletType); err != nil {
+		logger.Info("🔎 Located existing vault %s for user %s", vaultAddr, user.ID)
+		if err := s.UpdateVaultAddress(ctx, user.ID.String(), vaultAddr, walletType); err != nil {
 			logger.Error("Failed to persist discovered vault address: %v", err)
 		} else {
 			user.VaultAddress = vaultAddr
@@ -109,17 +109,17 @@ func (s *WalletManager) EnsureWallet(ctx context.Context, clerkID string) (*mode
 			return &user, nil
 		}
 	} else if err != nil {
-		logger.Error("Vault discovery failed for user %s: %v", user.ClerkID, err)
+		logger.Error("Vault discovery failed for user %s: %v", user.ID, err)
 	}
 
 	// Check relayer /deployed endpoint (derives Safe address even if Gamma hasn't indexed it)
 	if safeAddr, err := relayer.DeriveSafeAddress(user.EOAAddress); err == nil {
 		if deployed, derr := s.Relayer.GetDeployed(ctx, safeAddr); derr != nil {
-			logger.Error("Relayer deployed lookup failed for user %s: %v", user.ClerkID, derr)
+			logger.Error("Relayer deployed lookup failed for user %s: %v", user.ID, derr)
 		} else if deployed {
-			logger.Info("🛡️ Relayer confirms Safe %s exists for user %s", safeAddr, user.ClerkID)
+			logger.Info("🛡️ Relayer confirms Safe %s exists for user %s", safeAddr, user.ID)
 			wType := models.WalletTypeSafe
-			if err := s.UpdateVaultAddress(ctx, user.ClerkID, safeAddr, &wType); err != nil {
+			if err := s.UpdateVaultAddress(ctx, user.ID.String(), safeAddr, &wType); err != nil {
 				logger.Error("Failed to persist relayer detected safe: %v", err)
 			} else {
 				user.VaultAddress = safeAddr
@@ -128,15 +128,15 @@ func (s *WalletManager) EnsureWallet(ctx context.Context, clerkID string) (*mode
 			}
 		}
 	} else {
-		logger.Error("Failed to derive safe address for user %s: %v", user.ClerkID, err)
+		logger.Error("Failed to derive safe address for user %s: %v", user.ID, err)
 	}
 
-	logger.Info("🧐 User %s (EOA: %s) has no vault. Awaiting SAFE-CREATE signature.", user.ClerkID, user.EOAAddress)
+	logger.Info("🧐 User %s (EOA: %s) has no vault. Awaiting SAFE-CREATE signature.", user.ID, user.EOAAddress)
 	return &user, nil
 }
 
 // UpdateVaultAddress manually updates the vault address (e.g. after frontend detects it on-chain)
-func (s *WalletManager) UpdateVaultAddress(ctx context.Context, clerkID, vaultAddr string, wType *models.WalletType) error {
+func (s *WalletManager) UpdateVaultAddress(ctx context.Context, userID, vaultAddr string, wType *models.WalletType) error {
 	if vaultAddr == "" {
 		return errors.New("vault address cannot be empty")
 	}
@@ -150,12 +150,12 @@ func (s *WalletManager) UpdateVaultAddress(ctx context.Context, clerkID, vaultAd
 	}
 
 	return s.DB.WithContext(ctx).Model(&models.User{}).
-		Where("clerk_id = ?", clerkID).
+		Where("id = ?", userID).
 		Updates(updates).Error
 }
 
 // ClearVaultAddress removes any cached vault metadata for the user (used when their EOA changes).
-func (s *WalletManager) ClearVaultAddress(ctx context.Context, clerkID string) error {
+func (s *WalletManager) ClearVaultAddress(ctx context.Context, userID string) error {
 	updates := map[string]interface{}{
 		"vault_address": "",
 		"wallet_type":   gorm.Expr("NULL"),
@@ -163,7 +163,7 @@ func (s *WalletManager) ClearVaultAddress(ctx context.Context, clerkID string) e
 	}
 
 	return s.DB.WithContext(ctx).Model(&models.User{}).
-		Where("clerk_id = ?", clerkID).
+		Where("id = ?", userID).
 		Updates(updates).Error
 }
 
@@ -241,7 +241,7 @@ func (s *WalletManager) vaultMatchesEOA(user *models.User) bool {
 	if user.WalletType != nil && *user.WalletType == models.WalletTypeSafe {
 		derived, err := relayer.DeriveSafeAddress(user.EOAAddress)
 		if err != nil {
-			logger.Error("Failed to derive safe address for user %s: %v", user.ClerkID, err)
+			logger.Error("Failed to derive safe address for user %s: %v", user.ID, err)
 			return false
 		}
 		return strings.EqualFold(derived, user.VaultAddress)

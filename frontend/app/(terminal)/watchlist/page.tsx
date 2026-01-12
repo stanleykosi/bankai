@@ -3,13 +3,6 @@
 import * as React from "react";
 import Link from "next/link";
 import {
-  ClerkLoaded,
-  ClerkLoading,
-  SignInButton,
-  SignedIn,
-  SignedOut,
-} from "@clerk/nextjs";
-import {
   ArrowUpRight,
   Loader2,
   Search,
@@ -23,6 +16,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { BookmarkButton } from "@/components/watchlist/BookmarkButton";
+import { WalletConnectButton } from "@/components/wallet/WalletConnectButton";
+import { useWallet } from "@/hooks/useWallet";
 import { useWatchlist } from "@/hooks/useWatchlist";
 import { cn } from "@/lib/utils";
 import type { WatchlistItem } from "@/types";
@@ -166,6 +161,7 @@ function WatchlistCard({ item }: { item: WatchlistItem }) {
 
 export default function WatchlistPage() {
   const { data, isLoading } = useWatchlist();
+  const { isAuthenticated, isLoading: isAuthLoading } = useWallet();
   const [search, setSearch] = React.useState("");
   const [sortBy, setSortBy] = React.useState<SortKey>("recent");
   const [filterBy, setFilterBy] = React.useState<FilterKey>("all");
@@ -221,7 +217,7 @@ export default function WatchlistPage() {
 
   return (
     <>
-      <ClerkLoading>
+      {isAuthLoading ? (
         <div className="container max-w-[1200px] py-10">
           <Card className="border-border/60 bg-card/60">
             <CardContent className="flex min-h-[220px] items-center justify-center">
@@ -229,32 +225,25 @@ export default function WatchlistPage() {
             </CardContent>
           </Card>
         </div>
-      </ClerkLoading>
-
-      <ClerkLoaded>
-        <SignedOut>
-          <div className="container max-w-[1200px] py-10">
-            <Card className="border-border/60 bg-card/60">
-              <CardContent className="p-10 text-center">
-                <div className="mx-auto flex max-w-md flex-col items-center gap-4">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-full border border-border bg-primary/10">
-                    <Star className="h-6 w-6 text-primary" />
-                  </div>
-                  <h1 className="text-2xl font-semibold text-foreground">Your Watchlist</h1>
-                  <p className="text-sm text-muted-foreground">
-                    Sign in to curate markets you want to track in one focused, professional workspace.
-                  </p>
-                  <SignInButton mode="modal">
-                    <Button className="font-mono text-xs">Sign in to continue</Button>
-                  </SignInButton>
+      ) : !isAuthenticated ? (
+        <div className="container max-w-[1200px] py-10">
+          <Card className="border-border/60 bg-card/60">
+            <CardContent className="p-10 text-center">
+              <div className="mx-auto flex max-w-md flex-col items-center gap-4">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full border border-border bg-primary/10">
+                  <Star className="h-6 w-6 text-primary" />
                 </div>
-              </CardContent>
-            </Card>
-          </div>
-        </SignedOut>
-
-        <SignedIn>
-          <div className="container max-w-[1600px] py-6 space-y-6">
+                <h1 className="text-2xl font-semibold text-foreground">Your Watchlist</h1>
+                <p className="text-sm text-muted-foreground">
+                  Connect a wallet to curate markets you want to track in one focused, professional workspace.
+                </p>
+                <WalletConnectButton />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      ) : (
+        <div className="container max-w-[1600px] py-6 space-y-6">
             <section className="relative overflow-hidden rounded-2xl border border-border/60 bg-gradient-to-br from-background via-background to-card/60 px-6 py-6">
               <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.15),_transparent_55%)]" />
               <div className="absolute -right-16 top-6 h-48 w-48 rounded-full bg-primary/10 blur-3xl" />
@@ -464,8 +453,7 @@ export default function WatchlistPage() {
               </div>
             </div>
           </div>
-        </SignedIn>
-      </ClerkLoaded>
+      )}
     </>
   );
 }

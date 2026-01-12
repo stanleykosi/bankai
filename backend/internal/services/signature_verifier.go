@@ -7,7 +7,7 @@
  * - Currently performs a logical check: Does Order.Signer == User.EOA?
  * - In a high-security environment, this would also recover the address from the EIP-712 signature/hash.
  *   However, since the frontend performs the signing and the Backend acts as a relay with
- *   authentication via Clerk, ensuring the Clerk User owns the Signer Address is the primary defense.
+ *   authentication via wallet session, ensuring the user owns the Signer Address is the primary defense.
  */
 
 package services
@@ -93,7 +93,7 @@ func (v *SignatureVerifier) VerifyOrderOwnership(user *models.User, order *clob.
 	// 2. ecrecover(hash, order.Signature)
 	// 3. Verify recovered address == order.Signer
 	//
-	// Since we rely on the CLOB to reject invalid signatures, and we rely on Clerk
+	// Since we rely on the CLOB to reject invalid signatures, and we rely on wallet auth
 	// to authenticate the user, checking ownership of both the signer and maker
 	// prevents cross-user submission attacks and ensures trades are limited to the
 	// caller's vault.

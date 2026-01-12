@@ -4,12 +4,10 @@
  *
  * @dependencies
  * - @tanstack/react-query
- * - @clerk/nextjs
  * - @/lib/watchlist-api
  */
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useAuth } from "@clerk/nextjs";
 import {
   bookmarkMarket,
   removeBookmark,
@@ -17,17 +15,18 @@ import {
   fetchWatchlist,
   checkIsBookmarked,
 } from "@/lib/watchlist-api";
+import { useWallet } from "@/hooks/useWallet";
 
 /**
  * Hook for checking if a market is bookmarked
  */
 export function useIsBookmarked(marketId: string | undefined) {
-  const { getToken, isSignedIn, isLoaded } = useAuth();
+  const { isAuthenticated, isLoading } = useWallet();
 
   return useQuery({
     queryKey: ["is-bookmarked", marketId],
-    queryFn: () => checkIsBookmarked(marketId!, getToken),
-    enabled: Boolean(marketId) && isLoaded && isSignedIn,
+    queryFn: () => checkIsBookmarked(marketId!),
+    enabled: Boolean(marketId) && !isLoading && isAuthenticated,
     staleTime: 30_000,
   });
 }
@@ -36,12 +35,12 @@ export function useIsBookmarked(marketId: string | undefined) {
  * Hook for getting user's watchlist
  */
 export function useWatchlist() {
-  const { getToken, isSignedIn, isLoaded } = useAuth();
+  const { isAuthenticated, isLoading } = useWallet();
 
   return useQuery({
     queryKey: ["watchlist"],
-    queryFn: () => fetchWatchlist(getToken),
-    enabled: isLoaded && isSignedIn,
+    queryFn: () => fetchWatchlist(),
+    enabled: !isLoading && isAuthenticated,
     staleTime: 30_000,
     refetchInterval: 30_000, // Refresh prices every 30 seconds
   });
@@ -51,11 +50,10 @@ export function useWatchlist() {
  * Hook for bookmark mutation
  */
 export function useBookmarkMutation() {
-  const { getToken } = useAuth();
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (marketId: string) => bookmarkMarket(marketId, getToken),
+    mutationFn: (marketId: string) => bookmarkMarket(marketId),
     onSuccess: (data, marketId) => {
       queryClient.invalidateQueries({ queryKey: ["is-bookmarked", marketId] });
       queryClient.invalidateQueries({ queryKey: ["watchlist"] });
@@ -67,11 +65,10 @@ export function useBookmarkMutation() {
  * Hook for remove bookmark mutation
  */
 export function useRemoveBookmarkMutation() {
-  const { getToken } = useAuth();
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (marketId: string) => removeBookmark(marketId, getToken),
+    mutationFn: (marketId: string) => removeBookmark(marketId),
     onSuccess: (data, marketId) => {
       queryClient.invalidateQueries({ queryKey: ["is-bookmarked", marketId] });
       queryClient.invalidateQueries({ queryKey: ["watchlist"] });
@@ -83,11 +80,10 @@ export function useRemoveBookmarkMutation() {
  * Hook for toggle bookmark mutation
  */
 export function useToggleBookmarkMutation() {
-  const { getToken } = useAuth();
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (marketId: string) => toggleBookmark(marketId, getToken),
+    mutationFn: (marketId: string) => toggleBookmark(marketId),
     onSuccess: (data, marketId) => {
       queryClient.invalidateQueries({ queryKey: ["is-bookmarked", marketId] });
       queryClient.invalidateQueries({ queryKey: ["watchlist"] });

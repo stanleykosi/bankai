@@ -1,20 +1,17 @@
 /**
  * @description
- * Custom hook to bridge Clerk authentication (email users) with Wagmi wallet
- * state (EOA / MetaMask). Responsible for syncing authenticated users with the
- * backend so we always have an internal record + vault address.
+ * Wallet-only auth hook that signs SIWE messages and uses httpOnly JWT cookies.
+ * Keeps backend user state in sync with the connected wallet.
  *
  * @dependencies
- * - @clerk/nextjs
  * - wagmi
  * - @tanstack/react-query (indirectly through api hook usage)
  */
 
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useAuth, useUser } from "@clerk/nextjs";
-import { useAccount, useDisconnect } from "wagmi";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useAccount, useChainId, useDisconnect, useSignMessage } from "wagmi";
 
 import { api } from "@/lib/api";
 import type { User } from "@/types";
@@ -30,17 +27,10 @@ export interface UseWalletReturn {
   refreshUser: () => Promise<void>;
 }
 
-type SyncPayload = {
-  email?: string;
-  eoaAddress?: string | null;
-  clearWallet?: boolean;
-};
-
 const walletCache = {
   user: null as User | null,
   fetchedAt: 0,
   inFlight: null as Promise<User | null> | null,
-  syncInFlight: null as Promise<User | null> | null,
 };
 
 const WALLET_CACHE_TTL_MS = 2 * 60 * 1000;
@@ -63,40 +53,21 @@ const shouldEnsureWallet = (eoaAddress: string) => {
 };
 
 export function useWallet(): UseWalletReturn {
-  const { user: clerkUser, isLoaded: isClerkLoaded } = useUser();
-  const { getToken } = useAuth();
-  const { address: wagmiAddress, isConnected: isWagmiConnected } = useAccount();
+  const { address, isConnected } = useAccount();
+  const chainId = useChainId();
   const { disconnect: wagmiDisconnect } = useDisconnect();
+  const { signMessageAsync } = useSignMessage();
 
   const [backendUser, setBackendUser] = useState<User | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [clerkLoadTimeout, setClerkLoadTimeout] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
+  const authInFlight = useRef<Promise<void> | null>(null);
+  const lastAuthFailure = useRef<{ address: string; at: number } | null>(null);
 
-  // Fallback: if Clerk takes too long to load, assume it's loaded to prevent infinite loading
-  useEffect(() => {
-    if (!isClerkLoaded) {
-      const timer = setTimeout(() => {
-        setClerkLoadTimeout(true);
-      }, 5000); // 5 second timeout
-      return () => clearTimeout(timer);
-    } else {
-      setClerkLoadTimeout(false);
-    }
-  }, [isClerkLoaded]);
-
-  const eoaAddress = useMemo(() => {
-    if (isWagmiConnected && wagmiAddress) {
-      return wagmiAddress;
-    }
-    if (clerkUser?.primaryWeb3Wallet?.web3Wallet) {
-      return clerkUser.primaryWeb3Wallet.web3Wallet;
-    }
-    return null;
-  }, [clerkUser, isWagmiConnected, wagmiAddress]);
+  const eoaAddress = address ?? null;
 
   const loadUser = useCallback(
-    async (token: string, force = false) => {
+    async (force = false) => {
       const now = Date.now();
       if (!force && walletCache.user && now - walletCache.fetchedAt < WALLET_CACHE_TTL_MS) {
         return walletCache.user;
@@ -107,18 +78,14 @@ export function useWallet(): UseWalletReturn {
       }
 
       walletCache.inFlight = api
-        .get<User>("/user/me", {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        })
+        .get<User>("/user/me")
         .then(({ data }) => {
           walletCache.user = data;
           walletCache.fetchedAt = Date.now();
           return data;
         })
         .catch((error: any) => {
-          if (error.response?.status === 404) {
+          if (error.response?.status === 404 || error.response?.status === 401) {
             walletCache.user = null;
             walletCache.fetchedAt = Date.now();
             return null;
@@ -134,48 +101,9 @@ export function useWallet(): UseWalletReturn {
     []
   );
 
-  const syncUser = useCallback(
-    async (token: string, payload: SyncPayload) => {
-      if (walletCache.syncInFlight) {
-        return walletCache.syncInFlight;
-      }
-
-      const syncPromise = api
-        .post<User>(
-          "/user/sync",
-          {
-            email: payload.email ?? clerkUser?.primaryEmailAddress?.emailAddress,
-            eoa_address: payload.eoaAddress ?? "",
-            clear_wallet: payload.clearWallet ?? false,
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          }
-        )
-        .then(({ data }) => {
-          walletCache.user = data;
-          walletCache.fetchedAt = Date.now();
-          return data;
-        })
-        .finally(() => {
-          walletCache.syncInFlight = null;
-        });
-
-      walletCache.syncInFlight = syncPromise;
-      return syncPromise;
-    },
-    [clerkUser?.primaryEmailAddress?.emailAddress]
-  );
-
-  const ensureWallet = useCallback(async (token: string) => {
+  const ensureWallet = useCallback(async () => {
     try {
-      const { data } = await api.get<User>("/wallet", {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      const { data } = await api.get<User>("/wallet");
       walletCache.user = data;
       walletCache.fetchedAt = Date.now();
       setWalletError(null);
@@ -192,14 +120,14 @@ export function useWallet(): UseWalletReturn {
   }, []);
 
   const maybeEnsureWallet = useCallback(
-    async (token: string, user: User | null) => {
+    async (user: User | null) => {
       if (!user?.eoa_address || user.vault_address) {
         return;
       }
       if (!shouldEnsureWallet(user.eoa_address)) {
         return;
       }
-      const ensured = await ensureWallet(token);
+      const ensured = await ensureWallet();
       if (ensured) {
         setBackendUser(ensured);
       }
@@ -207,163 +135,104 @@ export function useWallet(): UseWalletReturn {
     [ensureWallet]
   );
 
-  const bootstrapUser = useCallback(async () => {
-    if (!isClerkLoaded || !clerkUser) {
-      setBackendUser(null);
+  const requestAuth = useCallback(async () => {
+    if (!eoaAddress || !isConnected) {
       return;
     }
+    if (!chainId) {
+      throw new Error("Wallet network not detected");
+    }
 
-    setIsSyncing(true);
-    try {
-      const token = await getToken();
-      if (!token) {
+    const { data } = await api.post<{ message: string }>("/auth/challenge", {
+      address: eoaAddress,
+      chain_id: chainId,
+    });
+
+    const signature = await signMessageAsync({ message: data.message });
+    await api.post("/auth/verify", { message: data.message, signature });
+  }, [chainId, eoaAddress, isConnected, signMessageAsync]);
+
+  const ensureAuth = useCallback(
+    async (force = false) => {
+      if (!eoaAddress || !isConnected) {
+        walletCache.user = null;
+        walletCache.fetchedAt = 0;
+        setBackendUser(null);
         return;
       }
 
-      let user = await loadUser(token);
-      if (!user) {
-        user = await syncUser(token, {
-          email: clerkUser.primaryEmailAddress?.emailAddress,
-          eoaAddress: eoaAddress,
-        });
+      if (authInFlight.current) {
+        return authInFlight.current;
       }
-      setBackendUser(user);
-      await maybeEnsureWallet(token, user);
-    } catch (error: any) {
-      console.error("useWallet: Failed to load user", error);
-      const message =
-        error.response?.data?.error ||
-        error.message ||
-        "Failed to load user";
-      setWalletError(message);
-    } finally {
-      setIsSyncing(false);
-    }
-  }, [
-    clerkUser,
-    eoaAddress,
-    getToken,
-    isClerkLoaded,
-    loadUser,
-    maybeEnsureWallet,
-    syncUser,
-  ]);
 
-  useEffect(() => {
-    void bootstrapUser();
-  }, [bootstrapUser]);
+      const run = (async () => {
+        setIsSyncing(true);
+        try {
+          let user = await loadUser(force);
+          if (user && user.eoa_address && user.eoa_address.toLowerCase() !== eoaAddress.toLowerCase()) {
+            await api.post("/auth/logout").catch(() => undefined);
+            walletCache.user = null;
+            walletCache.fetchedAt = 0;
+            user = null;
+          }
 
-  useEffect(() => {
-    if (!isClerkLoaded || !clerkUser || !backendUser) {
-      return;
-    }
-    if (!eoaAddress || backendUser.eoa_address === eoaAddress) {
-      return;
-    }
+          if (!user) {
+            const lastFailure = lastAuthFailure.current;
+            if (!force && lastFailure && lastFailure.address === eoaAddress && Date.now() - lastFailure.at < 30_000) {
+              return;
+            }
+            await requestAuth();
+            user = await loadUser(true);
+          }
 
-    const run = async () => {
-      setIsSyncing(true);
-      try {
-        const token = await getToken();
-        if (!token) {
-          return;
+          setBackendUser(user);
+          setWalletError(null);
+          await maybeEnsureWallet(user);
+          lastAuthFailure.current = null;
+        } catch (error: any) {
+          console.error("useWallet: Failed to authenticate", error);
+          const message =
+            error.response?.data?.error ||
+            error.message ||
+            "Failed to authenticate";
+          setWalletError(message);
+          if (eoaAddress) {
+            lastAuthFailure.current = { address: eoaAddress, at: Date.now() };
+          }
+        } finally {
+          setIsSyncing(false);
+          authInFlight.current = null;
         }
-        const updated = await syncUser(token, {
-          email: clerkUser.primaryEmailAddress?.emailAddress,
-          eoaAddress,
-        });
-        setBackendUser(updated);
-        await maybeEnsureWallet(token, updated);
-      } catch (error: any) {
-        console.error("useWallet: Failed to sync updated wallet", error);
-        const message =
-          error.response?.data?.error ||
-          error.message ||
-          "Failed to sync user";
-        setWalletError(message);
-      } finally {
-        setIsSyncing(false);
-      }
-    };
+      })();
 
-    void run();
-  }, [
-    backendUser,
-    clerkUser,
-    eoaAddress,
-    getToken,
-    isClerkLoaded,
-    maybeEnsureWallet,
-    syncUser,
-  ]);
+      authInFlight.current = run;
+      return run;
+    },
+    [eoaAddress, isConnected, loadUser, maybeEnsureWallet, requestAuth]
+  );
+
+  useEffect(() => {
+    void ensureAuth();
+  }, [ensureAuth]);
 
   const handleDisconnect = useCallback(() => {
-    if (isWagmiConnected) {
+    if (isConnected) {
       wagmiDisconnect();
     }
     setWalletError(null);
-
-    const run = async () => {
-      if (!clerkUser) {
-        setBackendUser(null);
-        return;
-      }
-      const token = await getToken();
-      if (!token) {
-        setBackendUser(null);
-        return;
-      }
-      setIsSyncing(true);
-      try {
-        const updated = await syncUser(token, {
-          email: clerkUser.primaryEmailAddress?.emailAddress,
-          eoaAddress: "",
-          clearWallet: true,
-        });
-        setBackendUser(updated);
-      } catch (error: any) {
-        console.error("useWallet: Failed to clear wallet", error);
-        const message =
-          error.response?.data?.error ||
-          error.message ||
-          "Failed to disconnect wallet";
-        setWalletError(message);
-        setBackendUser(null);
-      } finally {
-        setIsSyncing(false);
-      }
-    };
-
-    void run();
-  }, [clerkUser, getToken, isWagmiConnected, syncUser, wagmiDisconnect]);
+    walletCache.user = null;
+    walletCache.fetchedAt = 0;
+    setBackendUser(null);
+    void api.post("/auth/logout").catch(() => undefined);
+  }, [isConnected, wagmiDisconnect]);
 
   const refreshUser = useCallback(async () => {
-    const token = await getToken();
-    if (!token) {
-      return;
-    }
-    setIsSyncing(true);
-    try {
-      const user = await loadUser(token, true);
-      setBackendUser(user);
-    } catch (error: any) {
-      console.error("useWallet: Failed to refresh user", error);
-      const message =
-        error.response?.data?.error ||
-        error.message ||
-        "Failed to refresh user";
-      setWalletError(message);
-    } finally {
-      setIsSyncing(false);
-    }
-  }, [getToken, loadUser]);
-
-  // Consider loaded if Clerk is loaded OR if timeout occurred (to prevent infinite loading)
-  const isEffectivelyLoaded = isClerkLoaded || clerkLoadTimeout;
+    await ensureAuth(true);
+  }, [ensureAuth]);
 
   return {
-    isAuthenticated: !!clerkUser,
-    isLoading: !isEffectivelyLoaded || isSyncing,
+    isAuthenticated: Boolean(backendUser) && Boolean(eoaAddress),
+    isLoading: isSyncing,
     user: backendUser,
     eoaAddress,
     vaultAddress: backendUser?.vault_address ?? null,

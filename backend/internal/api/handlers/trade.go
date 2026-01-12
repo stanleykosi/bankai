@@ -33,9 +33,9 @@ import (
 )
 
 type TradeHandler struct {
-	Service  *services.TradeService
-	Config   *config.Config
-	DB       *gorm.DB
+	Service *services.TradeService
+	Config  *config.Config
+	DB      *gorm.DB
 }
 
 func NewTradeHandler(service *services.TradeService, cfg *config.Config, db *gorm.DB) *TradeHandler {
@@ -79,12 +79,12 @@ var validOrderTypes = map[clob.OrderType]struct{}{
 
 // GetOrders returns the authenticated user's order history
 func (h *TradeHandler) GetOrders(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
-	user, err := h.fetchUserRecord(c.Context(), clerkID)
+	user, err := h.fetchUserRecord(c.Context(), userID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User profile not found. Please sync user first."})
@@ -111,12 +111,12 @@ func (h *TradeHandler) GetOrders(c *fiber.Ctx) error {
 }
 
 func (h *TradeHandler) CancelOrder(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
-	user, err := h.fetchUserRecord(c.Context(), clerkID)
+	user, err := h.fetchUserRecord(c.Context(), userID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User profile not found. Please sync user first."})
@@ -141,12 +141,12 @@ func (h *TradeHandler) CancelOrder(c *fiber.Ctx) error {
 }
 
 func (h *TradeHandler) CancelOrders(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
-	user, err := h.fetchUserRecord(c.Context(), clerkID)
+	user, err := h.fetchUserRecord(c.Context(), userID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User profile not found. Please sync user first."})
@@ -172,12 +172,12 @@ func (h *TradeHandler) CancelOrders(c *fiber.Ctx) error {
 
 // SyncOrders persists Polymarket orders fetched via the SDK into Postgres for history/audit.
 func (h *TradeHandler) SyncOrders(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
-	user, err := h.fetchUserRecord(c.Context(), clerkID)
+	user, err := h.fetchUserRecord(c.Context(), userID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User profile not found. Please sync user first."})
@@ -224,9 +224,9 @@ func (h *TradeHandler) SyncOrdersInternal(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"status": "ok"})
 }
 
-func (h *TradeHandler) fetchUserRecord(ctx context.Context, clerkID string) (*models.User, error) {
+func (h *TradeHandler) fetchUserRecord(ctx context.Context, userID string) (*models.User, error) {
 	var user models.User
-	if err := h.DB.WithContext(ctx).Where("clerk_id = ?", clerkID).First(&user).Error; err != nil {
+	if err := h.DB.WithContext(ctx).Where("id = ?", userID).First(&user).Error; err != nil {
 		return nil, err
 	}
 	return &user, nil

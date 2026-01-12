@@ -9,7 +9,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { Loader2, ArrowUpRight } from "lucide-react";
-import { useAuth } from "@clerk/nextjs";
+import { useWallet } from "@/hooks/useWallet";
 
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -85,7 +85,7 @@ function TraderRow({ trader, index }: { trader: FollowPerformance; index: number
 }
 
 export default function FollowingPerformancePage() {
-  const { isSignedIn } = useAuth();
+  const { isAuthenticated, isLoading: isAuthLoading } = useWallet();
   const { data, isLoading, isError, refetch, isFetching } = useFollowingPerformance();
 
   const following = data?.following ?? [];
@@ -119,10 +119,10 @@ export default function FollowingPerformancePage() {
           </div>
         </div>
 
-        {!isSignedIn ? (
+        {!isAuthenticated ? (
           <Card className="border-border/60 bg-card/70">
             <CardContent className="py-8 text-center text-muted-foreground">
-              Sign in to view the traders you follow.
+              {isAuthLoading ? "Loading session..." : "Connect a wallet to view the traders you follow."}
             </CardContent>
           </Card>
         ) : isLoading ? (

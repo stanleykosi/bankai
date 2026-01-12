@@ -1,11 +1,10 @@
 /**
  * @description
  * API functions for watchlist/bookmark features.
- * Requires authentication via Clerk.
+ * Requires authentication via wallet session cookie.
  *
  * @dependencies
  * - axios
- * - @clerk/nextjs
  * - @/lib/api
  */
 
@@ -17,25 +16,15 @@ import type {
 } from "@/types";
 
 /**
- * Get auth headers for protected routes
- */
-async function getAuthHeaders(getToken: () => Promise<string | null>) {
-  const token = await getToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-/**
  * Add market to watchlist
  */
 export async function bookmarkMarket(
-  marketId: string,
-  getToken: () => Promise<string | null>
+  marketId: string
 ): Promise<BookmarkActionResponse> {
-  const headers = await getAuthHeaders(getToken);
   const response = await api.post<BookmarkActionResponse>(
     "/watchlist/bookmark",
     { market_id: marketId },
-    { headers }
+    { withCredentials: true }
   );
   return response.data;
 }
@@ -44,13 +33,11 @@ export async function bookmarkMarket(
  * Remove market from watchlist
  */
 export async function removeBookmark(
-  marketId: string,
-  getToken: () => Promise<string | null>
+  marketId: string
 ): Promise<BookmarkActionResponse> {
-  const headers = await getAuthHeaders(getToken);
   const response = await api.delete<BookmarkActionResponse>(
     `/watchlist/${encodeURIComponent(marketId)}`,
-    { headers }
+    { withCredentials: true }
   );
   return response.data;
 }
@@ -59,14 +46,12 @@ export async function removeBookmark(
  * Toggle bookmark status
  */
 export async function toggleBookmark(
-  marketId: string,
-  getToken: () => Promise<string | null>
+  marketId: string
 ): Promise<BookmarkActionResponse> {
-  const headers = await getAuthHeaders(getToken);
   const response = await api.post<BookmarkActionResponse>(
     "/watchlist/toggle",
     { market_id: marketId },
-    { headers }
+    { withCredentials: true }
   );
   return response.data;
 }
@@ -75,12 +60,8 @@ export async function toggleBookmark(
  * Get user's watchlist
  */
 export async function fetchWatchlist(
-  getToken: () => Promise<string | null>
 ): Promise<WatchlistResponse> {
-  const headers = await getAuthHeaders(getToken);
-  const response = await api.get<WatchlistResponse>("/watchlist", {
-    headers,
-  });
+  const response = await api.get<WatchlistResponse>("/watchlist");
   return response.data;
 }
 
@@ -88,13 +69,10 @@ export async function fetchWatchlist(
  * Check if a market is bookmarked
  */
 export async function checkIsBookmarked(
-  marketId: string,
-  getToken: () => Promise<string | null>
+  marketId: string
 ): Promise<BookmarkStatusResponse> {
-  const headers = await getAuthHeaders(getToken);
   const response = await api.get<BookmarkStatusResponse>(
-    `/watchlist/check/${encodeURIComponent(marketId)}`,
-    { headers }
+    `/watchlist/check/${encodeURIComponent(marketId)}`
   );
   return response.data;
 }

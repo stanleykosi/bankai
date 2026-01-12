@@ -2,13 +2,11 @@
  * @description
  * Root Layout component for the Next.js application.
  * Wraps the entire application in:
- * 1. ClerkProvider (Authentication)
- * 2. QueryClientProvider (React Query for data fetching)
- * 3. WagmiProvider (Web3 wallet connections)
- * 4. Global Fonts (Inter/JetBrains Mono)
+ * 1. QueryClientProvider (React Query for data fetching)
+ * 2. WagmiProvider (Web3 wallet connections)
+ * 3. Global Fonts (Inter/JetBrains Mono)
  * 
  * @dependencies
- * - @clerk/nextjs: Auth context
  * - @tanstack/react-query: Data fetching
  * - wagmi: Web3 wallet integration
  * - next/font/google: Typography
@@ -16,7 +14,6 @@
 
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
-import { ClerkProvider } from "@clerk/nextjs";
 import { Providers } from "./providers";
 import "./globals.css";
 
@@ -50,10 +47,7 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const clerkPublishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
-  
-  // Always render the same structure, conditionally wrap with ClerkProvider
-  const content = (
+  return (
     <html lang="en" className="dark">
       <body className={`${inter.variable} ${jetbrainsMono.variable} font-sans bg-background text-foreground antialiased`}>
         <Providers>
@@ -64,15 +58,4 @@ export default function RootLayout({
       </body>
     </html>
   );
-
-  // Only wrap with ClerkProvider if key is available
-  if (clerkPublishableKey) {
-    return (
-      <ClerkProvider publishableKey={clerkPublishableKey}>
-        {content}
-      </ClerkProvider>
-    );
-  }
-
-  return content;
 }

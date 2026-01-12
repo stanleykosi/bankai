@@ -60,25 +60,21 @@ func main() {
 	})
 
 	// 4. Global Middleware
-	app.Use(recover.New())        // Panic recovery
-	app.Use(fiberLogger.New())    // Request logging
-	
+	app.Use(recover.New())     // Panic recovery
+	app.Use(fiberLogger.New()) // Request logging
+
 	// CORS Configuration
-	// By default, allow all origins (useful for local testing and development).
 	// Set FRONTEND_URL in production to restrict to specific origins (comma-separated).
 	allowCredentials := true
 	allowedOrigins := []string{"http://localhost:3000", "http://127.0.0.1:3000"}
 	if frontendURL := strings.TrimSpace(os.Getenv("FRONTEND_URL")); frontendURL != "" {
+		allowedOrigins = []string{}
 		for _, origin := range strings.Split(frontendURL, ",") {
 			origin = strings.TrimSpace(origin)
 			if origin != "" {
 				allowedOrigins = append(allowedOrigins, origin)
 			}
 		}
-	} else {
-		allowedOrigins = []string{"*"}
-		// Browsers reject credentials with wildcard origins.
-		allowCredentials = false
 	}
 
 	app.Use(cors.New(cors.Config{

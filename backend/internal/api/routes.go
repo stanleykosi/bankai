@@ -74,6 +74,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	}
 
 	// 4. Initialize Handlers
+	authHandler := handlers.NewAuthHandler(db, rdb, cfg)
 	userHandler := handlers.NewUserHandler(db)
 	marketHandler := handlers.NewMarketHandler(marketService)
 	walletHandler := handlers.NewWalletHandler(walletManager, blockchainService)
@@ -105,6 +106,12 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	v1.Get("/health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok"})
 	})
+
+	// Auth Routes (Public)
+	auth := v1.Group("/auth")
+	auth.Post("/challenge", authHandler.Challenge)
+	auth.Post("/verify", authHandler.Verify)
+	auth.Post("/logout", authHandler.Logout)
 
 	// Market Routes (Public)
 	markets := v1.Group("/markets")
@@ -142,7 +149,6 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 
 	// User Routes (Protected)
 	user := v1.Group("/user", middleware.Protected())
-	user.Post("/sync", userHandler.SyncUser)
 	user.Get("/me", userHandler.GetMe)
 
 	// Wallet Routes (Protected)

@@ -9,15 +9,15 @@ import { useState } from "react";
 import { Bell } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useUnreadCount } from "@/hooks/useNotifications";
-import { useAuth } from "@clerk/nextjs";
+import { useWallet } from "@/hooks/useWallet";
 import { NotificationPanel } from "./NotificationPanel";
 
 export function NotificationBell() {
-  const { isSignedIn } = useAuth();
+  const { isAuthenticated } = useWallet();
   const unreadCount = useUnreadCount();
   const [isOpen, setIsOpen] = useState(false);
 
-  if (!isSignedIn) {
+  if (!isAuthenticated) {
     return null;
   }
 

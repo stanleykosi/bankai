@@ -7,7 +7,6 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useAuth } from "@clerk/nextjs";
 import { Copy, Check, ExternalLink, Wallet, ArrowDown, ArrowUp } from "lucide-react";
 import {
   Dialog,
@@ -40,7 +39,6 @@ export function DepositWithdrawModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { getToken } = useAuth();
   const { vaultAddress } = useWallet();
   const { data: balanceData, refetch } = useBalance();
 
@@ -53,20 +51,13 @@ export function DepositWithdrawModal({
 
   const fetchDepositInfo = useCallback(async () => {
     try {
-      const token = await getToken({ skipCache: true });
-      if (!token) return;
-
-      const { data } = await api.get("/wallet/deposit", {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      const { data } = await api.get("/wallet/deposit");
       setDepositData(data);
     } catch (error: any) {
       console.error("Failed to fetch deposit info:", error);
       setError("Failed to load deposit information");
     }
-  }, [getToken]);
+  }, []);
 
   const handleCopy = async (text: string) => {
     try {
@@ -100,12 +91,6 @@ export function DepositWithdrawModal({
       setIsSubmitting(true);
       setError(null);
 
-      const token = await getToken();
-      if (!token) {
-        setError("Authentication required");
-        return;
-      }
-
       // Convert amount to USDC units (6 decimals)
       const amountInUnits = Math.floor(amount * 1000000).toString();
 
@@ -114,11 +99,6 @@ export function DepositWithdrawModal({
         {
           to_address: withdrawAddress,
           amount: amountInUnits,
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
         }
       );
 

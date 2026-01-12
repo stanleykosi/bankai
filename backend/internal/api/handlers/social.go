@@ -12,14 +12,14 @@
 package handlers
 
 import (
-	"strconv"
 	"sort"
+	"strconv"
 
 	"github.com/bankai-project/backend/internal/api/middleware"
 	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/models"
-	"github.com/bankai-project/backend/internal/services"
 	"github.com/bankai-project/backend/internal/polymarket/data_api"
+	"github.com/bankai-project/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -51,14 +51,14 @@ type FollowRequest struct {
 // FollowTrader follows a trader
 // POST /api/v1/social/follow
 func (h *SocialHandler) FollowTrader(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
-	// Get user ID from clerk ID
+	// Get user record for authenticated user
 	var user models.User
-	if err := h.db.Where("clerk_id = ?", clerkID).First(&user).Error; err != nil {
+	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
 	}
 
@@ -84,22 +84,22 @@ func (h *SocialHandler) FollowTrader(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"success":    true,
-		"following":  true,
-		"target":     req.TargetAddress,
+		"success":   true,
+		"following": true,
+		"target":    req.TargetAddress,
 	})
 }
 
 // UnfollowTrader unfollows a trader
 // DELETE /api/v1/social/follow/:address
 func (h *SocialHandler) UnfollowTrader(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
 	var user models.User
-	if err := h.db.Where("clerk_id = ?", clerkID).First(&user).Error; err != nil {
+	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
 	}
 
@@ -128,13 +128,13 @@ func (h *SocialHandler) UnfollowTrader(c *fiber.Ctx) error {
 // GetFollowing returns list of traders the user is following
 // GET /api/v1/social/following
 func (h *SocialHandler) GetFollowing(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
 	var user models.User
-	if err := h.db.Where("clerk_id = ?", clerkID).First(&user).Error; err != nil {
+	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
 	}
 
@@ -154,23 +154,23 @@ func (h *SocialHandler) GetFollowing(c *fiber.Ctx) error {
 
 // FollowPerformance represents a followed trader with performance stats
 type FollowPerformance struct {
-	TargetAddress string              `json:"target_address"`
-	ProfileName   string              `json:"profile_name,omitempty"`
-	ProfileImage  string              `json:"profile_image,omitempty"`
+	TargetAddress string                `json:"target_address"`
+	ProfileName   string                `json:"profile_name,omitempty"`
+	ProfileImage  string                `json:"profile_image,omitempty"`
 	Stats         *data_api.TraderStats `json:"stats,omitempty"`
-	TotalPnL      float64             `json:"total_pnl"`
+	TotalPnL      float64               `json:"total_pnl"`
 }
 
 // GetFollowingPerformance returns followed traders ranked by total PnL
 // GET /api/v1/social/following/performance
 func (h *SocialHandler) GetFollowingPerformance(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
 	var user models.User
-	if err := h.db.Where("clerk_id = ?", clerkID).First(&user).Error; err != nil {
+	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
 	}
 
@@ -215,13 +215,13 @@ func (h *SocialHandler) GetFollowingPerformance(c *fiber.Ctx) error {
 // CheckIsFollowing checks if user is following a target
 // GET /api/v1/social/following/:address
 func (h *SocialHandler) CheckIsFollowing(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
 	var user models.User
-	if err := h.db.Where("clerk_id = ?", clerkID).First(&user).Error; err != nil {
+	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
 	}
 
@@ -242,13 +242,13 @@ func (h *SocialHandler) CheckIsFollowing(c *fiber.Ctx) error {
 // GetNotifications returns user's notifications
 // GET /api/v1/social/notifications
 func (h *SocialHandler) GetNotifications(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
 	var user models.User
-	if err := h.db.Where("clerk_id = ?", clerkID).First(&user).Error; err != nil {
+	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
 	}
 
@@ -275,13 +275,13 @@ func (h *SocialHandler) GetNotifications(c *fiber.Ctx) error {
 // MarkNotificationRead marks a notification as read
 // POST /api/v1/social/notifications/:id/read
 func (h *SocialHandler) MarkNotificationRead(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
 	var user models.User
-	if err := h.db.Where("clerk_id = ?", clerkID).First(&user).Error; err != nil {
+	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
 	}
 
@@ -305,13 +305,13 @@ func (h *SocialHandler) MarkNotificationRead(c *fiber.Ctx) error {
 // MarkAllNotificationsRead marks all notifications as read
 // POST /api/v1/social/notifications/read-all
 func (h *SocialHandler) MarkAllNotificationsRead(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
 	var user models.User
-	if err := h.db.Where("clerk_id = ?", clerkID).First(&user).Error; err != nil {
+	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
 	}
 

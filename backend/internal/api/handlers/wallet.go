@@ -41,14 +41,14 @@ func NewWalletHandler(manager *services.WalletManager, blockchain *services.Bloc
 // GetWallet returns the wallet status for the authenticated user
 // GET /api/v1/wallet
 func (h *WalletHandler) GetWallet(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
 	// We use EnsureWallet here to opportunistically check/deploy if missing.
 	// This effectively "Auto-Onboards" the user when they visit the app.
-	user, err := h.Manager.EnsureWallet(c.Context(), clerkID)
+	user, err := h.Manager.EnsureWallet(c.Context(), userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Wallet check failed: " + err.Error(),
@@ -60,12 +60,12 @@ func (h *WalletHandler) GetWallet(c *fiber.Ctx) error {
 
 // GetDeployTypedData returns the EIP-712 payload the frontend must sign to request a Safe deployment.
 func (h *WalletHandler) GetDeployTypedData(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
-	user, err := h.Manager.GetUserWallet(c.Context(), clerkID)
+	user, err := h.Manager.GetUserWallet(c.Context(), userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to load user: " + err.Error(),
@@ -85,7 +85,7 @@ func (h *WalletHandler) GetDeployTypedData(c *fiber.Ctx) error {
 
 // DeployWallet consumes a signed SAFE-CREATE request from the frontend and submits it to the relayer.
 func (h *WalletHandler) DeployWallet(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
@@ -99,7 +99,7 @@ func (h *WalletHandler) DeployWallet(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "signature is required"})
 	}
 
-	user, err := h.Manager.GetUserWallet(c.Context(), clerkID)
+	user, err := h.Manager.GetUserWallet(c.Context(), userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to load user: " + err.Error(),
@@ -115,8 +115,8 @@ func (h *WalletHandler) DeployWallet(c *fiber.Ctx) error {
 	if derr == nil && derivedSafe != "" {
 		if deployed, checkErr := h.Manager.Relayer.GetDeployed(c.Context(), derivedSafe); checkErr == nil && deployed {
 			wType := models.WalletTypeSafe
-			if err := h.Manager.UpdateVaultAddress(c.Context(), clerkID, derivedSafe, &wType); err != nil {
-				logger.Error("Failed to persist existing safe address for user %s: %v", clerkID, err)
+			if err := h.Manager.UpdateVaultAddress(c.Context(), userID, derivedSafe, &wType); err != nil {
+				logger.Error("Failed to persist existing safe address for user %s: %v", userID, err)
 			}
 			return c.JSON(fiber.Map{
 				"task_id":          "",
@@ -139,8 +139,8 @@ func (h *WalletHandler) DeployWallet(c *fiber.Ctx) error {
 
 	if resp.ProxyAddress != "" {
 		wType := models.WalletTypeSafe
-		if err := h.Manager.UpdateVaultAddress(c.Context(), clerkID, resp.ProxyAddress, &wType); err != nil {
-			logger.Error("Failed to persist deployed safe address for user %s: %v", clerkID, err)
+		if err := h.Manager.UpdateVaultAddress(c.Context(), userID, resp.ProxyAddress, &wType); err != nil {
+			logger.Error("Failed to persist deployed safe address for user %s: %v", userID, err)
 		}
 	}
 
@@ -161,7 +161,7 @@ type UpdateWalletRequest struct {
 }
 
 func (h *WalletHandler) UpdateWallet(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
@@ -184,7 +184,7 @@ func (h *WalletHandler) UpdateWallet(c *fiber.Ctx) error {
 		wType = &wt
 	}
 
-	if err := h.Manager.UpdateVaultAddress(c.Context(), clerkID, req.VaultAddress, wType); err != nil {
+	if err := h.Manager.UpdateVaultAddress(c.Context(), userID, req.VaultAddress, wType); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to update wallet: " + err.Error()})
 	}
 
@@ -194,12 +194,12 @@ func (h *WalletHandler) UpdateWallet(c *fiber.Ctx) error {
 // GetDepositAddress returns the vault address for deposits
 // GET /api/v1/wallet/deposit
 func (h *WalletHandler) GetDepositAddress(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
-	user, err := h.Manager.GetUserWallet(c.Context(), clerkID)
+	user, err := h.Manager.GetUserWallet(c.Context(), userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to get user wallet: " + err.Error(),
@@ -229,12 +229,12 @@ func (h *WalletHandler) GetBalance(c *fiber.Ctx) error {
 		})
 	}
 
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
-	user, err := h.Manager.GetUserWallet(c.Context(), clerkID)
+	user, err := h.Manager.GetUserWallet(c.Context(), userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to get user wallet: " + err.Error(),
@@ -289,7 +289,7 @@ type WithdrawRequest struct {
 // Note: This is a placeholder - actual withdrawal requires signing a Safe transaction
 // In production, this would use the relayer to submit a Safe transaction
 func (h *WalletHandler) Withdraw(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
@@ -307,7 +307,7 @@ func (h *WalletHandler) Withdraw(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "amount is required"})
 	}
 
-	user, err := h.Manager.GetUserWallet(c.Context(), clerkID)
+	user, err := h.Manager.GetUserWallet(c.Context(), userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to get user wallet: " + err.Error(),

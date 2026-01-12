@@ -42,13 +42,13 @@ type BookmarkRequest struct {
 // BookmarkMarket adds a market to watchlist
 // POST /api/v1/watchlist/bookmark
 func (h *WatchlistHandler) BookmarkMarket(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
 	var user models.User
-	if err := h.db.Where("clerk_id = ?", clerkID).First(&user).Error; err != nil {
+	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
 	}
 
@@ -83,13 +83,13 @@ func (h *WatchlistHandler) BookmarkMarket(c *fiber.Ctx) error {
 // RemoveBookmark removes a market from watchlist
 // DELETE /api/v1/watchlist/:market_id
 func (h *WatchlistHandler) RemoveBookmark(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
 	var user models.User
-	if err := h.db.Where("clerk_id = ?", clerkID).First(&user).Error; err != nil {
+	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
 	}
 
@@ -118,13 +118,13 @@ func (h *WatchlistHandler) RemoveBookmark(c *fiber.Ctx) error {
 // ToggleBookmark toggles bookmark status
 // POST /api/v1/watchlist/toggle
 func (h *WatchlistHandler) ToggleBookmark(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
 	var user models.User
-	if err := h.db.Where("clerk_id = ?", clerkID).First(&user).Error; err != nil {
+	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
 	}
 
@@ -159,13 +159,13 @@ func (h *WatchlistHandler) ToggleBookmark(c *fiber.Ctx) error {
 // GetWatchlist returns user's watchlist
 // GET /api/v1/watchlist
 func (h *WatchlistHandler) GetWatchlist(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
 	var user models.User
-	if err := h.db.Where("clerk_id = ?", clerkID).First(&user).Error; err != nil {
+	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
 	}
 
@@ -186,13 +186,13 @@ func (h *WatchlistHandler) GetWatchlist(c *fiber.Ctx) error {
 // CheckIsBookmarked checks if a market is bookmarked
 // GET /api/v1/watchlist/check/:market_id
 func (h *WatchlistHandler) CheckIsBookmarked(c *fiber.Ctx) error {
-	clerkID, err := middleware.GetUserID(c)
+	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
 	}
 
 	var user models.User
-	if err := h.db.Where("clerk_id = ?", clerkID).First(&user).Error; err != nil {
+	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
 	}
 

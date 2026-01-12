@@ -4,12 +4,10 @@
  *
  * @dependencies
  * - @tanstack/react-query
- * - @clerk/nextjs
  * - @/lib/social-api
  */
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useAuth } from "@clerk/nextjs";
 import {
   followTrader,
   unfollowTrader,
@@ -17,17 +15,18 @@ import {
   checkIsFollowing,
   fetchFollowingPerformance,
 } from "@/lib/social-api";
+import { useWallet } from "@/hooks/useWallet";
 
 /**
  * Hook for checking if user is following a trader
  */
 export function useIsFollowing(targetAddress: string | undefined) {
-  const { getToken, isSignedIn } = useAuth();
+  const { isAuthenticated } = useWallet();
 
   return useQuery({
     queryKey: ["is-following", targetAddress],
-    queryFn: () => checkIsFollowing(targetAddress!, getToken),
-    enabled: Boolean(targetAddress) && isSignedIn,
+    queryFn: () => checkIsFollowing(targetAddress!),
+    enabled: Boolean(targetAddress) && isAuthenticated,
     staleTime: 30_000,
   });
 }
@@ -36,12 +35,12 @@ export function useIsFollowing(targetAddress: string | undefined) {
  * Hook for getting list of followed traders
  */
 export function useFollowing() {
-  const { getToken, isSignedIn } = useAuth();
+  const { isAuthenticated } = useWallet();
 
   return useQuery({
     queryKey: ["following-list"],
-    queryFn: () => fetchFollowing(getToken),
-    enabled: isSignedIn,
+    queryFn: () => fetchFollowing(),
+    enabled: isAuthenticated,
     staleTime: 60_000,
   });
 }
@@ -50,12 +49,12 @@ export function useFollowing() {
  * Hook for getting followed traders ranked by performance
  */
 export function useFollowingPerformance() {
-  const { getToken, isSignedIn } = useAuth();
+  const { isAuthenticated } = useWallet();
 
   return useQuery({
     queryKey: ["following-performance"],
-    queryFn: () => fetchFollowingPerformance(getToken),
-    enabled: isSignedIn,
+    queryFn: () => fetchFollowingPerformance(),
+    enabled: isAuthenticated,
     staleTime: 30_000,
   });
 }
@@ -64,11 +63,10 @@ export function useFollowingPerformance() {
  * Hook for follow mutation
  */
 export function useFollowMutation() {
-  const { getToken } = useAuth();
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (targetAddress: string) => followTrader(targetAddress, getToken),
+    mutationFn: (targetAddress: string) => followTrader(targetAddress),
     onSuccess: (data, targetAddress) => {
       // Invalidate related queries
       queryClient.invalidateQueries({ queryKey: ["is-following", targetAddress] });
@@ -82,11 +80,10 @@ export function useFollowMutation() {
  * Hook for unfollow mutation
  */
 export function useUnfollowMutation() {
-  const { getToken } = useAuth();
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (targetAddress: string) => unfollowTrader(targetAddress, getToken),
+    mutationFn: (targetAddress: string) => unfollowTrader(targetAddress),
     onSuccess: (data, targetAddress) => {
       // Invalidate related queries
       queryClient.invalidateQueries({ queryKey: ["is-following", targetAddress] });

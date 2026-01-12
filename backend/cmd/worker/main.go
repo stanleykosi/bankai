@@ -71,7 +71,10 @@ func main() {
 	marketService := services.NewMarketService(pgDB, redisClient, gammaClient, clobClient)
 	profileService := services.NewProfileService(dataAPIClient, gammaClient, clobClient, redisClient)
 	alphaHubService := services.NewAlphaHubService(marketService, profileService, clobClient, tavilyClient, openaiClient, dataAPIClient, subgraphClient, cfg.Services.AIPicksMarketLimit, redisClient)
+	cacheAllowlist := rtds.NewCacheAllowlist(20 * time.Minute)
 	msgHandler := rtds.NewMessageHandler(pgDB, redisClient)
+	msgHandler.SetCacheAllowlist(cacheAllowlist)
+	msgHandler.SetCacheTTLs(10*time.Minute, 0)
 	wsClient := rtds.NewClient(cfg, msgHandler)
 	var activityClient *rtds.ActivityClient
 
@@ -97,7 +100,7 @@ func main() {
 		}()
 	}
 
-	go watchStreamRequests(ctx, marketService, wsClient)
+	go watchStreamRequests(ctx, marketService, wsClient, cacheAllowlist)
 	go alphaHubDailyLoop(ctx, alphaHubService, cfg.Services.AlphaSnapshotHour)
 
 	if enableDBWrites {
@@ -167,7 +170,7 @@ func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds
 		}
 	}
 
-	if persist {
+	if persist && enableDBWrites {
 		if err := ms.PersistActiveMarkets(ctx); err != nil {
 			logger.Error("PersistActiveMarkets (initial) failed: %v", err)
 		}
@@ -216,7 +219,7 @@ func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds
 	}
 }
 
-func watchStreamRequests(ctx context.Context, ms *services.MarketService, ws *rtds.Client) {
+func watchStreamRequests(ctx context.Context, ms *services.MarketService, ws *rtds.Client, allowlist *rtds.CacheAllowlist) {
 	sub := ms.SubscribeStreamRequests(ctx)
 	defer sub.Close()
 
@@ -240,6 +243,9 @@ func watchStreamRequests(ctx context.Context, ms *services.MarketService, ws *rt
 			continue
 		}
 
+		if allowlist != nil {
+			allowlist.Allow(payload.Tokens)
+		}
 		if err := ws.Subscribe(payload.Tokens); err != nil {
 			logger.Error("Failed to subscribe to requested tokens: %v", err)
 		}

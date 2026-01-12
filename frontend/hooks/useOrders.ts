@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { OpenOrder, Trade as ClobTrade } from "@polymarket/clob-client";
-import { useAuth } from "@clerk/nextjs";
 
 import { useClobClient } from "@/hooks/useClobClient";
 import { useUserApiCredentials } from "@/hooks/useUserApiCredentials";
@@ -93,8 +92,7 @@ const mapTradeToRecord = (trade: ClobTrade): OrderRecord => {
 
 export function useOrders(enabled = true) {
   const queryClient = useQueryClient();
-  const { user, isAuthenticated } = useWallet();
-  const { isLoaded, isSignedIn, getToken } = useAuth();
+  const { user, isAuthenticated, isLoading: isWalletLoading } = useWallet();
   const { credentials, getCredentials, isLoading: credsLoading } = useUserApiCredentials();
 
   const { clobClient } = useClobClient({
@@ -125,8 +123,6 @@ export function useOrders(enabled = true) {
     async (orders: OrderRecord[]) => {
       if (!orders.length) return;
       try {
-        const token = await getToken();
-        if (!token) return;
         await api.post(
           "/trade/sync",
           {
@@ -148,13 +144,13 @@ export function useOrders(enabled = true) {
               updatedAt: o.updated_at,
             })),
           },
-          { headers: { Authorization: `Bearer ${token}` } }
+          { withCredentials: true }
         );
       } catch (err) {
         console.error("Order sync failed", err);
       }
     },
-    [getToken]
+    []
   );
 
   const fetchOrders = async (): Promise<OrderRecord[]> => {
@@ -195,8 +191,7 @@ export function useOrders(enabled = true) {
     enabled:
       enabled &&
       isAuthenticated &&
-      isLoaded &&
-      isSignedIn &&
+      !isWalletLoading &&
       !credsLoading &&
       Boolean(clobClientRef.current),
   });

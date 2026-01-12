@@ -1,0 +1,25 @@
+Feature: Catalyst Calendar (planned)
+
+Goal
+- Ship a true catalyst calendar that surfaces time-bound events (debates, earnings, launches, votes, data releases) mapped to markets, sorted by live/soonest/impact, and refreshed automatically.
+
+Backend plan
+- Source creation (pragmatic): Stand up a dedicated `catalysts` table + Redis cache. Required fields: id, market_id/slug, title, catalyst_type, start_ts, end_ts, impact_score, source, source_id, confidence, tags, url, location, last_seen_at, next_check_at, notes. Populate initially from a curated seed CSV/JSON. Add adapters for primary feeds: (1) official debate/event calendars, (2) earnings calendars (NASDAQ/SEC/Polygon-like providers), (3) governance/voting feeds (RSS/JSON from DAOs), (4) sports/TV schedules where applicable. Keep adapters small and testable; store raw payloads for audit.
+- Mapping & enrichment: For each ingest, normalize to UTC, clean titles, and run a market matcher (slug match, keyword/embedding similarity against active market titles/rules/tags). Require explicit `condition_id` or high-confidence match; queue low-confidence items for manual review. Attach category/tags from the feed and store canonical source URLs for traceability.
+- Ingestion loop: Worker/cron (hourly) per adapter: pull feed, de-dup by (source, source_id) and market, upsert into Postgres, push hot set into Redis (sorted by start_ts). Validate timestamps (future/active window), drop stale/past items automatically. Maintain a “needs_review” queue for unmapped or low-confidence catalysts.
+- Admin/CLI: Add commands to import seed files, approve/reject/reassign catalysts, and backfill matches. Emit a weekly digest of unmapped items for manual curation.
+- API: Expose GET /api/v1/analysis/catalysts (params: days, limit, types, min_confidence) serving from Redis cache, fallback to DB. Sorting: live first, then start_ts, then impact_score, tie-break by confidence.
+- Snapshot: Hydrate analysis snapshot with catalysts slice (next 14d by default), cached 5–10m, including source, confidence, catalyst_type, tags.
+- Scoring: Impact driven by feed signal (e.g., earnings market cap bucket, debate stage importance, governance voting weight). Optionally add a secondary bump when overlapping smart-money/whale flow without overwriting the feed’s impact score.
+- Quality guardrails: Validate market mapping against active markets cache; reject items without start/end; enforce UTC; log and alert when feeds go stale (no updates for 2 intervals); keep raw feed samples for debugging.
+
+Frontend plan
+- Types: Add CatalystEvent with catalyst_type, impact_score, confidence, source, tags, start/end timestamps.
+- Fetch: Add fetchCatalysts with params (days, limit, types); poll on the same cadence as the snapshot (5–10m) to keep in sync.
+- UI: New “Catalyst Calendar” card: group by day, show live/upcoming badges, catalyst type chip, countdown (“Starts in …”), link to market, show impact/confidence; allow filter by type.
+- Sorting: Live first, then soonest start, then impact_score; break ties with confidence.
+
+Quality & data integrity
+- Only include events with explicit catalyst feed matches; do not infer from liquidity/volume.
+- Validate timestamps and slugs; drop entries missing market mapping.
+- Log and monitor feed freshness; alert on stale feed (>2 intervals).

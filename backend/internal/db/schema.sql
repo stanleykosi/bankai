@@ -13,15 +13,14 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "vector"; -- For RAG/AI features
 
 -- 1. Users Table
--- Stores identity mapping between Clerk (Auth) and On-chain Wallets
+-- Stores wallet-authenticated user profiles
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    clerk_id VARCHAR(255) UNIQUE NOT NULL,
     email VARCHAR(255),
     
     -- The Externally Owned Account (Metamask or Embedded Key)
-    -- Can be NULL initially - users can sign up with email first, then connect wallet later
-    eoa_address VARCHAR(42),
+    -- Required for wallet-only authentication
+    eoa_address VARCHAR(42) UNIQUE NOT NULL,
     
     -- The actual fund-holding contract (Proxy or Gnosis Safe)
     vault_address VARCHAR(42),
@@ -33,7 +32,6 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_users_clerk_id ON users(clerk_id);
 CREATE INDEX idx_users_eoa_address ON users(eoa_address);
 
 -- 2. Markets Table

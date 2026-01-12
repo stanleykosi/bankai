@@ -9,7 +9,7 @@ import Link from "next/link";
 import { Star, TrendingUp, TrendingDown, Loader2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useWatchlist } from "@/hooks/useWatchlist";
-import { useAuth } from "@clerk/nextjs";
+import { useWallet } from "@/hooks/useWallet";
 import type { WatchlistItem } from "@/types";
 
 function formatPrice(price: number): string {
@@ -78,10 +78,10 @@ function WatchlistMarketItem({ item }: { item: WatchlistItem }) {
 }
 
 export function WatchlistSidebar() {
-  const { isSignedIn } = useAuth();
+  const { isAuthenticated } = useWallet();
   const { data, isLoading } = useWatchlist();
 
-  if (!isSignedIn) {
+  if (!isAuthenticated) {
     return null;
   }
 

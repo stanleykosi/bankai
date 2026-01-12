@@ -4,28 +4,27 @@
  *
  * @dependencies
  * - @tanstack/react-query
- * - @clerk/nextjs
  * - @/lib/social-api
  */
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useAuth } from "@clerk/nextjs";
 import {
   fetchNotifications,
   markNotificationRead,
   markAllNotificationsRead,
 } from "@/lib/social-api";
+import { useWallet } from "@/hooks/useWallet";
 
 /**
  * Hook for fetching notifications
  */
 export function useNotifications(limit = 50, offset = 0) {
-  const { getToken, isSignedIn } = useAuth();
+  const { isAuthenticated } = useWallet();
 
   return useQuery({
     queryKey: ["notifications", limit, offset],
-    queryFn: () => fetchNotifications(getToken, limit, offset),
-    enabled: isSignedIn,
+    queryFn: () => fetchNotifications(limit, offset),
+    enabled: isAuthenticated,
     staleTime: 30_000,
     refetchInterval: 60_000, // Poll every minute
   });
@@ -43,12 +42,11 @@ export function useUnreadCount() {
  * Hook for marking a notification as read
  */
 export function useMarkReadMutation() {
-  const { getToken } = useAuth();
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (notificationId: string) =>
-      markNotificationRead(notificationId, getToken),
+      markNotificationRead(notificationId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["notifications"] });
     },
@@ -59,11 +57,10 @@ export function useMarkReadMutation() {
  * Hook for marking all notifications as read
  */
 export function useMarkAllReadMutation() {
-  const { getToken } = useAuth();
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: () => markAllNotificationsRead(getToken),
+    mutationFn: () => markAllNotificationsRead(),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["notifications"] });
     },

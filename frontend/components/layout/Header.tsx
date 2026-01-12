@@ -1,7 +1,7 @@
 /**
  * @description
  * Application header that unifies navigation, user identity, and wallet state.
- * Shows Clerk auth status, Wagmi wallet info, and leaves room for soon-to-ship
+ * Shows wallet auth status, Wagmi wallet info, and leaves room for soon-to-ship
  * actions like deposits.
  */
 
@@ -10,10 +10,8 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { SignInButton, UserButton } from "@clerk/nextjs";
 import { Activity, BarChart2, LayoutDashboard, ShieldCheck, Wallet } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
 import { WalletConnectButton } from "@/components/wallet/WalletConnectButton";
 import { DepositWithdrawModal } from "@/components/wallet/DepositWithdrawModal";
 import { NotificationBell } from "@/components/social/NotificationBell";
@@ -158,100 +156,79 @@ export function Header() {
 
         {/* User / Wallet Actions */}
         <div className="flex items-center space-x-3">
-          {isAuthenticated ? (
-            <>
-              <WalletConnectButton />
+          <WalletConnectButton />
 
-              {showVaultCard && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (hasVault) {
-                      setDepositModalOpen(true);
-                    }
-                  }}
-                  disabled={isVaultDeploying || isLoading || (!hasVault && !canDeploy)}
-                  className={cn(
-                    "hidden md:flex h-10 items-center gap-2.5 rounded-md border border-border bg-card/70 px-2.5 py-1.5 text-left transition hover:border-primary/60 hover:bg-card",
-                    !hasVault && "border-dashed opacity-75 cursor-default"
-                  )}
-                >
-                  {walletError ? (
-                    <span className="font-mono text-[10px] text-destructive whitespace-nowrap max-w-[200px] truncate">
-                      {walletError}
-                    </span>
-                  ) : (
-                    <div className="flex items-center gap-2.5 min-w-0 w-full">
-                      <div className="flex flex-col gap-0.5 min-w-0 flex-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground whitespace-nowrap">
-                            {walletTypeLabel}
-                          </span>
-                          <span className="font-mono text-[9px] text-muted-foreground whitespace-nowrap">
-                            {hasVault
-                              ? isBalanceLoading
-                                ? "Loading..."
-                                : `${balanceData?.balance_formatted ?? "0.00"} USDC`
-                              : ""}
-                          </span>
-                        </div>
-                        <div className="flex flex-col gap-0.5 min-w-0">
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            <span className="font-mono text-[11px] text-foreground truncate">
-                              {hasVault && vaultAddress
-                                ? truncateAddress(vaultAddress)
-                                : vaultStatusText}
-                            </span>
-                            {hasVault && (
-                              <span className="flex items-center gap-0.5 text-[8px] uppercase text-constructive whitespace-nowrap shrink-0">
-                                <ShieldCheck className="h-2.5 w-2.5" />
-                                Active
-                              </span>
-                            )}
-                          </div>
-                          {!hasVault && deploymentMessage && (
-                            <span className="font-mono text-[9px] text-muted-foreground truncate">
-                              {deploymentMessage}
-                            </span>
-                          )}
-                        </div>
-                        {!hasVault && deployError && (
-                          <span className="text-[9px] text-destructive">
-                            {deployError}
+          {showVaultCard && (
+            <button
+              type="button"
+              onClick={() => {
+                if (hasVault) {
+                  setDepositModalOpen(true);
+                }
+              }}
+              disabled={isVaultDeploying || isLoading || (!hasVault && !canDeploy)}
+              className={cn(
+                "hidden md:flex h-10 items-center gap-2.5 rounded-md border border-border bg-card/70 px-2.5 py-1.5 text-left transition hover:border-primary/60 hover:bg-card",
+                !hasVault && "border-dashed opacity-75 cursor-default"
+              )}
+            >
+              {walletError ? (
+                <span className="font-mono text-[10px] text-destructive whitespace-nowrap max-w-[200px] truncate">
+                  {walletError}
+                </span>
+              ) : (
+                <div className="flex items-center gap-2.5 min-w-0 w-full">
+                  <div className="flex flex-col gap-0.5 min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground whitespace-nowrap">
+                        {walletTypeLabel}
+                      </span>
+                      <span className="font-mono text-[9px] text-muted-foreground whitespace-nowrap">
+                        {hasVault
+                          ? isBalanceLoading
+                            ? "Loading..."
+                            : `${balanceData?.balance_formatted ?? "0.00"} USDC`
+                          : ""}
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-0.5 min-w-0">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="font-mono text-[11px] text-foreground truncate">
+                          {hasVault && vaultAddress
+                            ? truncateAddress(vaultAddress)
+                            : vaultStatusText}
+                        </span>
+                        {hasVault && (
+                          <span className="flex items-center gap-0.5 text-[8px] uppercase text-constructive whitespace-nowrap shrink-0">
+                            <ShieldCheck className="h-2.5 w-2.5" />
+                            Active
                           </span>
                         )}
                       </div>
+                      {!hasVault && deploymentMessage && (
+                        <span className="font-mono text-[9px] text-muted-foreground truncate">
+                          {deploymentMessage}
+                        </span>
+                      )}
                     </div>
-                  )}
-                </button>
+                    {!hasVault && deployError && (
+                      <span className="text-[9px] text-destructive">
+                        {deployError}
+                      </span>
+                    )}
+                  </div>
+                </div>
               )}
+            </button>
+          )}
 
-              {/* Notification Bell */}
-              <NotificationBell />
+          {isAuthenticated && <NotificationBell />}
 
-              <UserButton
-                afterSignOutUrl="/"
-                appearance={{
-                  elements: {
-                    avatarBox: "h-8 w-8 rounded-sm border border-border",
-                    userButtonPopoverCard: "border border-border bg-card shadow-xl",
-                  },
-                }}
-              />
-
-              <DepositWithdrawModal
-                open={depositModalOpen}
-                onOpenChange={setDepositModalOpen}
-              />
-            </>
-          ) : isLoading ? (
-            <div className="h-8 w-24 animate-pulse rounded bg-muted" />
-          ) : (
-            <SignInButton mode="modal">
-              <Button size="sm" className="font-mono font-bold tracking-wide">
-                Sign In
-              </Button>
-            </SignInButton>
+          {isAuthenticated && (
+            <DepositWithdrawModal
+              open={depositModalOpen}
+              onOpenChange={setDepositModalOpen}
+            />
           )}
         </div>
       </div>

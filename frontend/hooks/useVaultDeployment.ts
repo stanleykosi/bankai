@@ -6,7 +6,6 @@
  * 3. POST the signature back to the backend so it can call the relayer
  *
  * @dependencies
- * - @clerk/nextjs (for auth token)
  * - wagmi (for signTypedData)
  * - axios api helper
  */
@@ -14,7 +13,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useAuth } from "@clerk/nextjs";
 import { polygon } from "viem/chains";
 import { useAccount, useSignTypedData, useSwitchChain } from "wagmi";
 
@@ -54,7 +52,6 @@ export function useVaultDeployment({
   isReady,
   refreshUser,
 }: UseVaultDeploymentArgs): UseVaultDeploymentResult {
-  const { getToken } = useAuth();
   const { signTypedDataAsync } = useSignTypedData();
   const { chainId: walletChainId } = useAccount();
   const { switchChainAsync } = useSwitchChain();
@@ -70,20 +67,16 @@ export function useVaultDeployment({
   const autoTriggeredRef = useRef(false);
 
   const fetchTypedData = useCallback(async () => {
-    const token = await getToken();
-    if (!token) {
-      throw new Error("Unable to fetch auth token");
-    }
     const { data } = await api.get<{
       owner: string;
       typed_data: SafeCreateTypedData;
     }>("/wallet/deploy/typed-data", {
-      headers: { Authorization: `Bearer ${token}` },
+      withCredentials: true,
     });
     setTypedData(data.typed_data);
     setTypedDataOwner(data.owner.toLowerCase());
     return data.typed_data;
-  }, [getToken]);
+  }, []);
 
   const deployVault = useCallback(async () => {
     if (!eoaAddress || hasVault || !isReady) {
@@ -95,11 +88,6 @@ export function useVaultDeployment({
       setDeployError(null);
       setDeploymentStatus(null);
       setDeploymentStep("preparing");
-
-      const token = await getToken();
-      if (!token) {
-        throw new Error("Unable to fetch auth token");
-      }
 
       let payload = typedData;
       const ownerMismatch =
@@ -152,9 +140,6 @@ export function useVaultDeployment({
         {
           signature,
           metadata: "bankai:vault-deploy",
-        },
-        {
-          headers: { Authorization: `Bearer ${token}` },
         }
       );
 
@@ -172,7 +157,6 @@ export function useVaultDeployment({
   }, [
     eoaAddress,
     fetchTypedData,
-    getToken,
     hasVault,
     isReady,
     refreshUser,

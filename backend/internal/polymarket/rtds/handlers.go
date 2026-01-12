@@ -48,7 +48,11 @@ type BaseMessage struct {
 	EventType string `json:"event_type"`
 }
 
-const tradeBufferTTL = 30 * time.Hour
+const (
+	tradeBufferTTL       = 6 * time.Hour
+	defaultPriceCacheTTL = 10 * time.Minute
+	defaultBookCacheTTL  = 0 * time.Minute
+)
 
 // PriceChange represents a single update in the new Sept 2025 schema
 type PriceChange struct {
@@ -102,13 +106,39 @@ type LastTradeMessage struct {
 type MessageHandler struct {
 	DB    *gorm.DB
 	Redis *redis.Client
+
+	cacheAllowlist *CacheAllowlist
+	priceCacheTTL  time.Duration
+	bookCacheTTL   time.Duration
 }
 
 func NewMessageHandler(db *gorm.DB, r *redis.Client) *MessageHandler {
 	return &MessageHandler{
-		DB:    db,
-		Redis: r,
+		DB:            db,
+		Redis:         r,
+		priceCacheTTL: defaultPriceCacheTTL,
+		bookCacheTTL:  defaultBookCacheTTL,
 	}
+}
+
+func (h *MessageHandler) SetCacheAllowlist(allowlist *CacheAllowlist) {
+	h.cacheAllowlist = allowlist
+}
+
+func (h *MessageHandler) SetCacheTTLs(priceTTL, bookTTL time.Duration) {
+	if priceTTL >= 0 {
+		h.priceCacheTTL = priceTTL
+	}
+	if bookTTL >= 0 {
+		h.bookCacheTTL = bookTTL
+	}
+}
+
+func (h *MessageHandler) shouldCache(assetID string) bool {
+	if h.cacheAllowlist == nil {
+		return true
+	}
+	return h.cacheAllowlist.IsAllowed(assetID)
 }
 
 // HandleMessage routes the raw JSON message to the specific handler
@@ -199,7 +229,11 @@ func (h *MessageHandler) handlePriceChange(ctx context.Context, m *PriceChangeMe
 	// 2. Cache latest prices for immediate frontend retrieval
 	// We process each change in the batch
 	pipe := h.Redis.Pipeline()
+	didCache := false
 	for _, change := range m.PriceChanges {
+		if !h.shouldCache(change.AssetID) {
+			continue
+		}
 		// Store latest price: market:{market_id}:{asset_id}:price
 		key := fmt.Sprintf("price:%s:%s", m.Market, change.AssetID)
 
@@ -212,6 +246,10 @@ func (h *MessageHandler) handlePriceChange(ctx context.Context, m *PriceChangeMe
 			"best_ask": change.BestAsk,
 			"updated":  m.Timestamp,
 		})
+		if h.priceCacheTTL > 0 {
+			pipe.Expire(ctx, key, h.priceCacheTTL)
+		}
+		didCache = true
 
 		// Also persist to Postgres for historical charting?
 		// Doing this synchronously here might be too slow for high frequency.
@@ -219,8 +257,10 @@ func (h *MessageHandler) handlePriceChange(ctx context.Context, m *PriceChangeMe
 		// For now, we skip DB insert here to prioritize ingestion speed.
 	}
 
-	if _, err = pipe.Exec(ctx); err != nil {
-		return err
+	if didCache {
+		if _, err = pipe.Exec(ctx); err != nil {
+			return err
+		}
 	}
 
 	h.publishPriceUpdates(ctx, m)
@@ -229,6 +269,12 @@ func (h *MessageHandler) handlePriceChange(ctx context.Context, m *PriceChangeMe
 
 // handleBook processes the initial snapshot
 func (h *MessageHandler) handleBook(ctx context.Context, m *BookMessage) error {
+	if h.bookCacheTTL <= 0 {
+		return nil
+	}
+	if !h.shouldCache(m.AssetID) {
+		return nil
+	}
 	// Store the full book snapshot in Redis if needed for the UI "Depth" view
 	// Key: book:{market_id}:{asset_id}
 	key := fmt.Sprintf("book:%s:%s", m.Market, m.AssetID)
@@ -240,7 +286,7 @@ func (h *MessageHandler) handleBook(ctx context.Context, m *BookMessage) error {
 	}
 
 	// Set with a TTL (refresh happens on next snapshot or via updates)
-	return h.Redis.Set(ctx, key, data, 24*time.Hour).Err()
+	return h.Redis.Set(ctx, key, data, h.bookCacheTTL).Err()
 }
 
 // handleLastTrade records actual trades, important for volume tracking

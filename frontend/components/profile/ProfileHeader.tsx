@@ -12,7 +12,7 @@ import { Calendar, Check, CheckCircle2, Copy, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useFollowToggle } from "@/hooks/useFollow";
-import { useAuth } from "@clerk/nextjs";
+import { useWallet } from "@/hooks/useWallet";
 import type { TraderProfile } from "@/types";
 
 interface ProfileHeaderProps {
@@ -21,7 +21,7 @@ interface ProfileHeaderProps {
 }
 
 export function ProfileHeader({ profile, followerCount }: ProfileHeaderProps) {
-  const { isSignedIn } = useAuth();
+  const { isAuthenticated } = useWallet();
   const { isFollowing, isLoading, toggle } = useFollowToggle(profile.address);
   const [copied, setCopied] = useState(false);
 
@@ -129,7 +129,7 @@ export function ProfileHeader({ profile, followerCount }: ProfileHeaderProps) {
           </div>
 
           {/* Follow Button */}
-          {isSignedIn && (
+          {isAuthenticated && (
             <Button
               onClick={toggle}
               disabled={isLoading}

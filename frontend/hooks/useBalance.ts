@@ -5,13 +5,11 @@
  *
  * @dependencies
  * - @tanstack/react-query
- * - @clerk/nextjs
  */
 
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { useAuth } from "@clerk/nextjs";
 import { useWallet } from "@/hooks/useWallet";
 import { api } from "@/lib/api";
 
@@ -23,22 +21,14 @@ export interface BalanceResponse {
 }
 
 export function useBalance() {
-  const { getToken, isSignedIn } = useAuth();
-  const { vaultAddress } = useWallet();
+  const { vaultAddress, isAuthenticated } = useWallet();
 
   return useQuery({
     queryKey: ["balance", vaultAddress],
     queryFn: async (): Promise<BalanceResponse | null> => {
-      const token = await getToken();
-      if (!token) {
-        return null;
-      }
-
       try {
         const { data } = await api.get<BalanceResponse>("/wallet/balance", {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
+          withCredentials: true,
         });
         return data;
       } catch (error: any) {
@@ -49,7 +39,7 @@ export function useBalance() {
         throw error;
       }
     },
-    enabled: !!isSignedIn && !!vaultAddress, // Only fetch when signed in and wallet exists
+    enabled: isAuthenticated && !!vaultAddress, // Only fetch when signed in and wallet exists
     // Reduce chatter: no interval; refresh on demand via queryClient.invalidateQueries(["balance"])
     refetchInterval: false,
     refetchOnWindowFocus: false,

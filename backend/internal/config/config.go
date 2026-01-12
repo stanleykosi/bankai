@@ -17,6 +17,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ type Config struct {
 	DB         DBConfig
 	Redis      RedisConfig
 	Polymarket PolymarketConfig
+	Auth       AuthConfig
 	Services   ServicesConfig
 }
 
@@ -64,8 +66,6 @@ type PolymarketConfig struct {
 
 // ServicesConfig holds external service keys (AI, Auth, etc.)
 type ServicesConfig struct {
-	ClerkSecretKey      string
-	ClerkJWKSURL        string // URL to fetch JSON Web Key Set for JWT validation
 	TavilyAPIKey        string
 	OpenAIAPIKey        string
 	OpenAIBaseURL       string
@@ -79,6 +79,20 @@ type ServicesConfig struct {
 	MaxTrackedAssets    int // RTDS subscription cap; 0 = no cap
 	StreamRecentHours   int // When >0, subscribe all markets with volume in the last N hours; 0 = subscribe all active markets
 	RTDSActivityEnabled bool
+}
+
+// AuthConfig holds wallet-only auth configuration
+type AuthConfig struct {
+	JWTSecret       string
+	JWTIssuer       string
+	TokenTTLMinutes int
+	NonceTTLMinutes int
+	Domain          string
+	URI             string
+	CookieName      string
+	CookieDomain    string
+	CookieSecure    bool
+	CookieSameSite  string
 }
 
 // Load reads .env file and populates the Config struct
@@ -108,9 +122,19 @@ func Load() (*Config, error) {
 			BuilderPass:          sanitizeCredential(getEnv("POLY_BUILDER_PASSPHRASE", "")),
 			RelayerURL:           getEnv("POLYMARKET_RELAYER_URL", "https://relayer-v2.polymarket.com"),
 		},
+		Auth: AuthConfig{
+			JWTSecret:       getEnv("AUTH_JWT_SECRET", ""),
+			JWTIssuer:       getEnv("AUTH_JWT_ISSUER", "bankai"),
+			TokenTTLMinutes: getEnvAsInt("AUTH_TOKEN_TTL_MINUTES", 60),
+			NonceTTLMinutes: getEnvAsInt("AUTH_NONCE_TTL_MINUTES", 10),
+			Domain:          "",
+			URI:             "",
+			CookieName:      getEnv("AUTH_COOKIE_NAME", "bankai_auth"),
+			CookieDomain:    getEnv("AUTH_COOKIE_DOMAIN", ""),
+			CookieSecure:    getEnvAsBool("AUTH_COOKIE_SECURE", false),
+			CookieSameSite:  getEnv("AUTH_COOKIE_SAMESITE", "lax"),
+		},
 		Services: ServicesConfig{
-			ClerkSecretKey:      getEnv("CLERK_SECRET_KEY", ""),
-			ClerkJWKSURL:        getEnv("CLERK_JWKS_URL", ""),
 			TavilyAPIKey:        getEnv("TAVILY_API_KEY", ""),
 			OpenAIAPIKey:        getEnv("OPENAI_API_KEY", ""),
 			OpenAIBaseURL:       getEnv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"),
@@ -127,6 +151,8 @@ func Load() (*Config, error) {
 		},
 	}
 
+	applyAuthDefaults(cfg)
+
 	if err := validate(cfg); err != nil {
 		return nil, err
 	}
@@ -139,11 +165,46 @@ func validate(cfg *Config) error {
 	if cfg.DB.URL == "" {
 		return fmt.Errorf("DATABASE_URL is required")
 	}
-	if cfg.Services.ClerkSecretKey == "" && cfg.Server.Env != "test" {
-		// Warning: strictly required for Auth middleware
-		fmt.Println("Warning: CLERK_SECRET_KEY is missing. Auth middleware will fail.")
+	if cfg.Auth.JWTSecret == "" && cfg.Server.Env != "test" {
+		return fmt.Errorf("AUTH_JWT_SECRET is required")
 	}
 	return nil
+}
+
+func applyAuthDefaults(cfg *Config) {
+	frontendURL := strings.TrimSpace(getEnv("FRONTEND_URL", ""))
+	if frontendURL == "" {
+		if cfg.Auth.URI == "" {
+			cfg.Auth.URI = "http://localhost:3000"
+		}
+		if cfg.Auth.Domain == "" {
+			cfg.Auth.Domain = "localhost:3000"
+		}
+		return
+	}
+
+	if cfg.Auth.URI == "" {
+		cfg.Auth.URI = frontendURL
+	}
+	if cfg.Auth.Domain == "" {
+		cfg.Auth.Domain = extractDomainFromURL(frontendURL)
+	}
+}
+
+func extractDomainFromURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return strings.TrimPrefix(raw, "https://")
+	}
+	if parsed.Host != "" {
+		return parsed.Host
+	}
+	return parsed.Path
 }
 
 // Helper to get env var with default

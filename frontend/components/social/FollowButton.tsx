@@ -3,12 +3,12 @@
 /**
  * @description
  * Follow Button component with loading and toggle states.
- * Shows for all users; prompts sign-in when clicked if not authenticated.
+ * Shows for all users; prompts wallet connection when not authenticated.
  */
 
 import { Button } from "@/components/ui/button";
 import { useFollowToggle } from "@/hooks/useFollow";
-import { useAuth, SignInButton } from "@clerk/nextjs";
+import { useWallet } from "@/hooks/useWallet";
 import { UserPlus, UserCheck, Loader2 } from "lucide-react";
 
 interface FollowButtonProps {
@@ -24,25 +24,22 @@ export function FollowButton({
   showIcon = true,
   className,
 }: FollowButtonProps) {
-  const { isSignedIn } = useAuth();
+  const { isAuthenticated, isLoading: isAuthLoading } = useWallet();
   const { isFollowing, isLoading, toggle } = useFollowToggle(targetAddress);
 
-  // If not signed in, show the button but trigger sign-in modal on click
-  if (!isSignedIn) {
+  if (!isAuthenticated) {
     return (
-      <SignInButton mode="modal">
-        <Button size={size} className={className}>
-          {showIcon && <UserPlus className="h-4 w-4" />}
-          <span className={showIcon ? "ml-2" : ""}>Follow</span>
-        </Button>
-      </SignInButton>
+      <Button size={size} className={className} disabled={isAuthLoading}>
+        {showIcon && <UserPlus className="h-4 w-4" />}
+        <span className={showIcon ? "ml-2" : ""}>Connect wallet</span>
+      </Button>
     );
   }
 
   return (
     <Button
       onClick={toggle}
-      disabled={isLoading}
+      disabled={isLoading || isAuthLoading}
       variant={isFollowing ? "outline" : "default"}
       size={size}
       className={className}

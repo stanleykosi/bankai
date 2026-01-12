@@ -12,7 +12,6 @@
  * 
  * @dependencies
  * - wagmi: Signing
- * - @clerk/nextjs: Auth
  * - api: Backend communication
  */
 
@@ -20,7 +19,6 @@
 
 import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import { useAuth } from "@clerk/nextjs";
 import { useAccount, useSwitchChain } from "wagmi";
 import { polygon } from "viem/chains";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -133,7 +131,6 @@ export function TradeForm({
   selectedOutcomeIndex: controlledOutcomeIndex,
   onOutcomeChange,
 }: TradeFormProps) {
-  const { getToken } = useAuth();
   const { user, eoaAddress, isAuthenticated, refreshUser } = useWallet();
   const { data: balanceData, isLoading: isBalanceLoading } = useBalance();
   const { chainId } = useAccount();
@@ -171,8 +168,6 @@ export function TradeForm({
       makerAddress?: string | null;
     }) => {
       try {
-        const token = await getToken();
-        if (!token) return;
         await api.post(
           "/trade/sync",
           {
@@ -196,13 +191,13 @@ export function TradeForm({
               },
             ],
           },
-          { headers: { Authorization: `Bearer ${token}` } }
+          { withCredentials: true }
         );
       } catch (err) {
         console.error("Failed to sync order to backend", err);
       }
     },
-    [getToken]
+    []
   );
 
   // Use ref to track latest clobClient (avoids stale closure issues)
