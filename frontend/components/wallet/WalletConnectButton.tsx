@@ -20,6 +20,8 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { useVaultDeployment } from "@/hooks/useVaultDeployment";
+import { useWallet } from "@/hooks/useWallet";
 
 const CONNECTOR_LABELS: Record<string, string> = {
   injected: "Browser Wallet",
@@ -50,8 +52,28 @@ export function WalletConnectButton() {
   const { address, isConnecting, isReconnecting } = useAccount();
   const { connect, connectors, error, isPending } = useConnect();
   const { disconnect } = useDisconnect();
+  const {
+    eoaAddress,
+    vaultAddress,
+    isAuthenticated,
+    isLoading: isWalletLoading,
+    refreshUser,
+  } = useWallet();
   const [open, setOpen] = useState(false);
   const [connectingId, setConnectingId] = useState<string | null>(null);
+  const hasTradingWallet = Boolean(vaultAddress);
+  const {
+    canDeploy,
+    isDeploying,
+    deployError,
+    deploymentStep,
+    deployVault,
+  } = useVaultDeployment({
+    eoaAddress,
+    hasVault: hasTradingWallet,
+    isReady: isAuthenticated && !isWalletLoading,
+    refreshUser,
+  });
 
   // Filter and sort connectors - show all available connectors
   const availableConnectors = useMemo(() => {
@@ -138,6 +160,28 @@ export function WalletConnectButton() {
   // Only disable primary trigger if we actively kicked off a connection
   const isBusy =
     Boolean(connectingId) && (isPending || isConnecting || isReconnecting);
+  const displayAddress = vaultAddress || null;
+  const deploymentLabel = useMemo(() => {
+    if (deployError) return deployError;
+    switch (deploymentStep) {
+      case "preparing":
+        return "Preparing proxy wallet...";
+      case "fetchingPayload":
+        return "Fetching signing payload...";
+      case "checkingNetwork":
+        return "Checking wallet network...";
+      case "switchingNetwork":
+        return "Switching to Polygon...";
+      case "awaitingSignature":
+        return "Awaiting signature...";
+      case "submitting":
+        return "Submitting deployment...";
+      case "pollingRelayer":
+        return "Confirming deployment...";
+      default:
+        return null;
+    }
+  }, [deployError, deploymentStep]);
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -152,7 +196,11 @@ export function WalletConnectButton() {
           disabled={isBusy}
         >
           <PlugZap className="mr-2 h-4 w-4" />
-          {address ? truncate(address) : "Connect Wallet"}
+          {address
+            ? displayAddress
+              ? truncate(displayAddress)
+              : "Proxy wallet pending"
+            : "Connect Wallet"}
         </Button>
       </DialogTrigger>
 
@@ -210,8 +258,33 @@ export function WalletConnectButton() {
           {address && (
             <div className="mt-4 rounded-md border border-border bg-muted/20 p-3">
               <div className="text-xs font-mono text-muted-foreground mb-2">
-                Connected as {truncate(address)}
+                Proxy wallet
               </div>
+              <div className="text-sm font-mono mb-3">
+                {displayAddress ? truncate(displayAddress) : "Pending"}
+              </div>
+              {!hasTradingWallet && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  disabled={!canDeploy || isDeploying}
+                  onClick={() => {
+                    void deployVault();
+                  }}
+                >
+                  {isDeploying ? "Setting up..." : "Create proxy wallet"}
+                </Button>
+              )}
+              {deploymentLabel && (
+                <p className={cn(
+                  "mt-2 text-xs font-mono",
+                  deployError ? "text-destructive" : "text-muted-foreground"
+                )}>
+                  {deploymentLabel}
+                </p>
+              )}
               <Button
                 type="button"
                 variant="ghost"
@@ -251,4 +324,3 @@ export function WalletConnectButton() {
     </Dialog>
   );
 }
-

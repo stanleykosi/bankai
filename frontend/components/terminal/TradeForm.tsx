@@ -136,6 +136,11 @@ export function TradeForm({
   const { chainId } = useAccount();
   const { switchChainAsync } = useSwitchChain();
   const queryClient = useQueryClient();
+  const chainIdRef = useRef<number | undefined>(chainId);
+
+  useEffect(() => {
+    chainIdRef.current = chainId;
+  }, [chainId]);
 
   // Get user API credentials for CLOB authentication
   const {
@@ -561,7 +566,7 @@ export function TradeForm({
       // Ensure we're on Polygon network before proceeding
       // This is critical for Phantom Wallet which validates chainId in EIP-712 signatures
       await ensurePolygonChain(
-        () => chainId,
+        () => chainIdRef.current,
         switchChainAsync
       );
 

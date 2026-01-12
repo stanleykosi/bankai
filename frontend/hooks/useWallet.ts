@@ -11,9 +11,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAccount, useChainId, useDisconnect, useSignMessage } from "wagmi";
+import { polygon } from "viem/chains";
+import { useAccount, useDisconnect, useSignMessage, useSwitchChain } from "wagmi";
 
 import { api } from "@/lib/api";
+import { ensurePolygonChain } from "@/lib/chain-utils";
 import type { User } from "@/types";
 
 export interface UseWalletReturn {
@@ -34,8 +36,16 @@ const walletCache = {
 };
 
 const WALLET_CACHE_TTL_MS = 2 * 60 * 1000;
+const AUTH_RETRY_WINDOW_MS = 30_000;
+const AUTH_ATTEMPT_TTL_MS = 60_000;
 const ENSURE_TTL_MS = 10 * 60 * 1000;
 const ENSURE_KEY_PREFIX = "bankai:wallet:ensure:";
+
+const authState = {
+  inFlight: null as Promise<void> | null,
+  lastFailure: null as { address: string; at: number } | null,
+  lastAttempt: null as { address: string; at: number } | null,
+};
 
 const shouldEnsureWallet = (eoaAddress: string) => {
   if (typeof window === "undefined") {
@@ -53,18 +63,21 @@ const shouldEnsureWallet = (eoaAddress: string) => {
 };
 
 export function useWallet(): UseWalletReturn {
-  const { address, isConnected } = useAccount();
-  const chainId = useChainId();
+  const { address, isConnected, chainId } = useAccount();
   const { disconnect: wagmiDisconnect } = useDisconnect();
   const { signMessageAsync } = useSignMessage();
+  const { switchChainAsync } = useSwitchChain();
 
   const [backendUser, setBackendUser] = useState<User | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
-  const authInFlight = useRef<Promise<void> | null>(null);
-  const lastAuthFailure = useRef<{ address: string; at: number } | null>(null);
+  const chainIdRef = useRef<number | undefined>(chainId);
 
   const eoaAddress = address ?? null;
+
+  useEffect(() => {
+    chainIdRef.current = chainId;
+  }, [chainId]);
 
   const loadUser = useCallback(
     async (force = false) => {
@@ -139,18 +152,20 @@ export function useWallet(): UseWalletReturn {
     if (!eoaAddress || !isConnected) {
       return;
     }
-    if (!chainId) {
+    if (!chainIdRef.current) {
       throw new Error("Wallet network not detected");
     }
 
+    await ensurePolygonChain(() => chainIdRef.current, switchChainAsync);
+
     const { data } = await api.post<{ message: string }>("/auth/challenge", {
       address: eoaAddress,
-      chain_id: chainId,
+      chain_id: polygon.id,
     });
 
     const signature = await signMessageAsync({ message: data.message });
     await api.post("/auth/verify", { message: data.message, signature });
-  }, [chainId, eoaAddress, isConnected, signMessageAsync]);
+  }, [eoaAddress, isConnected, signMessageAsync, switchChainAsync]);
 
   const ensureAuth = useCallback(
     async (force = false) => {
@@ -161,8 +176,8 @@ export function useWallet(): UseWalletReturn {
         return;
       }
 
-      if (authInFlight.current) {
-        return authInFlight.current;
+      if (authState.inFlight) {
+        return authState.inFlight;
       }
 
       const run = (async () => {
@@ -177,10 +192,15 @@ export function useWallet(): UseWalletReturn {
           }
 
           if (!user) {
-            const lastFailure = lastAuthFailure.current;
-            if (!force && lastFailure && lastFailure.address === eoaAddress && Date.now() - lastFailure.at < 30_000) {
+            const lastFailure = authState.lastFailure;
+            if (!force && lastFailure && lastFailure.address === eoaAddress && Date.now() - lastFailure.at < AUTH_RETRY_WINDOW_MS) {
               return;
             }
+            const lastAttempt = authState.lastAttempt;
+            if (!force && lastAttempt && lastAttempt.address === eoaAddress && Date.now() - lastAttempt.at < AUTH_ATTEMPT_TTL_MS) {
+              return;
+            }
+            authState.lastAttempt = { address: eoaAddress, at: Date.now() };
             await requestAuth();
             user = await loadUser(true);
           }
@@ -188,7 +208,7 @@ export function useWallet(): UseWalletReturn {
           setBackendUser(user);
           setWalletError(null);
           await maybeEnsureWallet(user);
-          lastAuthFailure.current = null;
+          authState.lastFailure = null;
         } catch (error: any) {
           console.error("useWallet: Failed to authenticate", error);
           const message =
@@ -197,15 +217,15 @@ export function useWallet(): UseWalletReturn {
             "Failed to authenticate";
           setWalletError(message);
           if (eoaAddress) {
-            lastAuthFailure.current = { address: eoaAddress, at: Date.now() };
+            authState.lastFailure = { address: eoaAddress, at: Date.now() };
           }
         } finally {
           setIsSyncing(false);
-          authInFlight.current = null;
+          authState.inFlight = null;
         }
       })();
 
-      authInFlight.current = run;
+      authState.inFlight = run;
       return run;
     },
     [eoaAddress, isConnected, loadUser, maybeEnsureWallet, requestAuth]
@@ -223,6 +243,9 @@ export function useWallet(): UseWalletReturn {
     walletCache.user = null;
     walletCache.fetchedAt = 0;
     setBackendUser(null);
+    authState.inFlight = null;
+    authState.lastFailure = null;
+    authState.lastAttempt = null;
     void api.post("/auth/logout").catch(() => undefined);
   }, [isConnected, wagmiDisconnect]);
 

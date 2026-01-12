@@ -25,6 +25,19 @@ export async function ensurePolygonChain(
 ): Promise<void> {
   // Check current chain
   let currentChainId = getChainId();
+  if (!currentChainId) {
+    let attempts = 0;
+    const maxAttempts = 6;
+    while (!currentChainId && attempts < maxAttempts) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      currentChainId = getChainId();
+      attempts++;
+    }
+  }
+
+  if (!currentChainId) {
+    throw new Error("Wallet network not detected. Please connect your wallet.");
+  }
   
   // Already on Polygon
   if (currentChainId === polygon.id) {
@@ -90,4 +103,3 @@ export async function ensurePolygonChain(
     throw new Error(`${errorMessage}. Please ensure Polygon is added to your wallet and try again.`);
   }
 }
-

@@ -64,7 +64,11 @@ export function useVaultDeployment({
     useState<VaultDeploymentResult | null>(null);
   const [deploymentStep, setDeploymentStep] =
     useState<DeploymentStep>("idle");
-  const autoTriggeredRef = useRef(false);
+  const chainIdRef = useRef<number | undefined>(walletChainId);
+
+  useEffect(() => {
+    chainIdRef.current = walletChainId;
+  }, [walletChainId]);
 
   const fetchTypedData = useCallback(async () => {
     const { data } = await api.get<{
@@ -105,26 +109,13 @@ export function useVaultDeployment({
       }
 
       setDeploymentStep("checkingNetwork");
-      // Ensure we're on Polygon network before proceeding
-      // This is critical for Phantom Wallet which validates chainId in EIP-712 signatures
-      if (walletChainId !== polygon.id) {
+      if (chainIdRef.current && chainIdRef.current !== polygon.id) {
         setDeploymentStep("switchingNetwork");
-        try {
-          await ensurePolygonChain(
-            () => walletChainId,
-            switchChainAsync
-          );
-          // Chain switch completed, but we need to wait for React state to update
-          // Return and let the user retry (or we could auto-retry)
-          setIsDeploying(false);
-          return;
-        } catch (error: any) {
-          // If chain switch failed, stop deployment
-          setIsDeploying(false);
-          setDeployError(error.message || "Failed to switch to Polygon network");
-          return;
-        }
       }
+      await ensurePolygonChain(
+        () => chainIdRef.current,
+        switchChainAsync
+      );
 
       setDeploymentStep("awaitingSignature");
       const signature = await signTypedDataAsync({
@@ -163,6 +154,7 @@ export function useVaultDeployment({
     signTypedDataAsync,
     switchChainAsync,
     typedData,
+    typedDataOwner,
   ]);
 
   const canDeploy = useMemo(
@@ -176,27 +168,14 @@ export function useVaultDeployment({
     setDeploymentStatus(null);
     setDeployError(null);
     setDeploymentStep("idle");
-    autoTriggeredRef.current = false;
   }, [eoaAddress]);
 
   useEffect(() => {
     if (hasVault) {
       setDeploymentStep("idle");
-      autoTriggeredRef.current = false;
+      setDeployError(null);
     }
   }, [hasVault]);
-
-  // Auto-trigger deployment only for new EOAs without a vault.
-  useEffect(() => {
-    if (!canDeploy || hasVault) {
-      autoTriggeredRef.current = false;
-      return;
-    }
-    if (!isDeploying && !autoTriggeredRef.current) {
-      autoTriggeredRef.current = true;
-      void deployVault();
-    }
-  }, [canDeploy, deployVault, hasVault, isDeploying]);
 
   return {
     canDeploy,

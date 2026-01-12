@@ -7,17 +7,16 @@
 
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, BarChart2, LayoutDashboard, ShieldCheck, Wallet } from "lucide-react";
+import { Activity, BarChart2, LayoutDashboard, Wallet } from "lucide-react";
 
 import { WalletConnectButton } from "@/components/wallet/WalletConnectButton";
 import { DepositWithdrawModal } from "@/components/wallet/DepositWithdrawModal";
 import { NotificationBell } from "@/components/social/NotificationBell";
+import { Button } from "@/components/ui/button";
 import { useWallet } from "@/hooks/useWallet";
-import { useVaultDeployment } from "@/hooks/useVaultDeployment";
-import { useBalance } from "@/hooks/useBalance";
 import { cn } from "@/lib/utils";
 
 const navLinks = [
@@ -26,102 +25,10 @@ const navLinks = [
   { href: "/analysis", label: "Analysis", Icon: BarChart2 },
 ];
 
-const truncateAddress = (address: string) =>
-  `${address.slice(0, 6)}...${address.slice(-4)}`;
-
 export function Header() {
   const pathname = usePathname();
-  const {
-    isAuthenticated,
-    isLoading,
-    eoaAddress,
-    vaultAddress,
-    user,
-    walletError,
-    refreshUser,
-  } = useWallet();
-  const {
-    data: balanceData,
-    isLoading: isBalanceLoading,
-  } = useBalance();
+  const { isAuthenticated, vaultAddress } = useWallet();
   const [depositModalOpen, setDepositModalOpen] = useState(false);
-  const walletTypeLabel = useMemo(
-    () => (user?.wallet_type ? user.wallet_type : "VAULT"),
-    [user?.wallet_type]
-  );
-  const hasVault = Boolean(vaultAddress);
-  const {
-    canDeploy,
-    isDeploying: isVaultDeploying,
-    deployError,
-    deploymentStatus,
-    deploymentStep,
-    deployVault,
-  } = useVaultDeployment({
-    eoaAddress,
-    hasVault,
-    isReady: !isLoading,
-    refreshUser,
-  });
-  const showVaultCard = isAuthenticated && Boolean(eoaAddress);
-  const deploymentMessage = useMemo(() => {
-    if (!deploymentStatus) return null;
-    if (deploymentStatus.proxy_address) {
-      return `Vault pending at ${truncateAddress(
-        deploymentStatus.proxy_address
-      )}`;
-    }
-    if (deploymentStatus.state) {
-      switch (deploymentStatus.state) {
-        case "STATE_FAILED":
-          return "Relayer: Failed";
-        case "STATE_NEW":
-          return "Relayer: Pending...";
-        case "STATE_EXECUTED":
-          return "Relayer: Executed";
-        case "STATE_MINED":
-          return "Relayer: Mined";
-        case "STATE_CONFIRMED":
-          return "Relayer: Confirmed";
-        default:
-          return `Relayer: ${deploymentStatus.state}`;
-      }
-    }
-    if (deploymentStatus.task_id) {
-      return `Relayer task ${deploymentStatus.task_id}`;
-    }
-    return null;
-  }, [deploymentStatus]);
-
-  const vaultStatusText = useMemo(() => {
-    if (walletError) return `Error: ${walletError}`;
-    if (deployError) return deployError;
-    if (isLoading) return "Syncing wallet...";
-    switch (deploymentStep) {
-      case "preparing":
-        return "Preparing deployment...";
-      case "fetchingPayload":
-        return "Fetching payload from backend...";
-      case "checkingNetwork":
-        return "Checking wallet network...";
-      case "switchingNetwork":
-        return "Switch wallet to Polygon (137)";
-      case "awaitingSignature":
-        return "Awaiting wallet signature...";
-      case "submitting":
-        return "Submitting to relayer...";
-      case "pollingRelayer":
-        return deploymentMessage || "Waiting for relayer...";
-      default:
-        return deploymentMessage || "Sign once to deploy";
-    }
-  }, [
-    deployError,
-    deploymentMessage,
-    deploymentStep,
-    isLoading,
-    walletError,
-  ]);
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -158,73 +65,21 @@ export function Header() {
         <div className="flex items-center space-x-3">
           <WalletConnectButton />
 
-          {showVaultCard && (
-            <button
+          {isAuthenticated && vaultAddress && (
+            <Button
               type="button"
-              onClick={() => {
-                if (hasVault) {
-                  setDepositModalOpen(true);
-                }
-              }}
-              disabled={isVaultDeploying || isLoading || (!hasVault && !canDeploy)}
-              className={cn(
-                "hidden md:flex h-10 items-center gap-2.5 rounded-md border border-border bg-card/70 px-2.5 py-1.5 text-left transition hover:border-primary/60 hover:bg-card",
-                !hasVault && "border-dashed opacity-75 cursor-default"
-              )}
+              variant="outline"
+              size="sm"
+              className="font-mono"
+              onClick={() => setDepositModalOpen(true)}
             >
-              {walletError ? (
-                <span className="font-mono text-[10px] text-destructive whitespace-nowrap max-w-[200px] truncate">
-                  {walletError}
-                </span>
-              ) : (
-                <div className="flex items-center gap-2.5 min-w-0 w-full">
-                  <div className="flex flex-col gap-0.5 min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground whitespace-nowrap">
-                        {walletTypeLabel}
-                      </span>
-                      <span className="font-mono text-[9px] text-muted-foreground whitespace-nowrap">
-                        {hasVault
-                          ? isBalanceLoading
-                            ? "Loading..."
-                            : `${balanceData?.balance_formatted ?? "0.00"} USDC`
-                          : ""}
-                      </span>
-                    </div>
-                    <div className="flex flex-col gap-0.5 min-w-0">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <span className="font-mono text-[11px] text-foreground truncate">
-                          {hasVault && vaultAddress
-                            ? truncateAddress(vaultAddress)
-                            : vaultStatusText}
-                        </span>
-                        {hasVault && (
-                          <span className="flex items-center gap-0.5 text-[8px] uppercase text-constructive whitespace-nowrap shrink-0">
-                            <ShieldCheck className="h-2.5 w-2.5" />
-                            Active
-                          </span>
-                        )}
-                      </div>
-                      {!hasVault && deploymentMessage && (
-                        <span className="font-mono text-[9px] text-muted-foreground truncate">
-                          {deploymentMessage}
-                        </span>
-                      )}
-                    </div>
-                    {!hasVault && deployError && (
-                      <span className="text-[9px] text-destructive">
-                        {deployError}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
-            </button>
+              Funds
+            </Button>
           )}
 
           {isAuthenticated && <NotificationBell />}
 
-          {isAuthenticated && (
+          {isAuthenticated && vaultAddress && (
             <DepositWithdrawModal
               open={depositModalOpen}
               onOpenChange={setDepositModalOpen}
