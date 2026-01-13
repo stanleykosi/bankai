@@ -25,10 +25,10 @@ export function BookmarkButton({
   variant = "ghost",
   className,
 }: BookmarkButtonProps) {
-  const { isAuthenticated, isLoading } = useWallet();
+  const { isAuthenticated, isLoading, hasSession } = useWallet();
   const { isBookmarked, isLoading: isBookmarking, toggle } = useBookmarkToggle(marketId);
 
-  if (!isAuthenticated) {
+  if (!hasSession) {
     return (
       <Button
         variant={variant}
@@ -44,8 +44,13 @@ export function BookmarkButton({
 
   return (
     <Button
-      onClick={toggle}
-      disabled={isLoading || isBookmarking}
+      onClick={() => {
+        if (!isAuthenticated) {
+          return;
+        }
+        void toggle();
+      }}
+      disabled={isLoading || isBookmarking || !isAuthenticated}
       variant={variant}
       size={size}
       className={cn(
@@ -53,7 +58,13 @@ export function BookmarkButton({
         isBookmarked && "text-yellow-500 hover:text-yellow-400",
         className
       )}
-      title={isBookmarked ? "Remove from watchlist" : "Add to watchlist"}
+      title={
+        !isAuthenticated
+          ? "Restoring wallet session..."
+          : isBookmarked
+            ? "Remove from watchlist"
+            : "Add to watchlist"
+      }
     >
       <Star
         className={cn(

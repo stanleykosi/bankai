@@ -21,6 +21,7 @@ import type { User } from "@/types";
 export interface UseWalletReturn {
   isAuthenticated: boolean;
   isLoading: boolean;
+  hasSession: boolean;
   isSessionRestoring: boolean;
   user: User | null;
   eoaAddress: string | null;
@@ -383,6 +384,19 @@ export function useWallet(): UseWalletReturn {
     walletCache.eoaAddress = null;
     walletCache.fetchedAt = 0;
     setBackendUser(null);
+    sessionCache.eoaAddress = null;
+    sessionCache.proxyAddress = null;
+    sessionCache.restoreUntil = 0;
+    sessionCache.initialized = true;
+    if (typeof window !== "undefined") {
+      window.sessionStorage.removeItem(LAST_EOA_KEY);
+      window.sessionStorage.removeItem(LAST_PROXY_KEY);
+    }
+    setSessionState({
+      eoaAddress: null,
+      proxyAddress: null,
+      restoreUntil: 0,
+    });
     authState.inFlight = null;
     authState.lastFailure = null;
     authState.lastAttempt = null;
@@ -427,14 +441,15 @@ export function useWallet(): UseWalletReturn {
     window.sessionStorage.setItem(LAST_PROXY_KEY, vaultAddress);
   }, [eoaAddress, vaultAddress]);
 
-  const uiVaultAddress =
-    vaultAddress ?? (isSessionRestoring ? sessionState.proxyAddress : null);
+  const uiVaultAddress = vaultAddress ?? sessionState.proxyAddress ?? null;
+  const hasSession = Boolean(uiVaultAddress || eoaAddress || resolvedUser);
   const isLoading =
     isSyncing || isSessionRestoring || (Boolean(backendUser) && !eoaAddress);
 
   return {
     isAuthenticated: Boolean(resolvedUser) && Boolean(eoaAddress),
     isLoading,
+    hasSession,
     isSessionRestoring,
     user: resolvedUser,
     eoaAddress,

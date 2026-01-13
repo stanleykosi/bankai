@@ -85,7 +85,7 @@ function TraderRow({ trader, index }: { trader: FollowPerformance; index: number
 }
 
 export default function FollowingPerformancePage() {
-  const { isAuthenticated, isLoading: isAuthLoading } = useWallet();
+  const { hasSession, isLoading: isAuthLoading } = useWallet();
   const { data, isLoading, isError, refetch, isFetching } = useFollowingPerformance();
 
   const following = data?.following ?? [];
@@ -119,7 +119,7 @@ export default function FollowingPerformancePage() {
           </div>
         </div>
 
-        {!isAuthenticated ? (
+        {!hasSession ? (
           <Card className="border-border/60 bg-card/70">
             <CardContent className="py-8 text-center text-muted-foreground">
               {isAuthLoading ? "Loading session..." : "Connect a wallet to view the traders you follow."}

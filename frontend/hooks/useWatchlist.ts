@@ -21,12 +21,12 @@ import { useWallet } from "@/hooks/useWallet";
  * Hook for checking if a market is bookmarked
  */
 export function useIsBookmarked(marketId: string | undefined) {
-  const { isAuthenticated, isLoading } = useWallet();
+  const { isAuthenticated, isLoading, hasSession } = useWallet();
 
   return useQuery({
     queryKey: ["is-bookmarked", marketId],
     queryFn: () => checkIsBookmarked(marketId!),
-    enabled: Boolean(marketId) && !isLoading && isAuthenticated,
+    enabled: Boolean(marketId) && !isLoading && (isAuthenticated || hasSession),
     staleTime: 30_000,
   });
 }
@@ -35,12 +35,12 @@ export function useIsBookmarked(marketId: string | undefined) {
  * Hook for getting user's watchlist
  */
 export function useWatchlist() {
-  const { isAuthenticated, isLoading } = useWallet();
+  const { isAuthenticated, isLoading, hasSession } = useWallet();
 
   return useQuery({
     queryKey: ["watchlist"],
     queryFn: () => fetchWatchlist(),
-    enabled: !isLoading && isAuthenticated,
+    enabled: !isLoading && (isAuthenticated || hasSession),
     staleTime: 30_000,
     refetchInterval: 30_000, // Refresh prices every 30 seconds
   });

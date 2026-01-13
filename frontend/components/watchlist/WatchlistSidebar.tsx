@@ -78,10 +78,10 @@ function WatchlistMarketItem({ item }: { item: WatchlistItem }) {
 }
 
 export function WatchlistSidebar() {
-  const { isAuthenticated } = useWallet();
+  const { hasSession } = useWallet();
   const { data, isLoading } = useWatchlist();
 
-  if (!isAuthenticated) {
+  if (!hasSession) {
     return null;
   }
 

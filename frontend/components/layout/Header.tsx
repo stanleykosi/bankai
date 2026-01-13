@@ -29,7 +29,7 @@ export function Header() {
   const pathname = usePathname();
   const { isAuthenticated, vaultAddress, uiVaultAddress, isSessionRestoring } = useWallet();
   const [depositModalOpen, setDepositModalOpen] = useState(false);
-  const showWalletActions = isAuthenticated || isSessionRestoring;
+  const showWalletActions = isAuthenticated || Boolean(uiVaultAddress) || isSessionRestoring;
   const canManageFunds = Boolean(isAuthenticated && vaultAddress);
 
   return (

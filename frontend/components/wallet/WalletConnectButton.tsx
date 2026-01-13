@@ -57,6 +57,8 @@ export function WalletConnectButton() {
   const {
     eoaAddress,
     vaultAddress,
+    uiVaultAddress,
+    isSessionRestoring,
     isAuthenticated,
     isLoading: isWalletLoading,
     refreshUser,
@@ -66,7 +68,7 @@ export function WalletConnectButton() {
   const [cachedProxyAddress, setCachedProxyAddress] = useState<string | null>(null);
   const [cachedEoaAddress, setCachedEoaAddress] = useState<string | null>(null);
   const disconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hasTradingWallet = Boolean(vaultAddress);
+  const hasTradingWallet = Boolean(vaultAddress || uiVaultAddress);
   const {
     canDeploy,
     isDeploying,
@@ -145,28 +147,14 @@ export function WalletConnectButton() {
   }, [address, vaultAddress]);
 
   useEffect(() => {
-    if (!isDisconnected) {
+    if (!isDisconnected || isSessionRestoring || uiVaultAddress) {
       if (disconnectTimerRef.current) {
         clearTimeout(disconnectTimerRef.current);
         disconnectTimerRef.current = null;
       }
       return;
     }
-
-    if (disconnectTimerRef.current) {
-      return;
-    }
-
-    disconnectTimerRef.current = setTimeout(() => {
-      setCachedProxyAddress(null);
-      setCachedEoaAddress(null);
-      if (typeof window !== "undefined") {
-        window.sessionStorage.removeItem(LAST_PROXY_KEY);
-        window.sessionStorage.removeItem(LAST_EOA_KEY);
-      }
-      disconnectTimerRef.current = null;
-    }, 2000);
-  }, [isDisconnected]);
+  }, [isDisconnected, isSessionRestoring, uiVaultAddress]);
 
   // Clear connecting state on error and allow modal to be closed
   useEffect(() => {
@@ -237,7 +225,8 @@ export function WalletConnectButton() {
       : null;
   const reconnectProxy =
     !address && (isConnecting || isReconnecting) ? cachedProxyAddress : null;
-  const displayAddress = vaultAddress || matchedCachedProxy || reconnectProxy || null;
+  const displayAddress =
+    vaultAddress || uiVaultAddress || matchedCachedProxy || reconnectProxy || null;
   const deploymentLabel = useMemo(() => {
     if (deployError) return deployError;
     switch (deploymentStep) {

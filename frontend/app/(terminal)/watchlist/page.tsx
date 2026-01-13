@@ -161,7 +161,7 @@ function WatchlistCard({ item }: { item: WatchlistItem }) {
 
 export default function WatchlistPage() {
   const { data, isLoading } = useWatchlist();
-  const { isAuthenticated, isLoading: isAuthLoading } = useWallet();
+  const { hasSession, isLoading: isAuthLoading } = useWallet();
   const [search, setSearch] = React.useState("");
   const [sortBy, setSortBy] = React.useState<SortKey>("recent");
   const [filterBy, setFilterBy] = React.useState<FilterKey>("all");
@@ -217,7 +217,7 @@ export default function WatchlistPage() {
 
   return (
     <>
-      {isAuthLoading ? (
+      {!hasSession && isAuthLoading ? (
         <div className="container max-w-[1200px] py-10">
           <Card className="border-border/60 bg-card/60">
             <CardContent className="flex min-h-[220px] items-center justify-center">
@@ -225,7 +225,7 @@ export default function WatchlistPage() {
             </CardContent>
           </Card>
         </div>
-      ) : !isAuthenticated ? (
+      ) : !hasSession ? (
         <div className="container max-w-[1200px] py-10">
           <Card className="border-border/60 bg-card/60">
             <CardContent className="p-10 text-center">
