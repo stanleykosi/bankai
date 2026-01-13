@@ -7,6 +7,7 @@ const isModifiedClick = (event: MouseEvent) =>
   event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
 
 const DEBUG_KEY = "bankai:debug:clicks";
+const NAV_FALLBACK_MS = 600;
 
 export function LinkClickInterceptor() {
   const router = useRouter();
@@ -49,6 +50,8 @@ export function LinkClickInterceptor() {
       const debug = window.localStorage.getItem(DEBUG_KEY) === "1";
       const wasPrevented = event.defaultPrevented;
       event.preventDefault();
+      const beforeHref = window.location.href;
+      const beforeState = window.history.state;
       try {
         router.push(href);
         if (debug) {
@@ -58,7 +61,37 @@ export function LinkClickInterceptor() {
         if (debug) {
           console.error("[debug] router.push failed", error);
         }
+        window.location.assign(url.toString());
+        return;
       }
+
+      const fallback = () => {
+        const nowHref = window.location.href;
+        const nowState = window.history.state;
+        if (nowHref !== beforeHref || nowState !== beforeState) {
+          return;
+        }
+        if (debug) {
+          console.warn("[debug] router.push stalled, forcing reload", {
+            from: beforeHref,
+            to: url.toString(),
+          });
+        }
+        window.location.assign(url.toString());
+      };
+
+      const rafId = window.requestAnimationFrame(() => {
+        const nowHref = window.location.href;
+        const nowState = window.history.state;
+        if (nowHref !== beforeHref || nowState !== beforeState) {
+          return;
+        }
+        window.setTimeout(fallback, NAV_FALLBACK_MS);
+      });
+
+      window.setTimeout(() => {
+        window.cancelAnimationFrame(rafId);
+      }, NAV_FALLBACK_MS + 100);
     };
 
     window.addEventListener("click", handleClick, true);
