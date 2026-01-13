@@ -27,8 +27,10 @@ const navLinks = [
 
 export function Header() {
   const pathname = usePathname();
-  const { isAuthenticated, vaultAddress } = useWallet();
+  const { isAuthenticated, vaultAddress, uiVaultAddress, isSessionRestoring } = useWallet();
   const [depositModalOpen, setDepositModalOpen] = useState(false);
+  const showWalletActions = isAuthenticated || isSessionRestoring;
+  const canManageFunds = Boolean(isAuthenticated && vaultAddress);
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -65,19 +67,25 @@ export function Header() {
         <div className="flex items-center space-x-3">
           <WalletConnectButton />
 
-          {isAuthenticated && vaultAddress && (
+          {showWalletActions && uiVaultAddress && (
             <Button
               type="button"
               variant="outline"
               size="sm"
-              className="font-mono"
-              onClick={() => setDepositModalOpen(true)}
+              className={cn("font-mono", !canManageFunds && "opacity-60")}
+              disabled={!canManageFunds}
+              onClick={() => {
+                if (!canManageFunds) {
+                  return;
+                }
+                setDepositModalOpen(true);
+              }}
             >
               Funds
             </Button>
           )}
 
-          {isAuthenticated && <NotificationBell />}
+          {showWalletActions && <NotificationBell enabled={isAuthenticated} />}
 
           {isAuthenticated && vaultAddress && (
             <DepositWithdrawModal

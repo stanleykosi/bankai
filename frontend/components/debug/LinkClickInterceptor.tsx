@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 const isModifiedClick = (event: MouseEvent) =>
@@ -10,9 +10,12 @@ const DEBUG_KEY = "bankai:debug:clicks";
 
 export function LinkClickInterceptor() {
   const router = useRouter();
-  const lastNavRef = useRef<string | null>(null);
 
   useEffect(() => {
+    if (window.localStorage.getItem(DEBUG_KEY) !== "1") {
+      return;
+    }
+
     const handleClick = (event: MouseEvent) => {
       if (event.button !== 0 || isModifiedClick(event)) {
         return;
@@ -43,8 +46,6 @@ export function LinkClickInterceptor() {
       }
 
       const href = `${url.pathname}${url.search}${url.hash}`;
-      const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-      lastNavRef.current = href;
       const debug = window.localStorage.getItem(DEBUG_KEY) === "1";
       const wasPrevented = event.defaultPrevented;
       event.preventDefault();
@@ -58,19 +59,6 @@ export function LinkClickInterceptor() {
           console.error("[debug] router.push failed", error);
         }
       }
-
-      window.setTimeout(() => {
-        const now = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-        if (now === current) {
-          if (debug) {
-            console.warn("[debug] router push stalled, hard navigating", {
-              from: current,
-              to: href,
-            });
-          }
-          window.location.assign(url.toString());
-        }
-      }, 250);
     };
 
     window.addEventListener("click", handleClick, true);

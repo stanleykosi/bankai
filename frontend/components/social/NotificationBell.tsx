@@ -5,19 +5,28 @@
  * Notification Bell component with unread count badge.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Bell } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useUnreadCount } from "@/hooks/useNotifications";
-import { useWallet } from "@/hooks/useWallet";
 import { NotificationPanel } from "./NotificationPanel";
 
-export function NotificationBell() {
-  const { isAuthenticated } = useWallet();
+interface NotificationBellProps {
+  enabled?: boolean;
+  visible?: boolean;
+}
+
+export function NotificationBell({ enabled = true, visible = true }: NotificationBellProps) {
   const unreadCount = useUnreadCount();
   const [isOpen, setIsOpen] = useState(false);
 
-  if (!isAuthenticated) {
+  useEffect(() => {
+    if (!enabled && isOpen) {
+      setIsOpen(false);
+    }
+  }, [enabled, isOpen]);
+
+  if (!visible) {
     return null;
   }
 
@@ -27,7 +36,13 @@ export function NotificationBell() {
         variant="ghost"
         size="icon"
         className="relative"
-        onClick={() => setIsOpen(!isOpen)}
+        disabled={!enabled}
+        onClick={() => {
+          if (!enabled) {
+            return;
+          }
+          setIsOpen(!isOpen);
+        }}
       >
         <Bell className="h-5 w-5" />
         {unreadCount > 0 && (

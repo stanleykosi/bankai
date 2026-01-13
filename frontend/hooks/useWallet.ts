@@ -10,7 +10,7 @@
 
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { polygon } from "viem/chains";
 import { useAccount, useDisconnect, useSignMessage, useSwitchChain } from "wagmi";
 
@@ -21,9 +21,11 @@ import type { User } from "@/types";
 export interface UseWalletReturn {
   isAuthenticated: boolean;
   isLoading: boolean;
+  isSessionRestoring: boolean;
   user: User | null;
   eoaAddress: string | null;
   vaultAddress: string | null;
+  uiVaultAddress: string | null;
   walletError: string | null;
   disconnect: () => void;
   refreshUser: () => Promise<void>;
@@ -41,11 +43,36 @@ const AUTH_RETRY_WINDOW_MS = 30_000;
 const AUTH_ATTEMPT_TTL_MS = 60_000;
 const ENSURE_TTL_MS = 10 * 60 * 1000;
 const ENSURE_KEY_PREFIX = "bankai:wallet:ensure:";
+const LAST_PROXY_KEY = "bankai:wallet:last-proxy";
+const LAST_EOA_KEY = "bankai:wallet:last-eoa";
+const SESSION_RESTORE_WINDOW_MS = 4000;
 
 const authState = {
   inFlight: null as Promise<void> | null,
   lastFailure: null as { address: string; at: number } | null,
   lastAttempt: null as { address: string; at: number } | null,
+};
+
+const useIsomorphicLayoutEffect =
+  typeof window !== "undefined" ? useLayoutEffect : useEffect;
+
+const sessionCache = {
+  eoaAddress: null as string | null,
+  proxyAddress: null as string | null,
+  restoreUntil: 0,
+  initialized: false,
+};
+
+const initSessionCache = () => {
+  if (sessionCache.initialized || typeof window === "undefined") {
+    return;
+  }
+  sessionCache.eoaAddress = window.sessionStorage.getItem(LAST_EOA_KEY);
+  sessionCache.proxyAddress = window.sessionStorage.getItem(LAST_PROXY_KEY);
+  if (sessionCache.eoaAddress || sessionCache.proxyAddress) {
+    sessionCache.restoreUntil = Date.now() + SESSION_RESTORE_WINDOW_MS;
+  }
+  sessionCache.initialized = true;
 };
 
 const shouldEnsureWallet = (eoaAddress: string) => {
@@ -69,16 +96,102 @@ export function useWallet(): UseWalletReturn {
   const { signMessageAsync } = useSignMessage();
   const { switchChainAsync } = useSwitchChain();
 
+  initSessionCache();
+
+  const [sessionState, setSessionState] = useState(() => ({
+    eoaAddress: sessionCache.eoaAddress,
+    proxyAddress: sessionCache.proxyAddress,
+    restoreUntil: sessionCache.restoreUntil,
+  }));
   const [backendUser, setBackendUser] = useState<User | null>(() => walletCache.user);
   const [isSyncing, setIsSyncing] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
   const chainIdRef = useRef<number | undefined>(chainId);
 
   const eoaAddress = address ?? null;
+  const isSessionRestoring =
+    !eoaAddress && sessionState.restoreUntil > Date.now();
 
   useEffect(() => {
     chainIdRef.current = chainId;
   }, [chainId]);
+
+  useIsomorphicLayoutEffect(() => {
+    if (sessionCache.initialized) {
+      return;
+    }
+    initSessionCache();
+    if (sessionCache.initialized) {
+      setSessionState({
+        eoaAddress: sessionCache.eoaAddress,
+        proxyAddress: sessionCache.proxyAddress,
+        restoreUntil: sessionCache.restoreUntil,
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!sessionState.restoreUntil || typeof window === "undefined") {
+      return;
+    }
+    const now = Date.now();
+    if (sessionState.restoreUntil <= now) {
+      sessionCache.restoreUntil = 0;
+      setSessionState((prev) => ({ ...prev, restoreUntil: 0 }));
+      if (!authState.inFlight) {
+        setIsSyncing(false);
+      }
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      sessionCache.restoreUntil = 0;
+      setSessionState((prev) => ({ ...prev, restoreUntil: 0 }));
+      if (!authState.inFlight) {
+        setIsSyncing(false);
+      }
+    }, sessionState.restoreUntil - now);
+    return () => clearTimeout(timeout);
+  }, [sessionState.restoreUntil]);
+
+  useEffect(() => {
+    if (!eoaAddress || !sessionState.restoreUntil) {
+      return;
+    }
+    sessionCache.restoreUntil = 0;
+    setSessionState((prev) => ({ ...prev, restoreUntil: 0 }));
+  }, [eoaAddress, sessionState.restoreUntil]);
+
+  useEffect(() => {
+    if (!isDisconnected || typeof window === "undefined") {
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      const storedProxy = window.sessionStorage.getItem(LAST_PROXY_KEY);
+      const storedEoa = window.sessionStorage.getItem(LAST_EOA_KEY);
+      if (!storedProxy && !storedEoa) {
+        sessionCache.eoaAddress = null;
+        sessionCache.proxyAddress = null;
+        sessionCache.restoreUntil = 0;
+        sessionCache.initialized = true;
+        setSessionState({
+          eoaAddress: null,
+          proxyAddress: null,
+          restoreUntil: 0,
+        });
+        return;
+      }
+      sessionCache.eoaAddress = storedEoa;
+      sessionCache.proxyAddress = storedProxy;
+      sessionCache.restoreUntil = 0;
+      sessionCache.initialized = true;
+      setSessionState({
+        eoaAddress: storedEoa,
+        proxyAddress: storedProxy,
+        restoreUntil: 0,
+      });
+    }, 2100);
+    return () => clearTimeout(timeout);
+  }, [isDisconnected]);
 
   const loadUser = useCallback(
     async (force = false) => {
@@ -174,6 +287,10 @@ export function useWallet(): UseWalletReturn {
   const ensureAuth = useCallback(
     async (force = false) => {
       if (!eoaAddress || !isConnected) {
+        if (isSessionRestoring) {
+          setIsSyncing(true);
+          return;
+        }
         if (isConnecting || isReconnecting) {
           setIsSyncing(true);
           return;
@@ -250,7 +367,7 @@ export function useWallet(): UseWalletReturn {
       authState.inFlight = run;
       return run;
     },
-    [eoaAddress, isConnected, isConnecting, isReconnecting, isDisconnected, loadUser, maybeEnsureWallet, requestAuth]
+    [eoaAddress, isConnected, isConnecting, isReconnecting, isDisconnected, isSessionRestoring, loadUser, maybeEnsureWallet, requestAuth]
   );
 
   useEffect(() => {
@@ -287,14 +404,42 @@ export function useWallet(): UseWalletReturn {
       : null
     : backendUser?.vault_address ?? null;
 
-  const isLoading = isSyncing || (Boolean(backendUser) && !eoaAddress);
+  useEffect(() => {
+    if (!eoaAddress || !vaultAddress || typeof window === "undefined") {
+      return;
+    }
+    if (
+      sessionCache.eoaAddress === eoaAddress &&
+      sessionCache.proxyAddress === vaultAddress
+    ) {
+      return;
+    }
+    sessionCache.eoaAddress = eoaAddress;
+    sessionCache.proxyAddress = vaultAddress;
+    sessionCache.restoreUntil = 0;
+    sessionCache.initialized = true;
+    setSessionState({
+      eoaAddress,
+      proxyAddress: vaultAddress,
+      restoreUntil: 0,
+    });
+    window.sessionStorage.setItem(LAST_EOA_KEY, eoaAddress);
+    window.sessionStorage.setItem(LAST_PROXY_KEY, vaultAddress);
+  }, [eoaAddress, vaultAddress]);
+
+  const uiVaultAddress =
+    vaultAddress ?? (isSessionRestoring ? sessionState.proxyAddress : null);
+  const isLoading =
+    isSyncing || isSessionRestoring || (Boolean(backendUser) && !eoaAddress);
 
   return {
     isAuthenticated: Boolean(resolvedUser) && Boolean(eoaAddress),
     isLoading,
+    isSessionRestoring,
     user: resolvedUser,
     eoaAddress,
     vaultAddress,
+    uiVaultAddress,
     walletError,
     disconnect: handleDisconnect,
     refreshUser,
