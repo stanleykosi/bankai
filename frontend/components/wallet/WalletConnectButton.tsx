@@ -65,8 +65,18 @@ export function WalletConnectButton() {
   } = useWallet();
   const [open, setOpen] = useState(false);
   const [connectingId, setConnectingId] = useState<string | null>(null);
-  const [cachedProxyAddress, setCachedProxyAddress] = useState<string | null>(null);
-  const [cachedEoaAddress, setCachedEoaAddress] = useState<string | null>(null);
+  const [cachedProxyAddress, setCachedProxyAddress] = useState<string | null>(() => {
+    if (typeof window === "undefined") {
+      return null;
+    }
+    return window.sessionStorage.getItem(LAST_PROXY_KEY);
+  });
+  const [cachedEoaAddress, setCachedEoaAddress] = useState<string | null>(() => {
+    if (typeof window === "undefined") {
+      return null;
+    }
+    return window.sessionStorage.getItem(LAST_EOA_KEY);
+  });
   const disconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasTradingWallet = Boolean(vaultAddress || uiVaultAddress);
   const {

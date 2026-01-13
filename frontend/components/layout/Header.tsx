@@ -7,17 +7,19 @@
 
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import dynamic from "next/dynamic";
 import { Activity, BarChart2, LayoutDashboard, Wallet } from "lucide-react";
 
-import { WalletConnectButton } from "@/components/wallet/WalletConnectButton";
-import { DepositWithdrawModal } from "@/components/wallet/DepositWithdrawModal";
-import { NotificationBell } from "@/components/social/NotificationBell";
-import { Button } from "@/components/ui/button";
-import { useWallet } from "@/hooks/useWallet";
 import { cn } from "@/lib/utils";
+
+const WalletActions = dynamic(() => import("./WalletActions"), {
+  ssr: false,
+  loading: () => (
+    <div className="h-8 w-[160px] rounded-md bg-muted/40" />
+  ),
+});
 
 const navLinks = [
   { href: "/dashboard", label: "Radar", Icon: LayoutDashboard },
@@ -27,10 +29,6 @@ const navLinks = [
 
 export function Header() {
   const pathname = usePathname();
-  const { isAuthenticated, vaultAddress, uiVaultAddress, isSessionRestoring } = useWallet();
-  const [depositModalOpen, setDepositModalOpen] = useState(false);
-  const showWalletActions = isAuthenticated || Boolean(uiVaultAddress) || isSessionRestoring;
-  const canManageFunds = Boolean(isAuthenticated && vaultAddress);
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -65,34 +63,7 @@ export function Header() {
 
         {/* User / Wallet Actions */}
         <div className="flex items-center space-x-3">
-          <WalletConnectButton />
-
-          {showWalletActions && uiVaultAddress && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className={cn("font-mono", !canManageFunds && "opacity-60")}
-              disabled={!canManageFunds}
-              onClick={() => {
-                if (!canManageFunds) {
-                  return;
-                }
-                setDepositModalOpen(true);
-              }}
-            >
-              Funds
-            </Button>
-          )}
-
-          {showWalletActions && <NotificationBell enabled={isAuthenticated} />}
-
-          {isAuthenticated && vaultAddress && (
-            <DepositWithdrawModal
-              open={depositModalOpen}
-              onOpenChange={setDepositModalOpen}
-            />
-          )}
+          <WalletActions />
         </div>
       </div>
     </header>
