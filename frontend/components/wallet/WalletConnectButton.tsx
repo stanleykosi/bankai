@@ -61,6 +61,7 @@ export function WalletConnectButton() {
   } = useWallet();
   const [open, setOpen] = useState(false);
   const [connectingId, setConnectingId] = useState<string | null>(null);
+  const [cachedProxyAddress, setCachedProxyAddress] = useState<string | null>(null);
   const hasTradingWallet = Boolean(vaultAddress);
   const {
     canDeploy,
@@ -104,6 +105,16 @@ export function WalletConnectButton() {
       setConnectingId(null);
     }
   }, [address]);
+
+  useEffect(() => {
+    if (vaultAddress) {
+      setCachedProxyAddress(vaultAddress);
+      return;
+    }
+    if (!address) {
+      setCachedProxyAddress(null);
+    }
+  }, [address, vaultAddress]);
 
   // Clear connecting state on error and allow modal to be closed
   useEffect(() => {
@@ -160,7 +171,7 @@ export function WalletConnectButton() {
   // Only disable primary trigger if we actively kicked off a connection
   const isBusy =
     Boolean(connectingId) && (isPending || isConnecting || isReconnecting);
-  const displayAddress = vaultAddress || null;
+  const displayAddress = vaultAddress || cachedProxyAddress || null;
   const deploymentLabel = useMemo(() => {
     if (deployError) return deployError;
     switch (deploymentStep) {

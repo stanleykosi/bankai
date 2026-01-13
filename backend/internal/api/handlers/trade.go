@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bankai-project/backend/internal/api/middleware"
 	"github.com/bankai-project/backend/internal/config"
@@ -29,20 +30,23 @@ import (
 	"github.com/bankai-project/backend/internal/polymarket/clob"
 	"github.com/bankai-project/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 type TradeHandler struct {
-	Service *services.TradeService
-	Config  *config.Config
-	DB      *gorm.DB
+	Service       *services.TradeService
+	Notifications *services.NotificationService
+	Config        *config.Config
+	DB            *gorm.DB
 }
 
-func NewTradeHandler(service *services.TradeService, cfg *config.Config, db *gorm.DB) *TradeHandler {
+func NewTradeHandler(service *services.TradeService, notifications *services.NotificationService, cfg *config.Config, db *gorm.DB) *TradeHandler {
 	return &TradeHandler{
-		Service: service,
-		Config:  cfg,
-		DB:      db,
+		Service:       service,
+		Notifications: notifications,
+		Config:        cfg,
+		DB:            db,
 	}
 }
 
@@ -193,10 +197,14 @@ func (h *TradeHandler) SyncOrders(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "orders array is required"})
 	}
 
+	existingOrders := h.getExistingOrderIDs(c.Context(), user.ID, req.Orders)
+
 	if err := h.Service.SyncOrdersFromSDK(c.Context(), user, req.Orders); err != nil {
 		logger.Error("SyncOrders failed: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to sync orders"})
 	}
+
+	h.notifyFollowers(c.Context(), user, req.Orders, existingOrders)
 
 	return c.JSON(fiber.Map{"status": "ok"})
 }
@@ -216,10 +224,14 @@ func (h *TradeHandler) SyncOrdersInternal(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "orders array is required"})
 	}
 
+	existingOrders := h.getExistingOrderIDsByAddress(c.Context(), req.Orders)
+
 	if err := h.Service.SyncOrdersByAddress(c.Context(), req.Orders); err != nil {
 		logger.Error("SyncOrdersInternal failed: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to sync orders"})
 	}
+
+	h.notifyFollowersByAddress(c.Context(), req.Orders, existingOrders)
 
 	return c.JSON(fiber.Map{"status": "ok"})
 }
@@ -230,6 +242,249 @@ func (h *TradeHandler) fetchUserRecord(ctx context.Context, userID string) (*mod
 		return nil, err
 	}
 	return &user, nil
+}
+
+func (h *TradeHandler) getExistingOrderIDs(ctx context.Context, userID uuid.UUID, orders []services.SyncedOrder) map[string]struct{} {
+	existing := make(map[string]struct{})
+	if len(orders) == 0 {
+		return existing
+	}
+
+	orderIDs := uniqueOrderIDs(orders)
+	if len(orderIDs) == 0 {
+		return existing
+	}
+
+	var rows []models.Order
+	if err := h.DB.WithContext(ctx).
+		Select("clob_order_id").
+		Where("user_id = ? AND clob_order_id IN ?", userID, orderIDs).
+		Find(&rows).Error; err != nil {
+		logger.Error("TradeHandler: Failed to check existing orders: %v", err)
+		return existing
+	}
+
+	for _, row := range rows {
+		if row.CLOBOrderID != "" {
+			existing[row.CLOBOrderID] = struct{}{}
+		}
+	}
+
+	return existing
+}
+
+func (h *TradeHandler) getExistingOrderIDsByAddress(ctx context.Context, orders []services.SyncedOrder) map[string]struct{} {
+	existing := make(map[string]struct{})
+	if len(orders) == 0 {
+		return existing
+	}
+
+	orderIDs := uniqueOrderIDs(orders)
+	if len(orderIDs) == 0 {
+		return existing
+	}
+
+	var rows []models.Order
+	if err := h.DB.WithContext(ctx).
+		Select("clob_order_id").
+		Where("clob_order_id IN ?", orderIDs).
+		Find(&rows).Error; err != nil {
+		logger.Error("TradeHandler: Failed to check existing orders: %v", err)
+		return existing
+	}
+
+	for _, row := range rows {
+		if row.CLOBOrderID != "" {
+			existing[row.CLOBOrderID] = struct{}{}
+		}
+	}
+
+	return existing
+}
+
+func (h *TradeHandler) notifyFollowers(ctx context.Context, user *models.User, orders []services.SyncedOrder, existing map[string]struct{}) {
+	if h.Notifications == nil || len(orders) == 0 {
+		return
+	}
+
+	marketMap := fetchMarketMap(ctx, h.DB, orders)
+	sent := make(map[string]struct{})
+
+	for _, order := range orders {
+		if shouldSkipNotification(order, existing) {
+			continue
+		}
+		if _, ok := sent[order.OrderID]; ok {
+			continue
+		}
+
+		traderAddress := strings.ToLower(strings.TrimSpace(order.MakerAddress))
+		if traderAddress == "" && user != nil {
+			if user.VaultAddress != "" {
+				traderAddress = strings.ToLower(user.VaultAddress)
+			} else if user.EOAAddress != "" {
+				traderAddress = strings.ToLower(user.EOAAddress)
+			}
+		}
+		if traderAddress == "" {
+			continue
+		}
+
+		data := buildTradeAlertData(order, traderAddress, marketMap)
+		if err := h.Notifications.CreateTradeAlert(ctx, data); err != nil {
+			logger.Error("TradeHandler: Failed to create trade alert: %v", err)
+		} else {
+			sent[order.OrderID] = struct{}{}
+		}
+	}
+}
+
+func (h *TradeHandler) notifyFollowersByAddress(ctx context.Context, orders []services.SyncedOrder, existing map[string]struct{}) {
+	if h.Notifications == nil || len(orders) == 0 {
+		return
+	}
+
+	marketMap := fetchMarketMap(ctx, h.DB, orders)
+	sent := make(map[string]struct{})
+
+	for _, order := range orders {
+		if shouldSkipNotification(order, existing) {
+			continue
+		}
+		if _, ok := sent[order.OrderID]; ok {
+			continue
+		}
+
+		traderAddress := strings.ToLower(strings.TrimSpace(order.MakerAddress))
+		if traderAddress == "" {
+			continue
+		}
+
+		data := buildTradeAlertData(order, traderAddress, marketMap)
+		if err := h.Notifications.CreateTradeAlert(ctx, data); err != nil {
+			logger.Error("TradeHandler: Failed to create trade alert: %v", err)
+		} else {
+			sent[order.OrderID] = struct{}{}
+		}
+	}
+}
+
+func shouldSkipNotification(order services.SyncedOrder, existing map[string]struct{}) bool {
+	if order.OrderID == "" {
+		return true
+	}
+	if _, ok := existing[order.OrderID]; ok {
+		return true
+	}
+	status := strings.ToLower(strings.TrimSpace(order.Status))
+	if strings.Contains(status, "cancel") || strings.Contains(status, "fail") {
+		return true
+	}
+	return false
+}
+
+func uniqueOrderIDs(orders []services.SyncedOrder) []string {
+	seen := make(map[string]struct{})
+	ids := make([]string, 0, len(orders))
+	for _, order := range orders {
+		id := strings.TrimSpace(order.OrderID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func fetchMarketMap(ctx context.Context, db *gorm.DB, orders []services.SyncedOrder) map[string]models.Market {
+	marketMap := make(map[string]models.Market)
+	if db == nil || len(orders) == 0 {
+		return marketMap
+	}
+
+	seen := make(map[string]struct{})
+	ids := make([]string, 0, len(orders))
+	for _, order := range orders {
+		if order.MarketID == "" {
+			continue
+		}
+		if _, ok := seen[order.MarketID]; ok {
+			continue
+		}
+		seen[order.MarketID] = struct{}{}
+		ids = append(ids, order.MarketID)
+	}
+	if len(ids) == 0 {
+		return marketMap
+	}
+
+	var markets []models.Market
+	if err := db.WithContext(ctx).
+		Where("condition_id IN ?", ids).
+		Find(&markets).Error; err != nil {
+		logger.Error("TradeHandler: Failed to load markets for notifications: %v", err)
+		return marketMap
+	}
+
+	for _, market := range markets {
+		if market.ConditionID != "" {
+			marketMap[market.ConditionID] = market
+		}
+	}
+
+	return marketMap
+}
+
+func buildTradeAlertData(order services.SyncedOrder, traderAddress string, marketMap map[string]models.Market) services.TradeAlertData {
+	side := strings.ToUpper(strings.TrimSpace(order.Side))
+	if side == "" {
+		side = "BUY"
+	}
+	outcome := order.Outcome
+	if outcome == "" {
+		outcome = "Outcome"
+	}
+
+	marketTitle := order.MarketID
+	marketSlug := order.MarketID
+	if market, ok := marketMap[order.MarketID]; ok {
+		if market.Title != "" {
+			marketTitle = market.Title
+		}
+		if market.Slug != "" {
+			marketSlug = market.Slug
+		}
+	}
+	if marketTitle == "" {
+		marketTitle = "Unknown market"
+	}
+	if marketSlug == "" {
+		marketSlug = "unknown"
+	}
+
+	ts := order.UpdatedAt
+	if ts.IsZero() {
+		ts = order.CreatedAt
+	}
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
+
+	return services.TradeAlertData{
+		TraderAddress: traderAddress,
+		MarketSlug:    marketSlug,
+		MarketTitle:   marketTitle,
+		Side:          side,
+		Outcome:       outcome,
+		Price:         order.Price,
+		Size:          order.Size,
+		Value:         order.Price * order.Size,
+		Timestamp:     ts.UTC().Format(time.RFC3339),
+	}
 }
 
 func parsePagination(limitRaw, offsetRaw string) (int, int, error) {

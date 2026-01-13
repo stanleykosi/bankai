@@ -9,10 +9,8 @@
 import { useState } from "react";
 import Image from "next/image";
 import { Calendar, Check, CheckCircle2, Copy, Users } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { useFollowToggle } from "@/hooks/useFollow";
-import { useWallet } from "@/hooks/useWallet";
+import { FollowButton } from "@/components/social/FollowButton";
 import type { TraderProfile } from "@/types";
 
 interface ProfileHeaderProps {
@@ -21,9 +19,8 @@ interface ProfileHeaderProps {
 }
 
 export function ProfileHeader({ profile, followerCount }: ProfileHeaderProps) {
-  const { isAuthenticated } = useWallet();
-  const { isFollowing, isLoading, toggle } = useFollowToggle(profile.address);
   const [copied, setCopied] = useState(false);
+  const followTarget = profile.proxy_wallet || profile.address;
 
   const displayName =
     (profile.profile_name && profile.profile_name.trim()) ||
@@ -129,16 +126,11 @@ export function ProfileHeader({ profile, followerCount }: ProfileHeaderProps) {
           </div>
 
           {/* Follow Button */}
-          {isAuthenticated && (
-            <Button
-              onClick={toggle}
-              disabled={isLoading}
-              variant={isFollowing ? "outline" : "default"}
-              className="min-w-[120px] text-xs font-mono uppercase tracking-[0.3em]"
-            >
-              {isLoading ? "..." : isFollowing ? "Following" : "Follow"}
-            </Button>
-          )}
+          <FollowButton
+            targetAddress={followTarget}
+            showIcon={false}
+            className="min-w-[120px] text-xs font-mono uppercase tracking-[0.3em]"
+          />
         </div>
       </CardContent>
     </Card>

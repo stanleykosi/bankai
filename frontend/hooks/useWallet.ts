@@ -31,6 +31,7 @@ export interface UseWalletReturn {
 
 const walletCache = {
   user: null as User | null,
+  eoaAddress: null as string | null,
   fetchedAt: 0,
   inFlight: null as Promise<User | null> | null,
 };
@@ -68,7 +69,7 @@ export function useWallet(): UseWalletReturn {
   const { signMessageAsync } = useSignMessage();
   const { switchChainAsync } = useSwitchChain();
 
-  const [backendUser, setBackendUser] = useState<User | null>(null);
+  const [backendUser, setBackendUser] = useState<User | null>(() => walletCache.user);
   const [isSyncing, setIsSyncing] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
   const chainIdRef = useRef<number | undefined>(chainId);
@@ -94,12 +95,14 @@ export function useWallet(): UseWalletReturn {
         .get<User>("/user/me")
         .then(({ data }) => {
           walletCache.user = data;
+          walletCache.eoaAddress = data?.eoa_address ?? null;
           walletCache.fetchedAt = Date.now();
           return data;
         })
         .catch((error: any) => {
           if (error.response?.status === 404 || error.response?.status === 401) {
             walletCache.user = null;
+            walletCache.eoaAddress = null;
             walletCache.fetchedAt = Date.now();
             return null;
           }
@@ -118,6 +121,7 @@ export function useWallet(): UseWalletReturn {
     try {
       const { data } = await api.get<User>("/wallet");
       walletCache.user = data;
+      walletCache.eoaAddress = data?.eoa_address ?? null;
       walletCache.fetchedAt = Date.now();
       setWalletError(null);
       return data;
@@ -171,13 +175,21 @@ export function useWallet(): UseWalletReturn {
     async (force = false) => {
       if (!eoaAddress || !isConnected) {
         walletCache.user = null;
+        walletCache.eoaAddress = null;
         walletCache.fetchedAt = 0;
         setBackendUser(null);
         return;
       }
 
       if (authState.inFlight) {
-        return authState.inFlight;
+        setIsSyncing(true);
+        return authState.inFlight
+          .then(() => {
+            setBackendUser(walletCache.user ?? null);
+          })
+          .finally(() => {
+            setIsSyncing(false);
+          });
       }
 
       const run = (async () => {
@@ -187,7 +199,9 @@ export function useWallet(): UseWalletReturn {
           if (user && user.eoa_address && user.eoa_address.toLowerCase() !== eoaAddress.toLowerCase()) {
             await api.post("/auth/logout").catch(() => undefined);
             walletCache.user = null;
+            walletCache.eoaAddress = null;
             walletCache.fetchedAt = 0;
+            setBackendUser(null);
             user = null;
           }
 
@@ -241,6 +255,7 @@ export function useWallet(): UseWalletReturn {
     }
     setWalletError(null);
     walletCache.user = null;
+    walletCache.eoaAddress = null;
     walletCache.fetchedAt = 0;
     setBackendUser(null);
     authState.inFlight = null;
@@ -253,12 +268,25 @@ export function useWallet(): UseWalletReturn {
     await ensureAuth(true);
   }, [ensureAuth]);
 
+  const addressMatches =
+    Boolean(eoaAddress) &&
+    Boolean(backendUser?.eoa_address) &&
+    backendUser?.eoa_address?.toLowerCase() === eoaAddress?.toLowerCase();
+  const resolvedUser = eoaAddress ? (addressMatches ? backendUser : null) : backendUser;
+  const vaultAddress = eoaAddress
+    ? addressMatches
+      ? backendUser?.vault_address ?? null
+      : null
+    : backendUser?.vault_address ?? null;
+
+  const isLoading = isSyncing || (Boolean(backendUser) && !eoaAddress);
+
   return {
-    isAuthenticated: Boolean(backendUser) && Boolean(eoaAddress),
-    isLoading: isSyncing,
-    user: backendUser,
+    isAuthenticated: Boolean(resolvedUser) && Boolean(eoaAddress),
+    isLoading,
+    user: resolvedUser,
     eoaAddress,
-    vaultAddress: backendUser?.vault_address ?? null,
+    vaultAddress,
     walletError,
     disconnect: handleDisconnect,
     refreshUser,

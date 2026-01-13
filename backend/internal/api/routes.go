@@ -78,7 +78,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	userHandler := handlers.NewUserHandler(db)
 	marketHandler := handlers.NewMarketHandler(marketService)
 	walletHandler := handlers.NewWalletHandler(walletManager, blockchainService)
-	tradeHandler := handlers.NewTradeHandler(tradeService, cfg, db)
+	tradeHandler := handlers.NewTradeHandler(tradeService, notificationService, cfg, db)
 	oracleHandler := handlers.NewOracleHandler(oracleService)
 	analysisHandler := handlers.NewAnalysisHandler(alphaHubService)
 

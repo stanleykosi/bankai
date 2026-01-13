@@ -58,8 +58,12 @@ func (h *ProfileHandler) GetTraderProfile(c *fiber.Ctx) error {
 		})
 	}
 
-	// Get follower count
-	followerCount, _ := h.socialService.GetFollowerCount(ctx, address)
+	// Get follower count (prefer proxy wallet if available)
+	followTarget := address
+	if profile.ProxyWallet != "" {
+		followTarget = profile.ProxyWallet
+	}
+	followerCount, _ := h.socialService.GetFollowerCount(ctx, followTarget)
 
 	return c.JSON(fiber.Map{
 		"profile":        profile,
@@ -116,8 +120,6 @@ func (h *ProfileHandler) GetTraderPositions(c *fiber.Ctx) error {
 		"count":     len(positions),
 	})
 }
-
-
 
 // GetRecentTrades returns recent trades for a trader
 // GET /api/v1/profile/:address/trades
