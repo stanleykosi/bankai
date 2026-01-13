@@ -64,7 +64,7 @@ const shouldEnsureWallet = (eoaAddress: string) => {
 };
 
 export function useWallet(): UseWalletReturn {
-  const { address, isConnected, chainId } = useAccount();
+  const { address, isConnected, isConnecting, isReconnecting, isDisconnected, chainId } = useAccount();
   const { disconnect: wagmiDisconnect } = useDisconnect();
   const { signMessageAsync } = useSignMessage();
   const { switchChainAsync } = useSwitchChain();
@@ -174,10 +174,18 @@ export function useWallet(): UseWalletReturn {
   const ensureAuth = useCallback(
     async (force = false) => {
       if (!eoaAddress || !isConnected) {
+        if (isConnecting || isReconnecting) {
+          setIsSyncing(true);
+          return;
+        }
+        if (!isDisconnected && eoaAddress) {
+          return;
+        }
         walletCache.user = null;
         walletCache.eoaAddress = null;
         walletCache.fetchedAt = 0;
         setBackendUser(null);
+        setIsSyncing(false);
         return;
       }
 
@@ -242,7 +250,7 @@ export function useWallet(): UseWalletReturn {
       authState.inFlight = run;
       return run;
     },
-    [eoaAddress, isConnected, loadUser, maybeEnsureWallet, requestAuth]
+    [eoaAddress, isConnected, isConnecting, isReconnecting, isDisconnected, loadUser, maybeEnsureWallet, requestAuth]
   );
 
   useEffect(() => {

@@ -6,7 +6,7 @@
 
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAccount, useConnect, useDisconnect } from "wagmi";
 import { Loader2, LogOut, PlugZap } from "lucide-react";
 
@@ -47,9 +47,11 @@ const getConnectorName = (connector: any): string => {
 };
 
 const truncate = (addr: string) => `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+const LAST_PROXY_KEY = "bankai:wallet:last-proxy";
+const LAST_EOA_KEY = "bankai:wallet:last-eoa";
 
 export function WalletConnectButton() {
-  const { address, isConnecting, isReconnecting } = useAccount();
+  const { address, isConnecting, isReconnecting, isDisconnected } = useAccount();
   const { connect, connectors, error, isPending } = useConnect();
   const { disconnect } = useDisconnect();
   const {
@@ -62,6 +64,8 @@ export function WalletConnectButton() {
   const [open, setOpen] = useState(false);
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [cachedProxyAddress, setCachedProxyAddress] = useState<string | null>(null);
+  const [cachedEoaAddress, setCachedEoaAddress] = useState<string | null>(null);
+  const disconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasTradingWallet = Boolean(vaultAddress);
   const {
     canDeploy,
@@ -107,14 +111,62 @@ export function WalletConnectButton() {
   }, [address]);
 
   useEffect(() => {
-    if (vaultAddress) {
-      setCachedProxyAddress(vaultAddress);
+    if (typeof window === "undefined") {
       return;
     }
-    if (!address) {
-      setCachedProxyAddress(null);
+    const storedProxy = window.sessionStorage.getItem(LAST_PROXY_KEY);
+    const storedEoa = window.sessionStorage.getItem(LAST_EOA_KEY);
+    if (storedProxy) {
+      setCachedProxyAddress(storedProxy);
+    }
+    if (storedEoa) {
+      setCachedEoaAddress(storedEoa);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (disconnectTimerRef.current) {
+        clearTimeout(disconnectTimerRef.current);
+        disconnectTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (vaultAddress && address) {
+      setCachedProxyAddress(vaultAddress);
+      setCachedEoaAddress(address);
+      if (typeof window !== "undefined") {
+        window.sessionStorage.setItem(LAST_PROXY_KEY, vaultAddress);
+        window.sessionStorage.setItem(LAST_EOA_KEY, address);
+      }
     }
   }, [address, vaultAddress]);
+
+  useEffect(() => {
+    if (!isDisconnected) {
+      if (disconnectTimerRef.current) {
+        clearTimeout(disconnectTimerRef.current);
+        disconnectTimerRef.current = null;
+      }
+      return;
+    }
+
+    if (disconnectTimerRef.current) {
+      return;
+    }
+
+    disconnectTimerRef.current = setTimeout(() => {
+      setCachedProxyAddress(null);
+      setCachedEoaAddress(null);
+      if (typeof window !== "undefined") {
+        window.sessionStorage.removeItem(LAST_PROXY_KEY);
+        window.sessionStorage.removeItem(LAST_EOA_KEY);
+      }
+      disconnectTimerRef.current = null;
+    }, 2000);
+  }, [isDisconnected]);
 
   // Clear connecting state on error and allow modal to be closed
   useEffect(() => {
@@ -166,12 +218,26 @@ export function WalletConnectButton() {
     disconnect();
     setOpen(false);
     setConnectingId(null);
+    setCachedProxyAddress(null);
+    setCachedEoaAddress(null);
+    if (typeof window !== "undefined") {
+      window.sessionStorage.removeItem(LAST_PROXY_KEY);
+      window.sessionStorage.removeItem(LAST_EOA_KEY);
+    }
   };
 
   // Only disable primary trigger if we actively kicked off a connection
   const isBusy =
     Boolean(connectingId) && (isPending || isConnecting || isReconnecting);
-  const displayAddress = vaultAddress || cachedProxyAddress || null;
+  const matchedCachedProxy =
+    address && cachedEoaAddress && cachedProxyAddress
+      ? cachedEoaAddress.toLowerCase() === address.toLowerCase()
+        ? cachedProxyAddress
+        : null
+      : null;
+  const reconnectProxy =
+    !address && (isConnecting || isReconnecting) ? cachedProxyAddress : null;
+  const displayAddress = vaultAddress || matchedCachedProxy || reconnectProxy || null;
   const deploymentLabel = useMemo(() => {
     if (deployError) return deployError;
     switch (deploymentStep) {
@@ -198,20 +264,20 @@ export function WalletConnectButton() {
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button
-          variant={address ? "secondary" : "default"}
+          variant={address || displayAddress ? "secondary" : "default"}
           size="sm"
           className={cn(
             "font-mono tracking-wide",
-            address ? "text-foreground" : "font-bold"
+            address || displayAddress ? "text-foreground" : "font-bold"
           )}
           disabled={isBusy}
         >
           <PlugZap className="mr-2 h-4 w-4" />
-          {address
-            ? displayAddress
-              ? truncate(displayAddress)
-              : "Proxy wallet pending"
-            : "Connect Wallet"}
+          {displayAddress
+            ? truncate(displayAddress)
+            : address
+              ? "Proxy wallet pending"
+              : "Connect Wallet"}
         </Button>
       </DialogTrigger>
 
