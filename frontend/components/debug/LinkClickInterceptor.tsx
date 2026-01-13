@@ -12,10 +12,6 @@ export function LinkClickInterceptor() {
   const router = useRouter();
 
   useEffect(() => {
-    if (window.localStorage.getItem(DEBUG_KEY) !== "1") {
-      return;
-    }
-
     const handleClick = (event: MouseEvent) => {
       if (event.button !== 0 || isModifiedClick(event)) {
         return;
@@ -46,6 +42,10 @@ export function LinkClickInterceptor() {
       }
 
       const href = `${url.pathname}${url.search}${url.hash}`;
+      const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      if (href === current) {
+        return;
+      }
       const debug = window.localStorage.getItem(DEBUG_KEY) === "1";
       const wasPrevented = event.defaultPrevented;
       event.preventDefault();
