@@ -60,6 +60,11 @@ export function BalanceDisplay({ className, showIcon = true }: BalanceDisplayPro
   const balanceFormatted =
     balanceData.balance_formatted ??
     (Number(balanceData.balance ?? "0") / 1_000_000).toFixed(2);
+  const tokenAddress = balanceData.token_address;
+  const tokenSuffix = tokenAddress
+    ? ` (${tokenAddress.slice(0, 6)}...${tokenAddress.slice(-4)})`
+    : "";
+  const staleLabel = balanceData.balance_stale ? " (stale)" : "";
 
   return (
     <div
@@ -67,7 +72,7 @@ export function BalanceDisplay({ className, showIcon = true }: BalanceDisplayPro
         "flex items-center gap-2 rounded-md border border-border bg-card/50 px-3 py-1.5",
         className
       )}
-      title={`Balance: ${balanceFormatted} USDC`}
+      title={`Balance: ${balanceFormatted} USDC${tokenSuffix}${staleLabel}`}
     >
       {showIcon && (
         <Wallet className="h-3.5 w-3.5 text-muted-foreground" />
@@ -83,4 +88,3 @@ export function BalanceDisplay({ className, showIcon = true }: BalanceDisplayPro
     </div>
   );
 }
-

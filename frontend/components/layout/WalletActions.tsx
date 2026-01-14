@@ -9,6 +9,7 @@ import { useState } from "react";
 
 import { WalletConnectButton } from "@/components/wallet/WalletConnectButton";
 import { DepositWithdrawModal } from "@/components/wallet/DepositWithdrawModal";
+import { BalanceDisplay } from "@/components/wallet/BalanceDisplay";
 import { NotificationBell } from "@/components/social/NotificationBell";
 import { Button } from "@/components/ui/button";
 import { useWallet } from "@/hooks/useWallet";
@@ -23,6 +24,10 @@ export default function WalletActions() {
   return (
     <>
       <WalletConnectButton />
+
+      {isAuthenticated && vaultAddress && (
+        <BalanceDisplay className="hidden sm:flex" />
+      )}
 
       {showWalletActions && uiVaultAddress && (
         <Button

@@ -27,11 +27,9 @@ import (
 )
 
 const (
-	// Native USDC on Polygon (Current standard - USDC.e has been deprecated)
-	// Address: 0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359
-	// Note: USDC.e (0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174) has been deprecated
-	// Polymarket now uses native USDC on Polygon as of 2024/2025
-	USDCAddressPolygon = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+	// USDC on Polygon per Polymarket documentation (bridged USDC / USDC.e address).
+	// Address: 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
+	DefaultUSDCAddressPolygon = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 
 	// Default Polygon RPC endpoint (can be overridden via POLYGON_RPC_URL)
 	DefaultPolygonRPCEndpoint = "https://polygon-rpc.com"
@@ -70,23 +68,50 @@ func NewBlockchainService(cfg *config.Config) (*BlockchainService, error) {
 		return nil, fmt.Errorf("failed to connect to Polygon RPC: %w", err)
 	}
 
+	usdcAddress := DefaultUSDCAddressPolygon
+	if cfg != nil {
+		collateral := strings.TrimSpace(cfg.Polymarket.CollateralAssetID)
+		if collateral != "" {
+			usdcAddress = collateral
+		}
+	}
+
 	return &BlockchainService{
 		client:       client,
-		usdcAddress:  common.HexToAddress(USDCAddressPolygon),
+		usdcAddress:  common.HexToAddress(usdcAddress),
 		balanceCache: make(map[string]cachedBalance),
 	}, nil
 }
 
+// USDCAddress returns the configured USDC contract address.
+func (s *BlockchainService) USDCAddress() string {
+	if s == nil {
+		return ""
+	}
+	return s.usdcAddress.Hex()
+}
+
 // GetUSDCBalance returns the USDC balance for a given address
 func (s *BlockchainService) GetUSDCBalance(ctx context.Context, address string) (*big.Int, error) {
+	return s.getUSDCBalance(ctx, address, false)
+}
+
+// GetUSDCBalanceFresh bypasses the cache and fetches a fresh balance.
+func (s *BlockchainService) GetUSDCBalanceFresh(ctx context.Context, address string) (*big.Int, error) {
+	return s.getUSDCBalance(ctx, address, true)
+}
+
+func (s *BlockchainService) getUSDCBalance(ctx context.Context, address string, skipCache bool) (*big.Int, error) {
 	addr := common.HexToAddress(address)
 	if addr == (common.Address{}) {
 		return nil, fmt.Errorf("invalid address: %s", address)
 	}
 
 	cacheKey := strings.ToLower(addr.Hex())
-	if cached := s.getCachedBalance(cacheKey, false); cached != nil {
-		return cached, nil
+	if !skipCache {
+		if cached := s.getCachedBalance(cacheKey, false); cached != nil {
+			return cached, nil
+		}
 	}
 
 	if s.shouldBackoffBalance(cacheKey) {
@@ -188,6 +213,19 @@ func (s *BlockchainService) GetCachedUSDCBalance(address string, allowStale bool
 		return nil
 	}
 	return s.getCachedBalance(strings.ToLower(addr.Hex()), allowStale)
+}
+
+// InvalidateUSDCBalance clears the cached balance for an address.
+func (s *BlockchainService) InvalidateUSDCBalance(address string) {
+	addr := common.HexToAddress(address)
+	if addr == (common.Address{}) {
+		return
+	}
+	key := strings.ToLower(addr.Hex())
+
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	delete(s.balanceCache, key)
 }
 
 func (s *BlockchainService) shouldBackoffBalance(key string) bool {

@@ -20,6 +20,10 @@ export const NEG_RISK_CTF_EXCHANGE_ADDR = "0xC5d563A36AE78145C45a50134d48A121522
 // The Conditional Tokens Framework (CTF) contract
 export const CTF_CONTRACT_ADDR = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
 
+// Polymarket collateral token on Polygon (USDC per docs).
+export const COLLATERAL_TOKEN_ADDR = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+export const USDC_DECIMALS = 6;
+
 export const MAX_ALLOWANCE = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 
 export const PRE_MATCH_CTA = "0x2F5e3684cb1F318ec51b00Edba38d79Ac2c0aA9d"; // UMA CTF Adapter

@@ -31,6 +31,7 @@ const (
 	ProfileCacheTTL   = 5 * time.Minute  // Profile info changes rarely
 	StatsCacheTTL     = 2 * time.Minute  // Stats update with trades
 	PositionsCacheTTL = 1 * time.Minute  // Positions change more frequently
+	ClosedPositionsTTL = 3 * time.Minute // Closed positions update less frequently
 	ActivityCacheTTL  = 10 * time.Minute // Activity heatmap is historical
 	TradesCacheTTL    = 1 * time.Minute  // Recent trades
 	HoldersCacheTTL   = 5 * time.Minute  // Holders don't change often
@@ -458,6 +459,81 @@ func (s *ProfileService) GetOpenPositions(ctx context.Context, address string, l
 	if lastErr != nil {
 		return nil, lastErr
 	}
+	return lastPositions, nil
+}
+
+// GetClosedPositions fetches closed/resolved positions for a trader
+func (s *ProfileService) GetClosedPositions(ctx context.Context, address string, limit, offset int) ([]data_api.ClosedPosition, error) {
+	address = normalizeAddress(address)
+	profileAddress := s.resolveProfileAddress(ctx, address)
+
+	if limit <= 0 {
+		limit = 50
+	}
+
+	// Cache first page by resolved address
+	cacheAddr := profileAddress
+	if cacheAddr == "" {
+		cacheAddr = address
+	}
+	if offset == 0 && cacheAddr != "" {
+		key := cacheKey(fmt.Sprintf("closed_positions:%d:%d", limit, offset), cacheAddr)
+		cached, err := getFromCache[[]data_api.ClosedPosition](ctx, s.redis, key)
+		if err != nil {
+			logger.Error("ProfileService: Closed positions cache error: %v", err)
+		}
+		if cached != nil {
+			return *cached, nil
+		}
+	}
+
+	targets := make([]string, 0, 2)
+	if profileAddress != "" {
+		targets = append(targets, profileAddress)
+	}
+	if address != "" && !strings.EqualFold(address, profileAddress) {
+		targets = append(targets, address)
+	}
+
+	var lastErr error
+	var lastPositions []data_api.ClosedPosition
+
+	for _, target := range targets {
+		if target == "" {
+			continue
+		}
+
+		positions, err := s.dataAPIClient.GetClosedPositions(ctx, target, limit, offset)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		lastPositions = positions
+		if len(positions) == 0 {
+			continue
+		}
+
+		if offset == 0 && cacheAddr != "" {
+			key := cacheKey(fmt.Sprintf("closed_positions:%d:%d", limit, offset), cacheAddr)
+			if err := setInCache(ctx, s.redis, key, positions, ClosedPositionsTTL); err != nil {
+				logger.Error("ProfileService: Failed to cache closed positions: %v", err)
+			}
+		}
+		return positions, nil
+	}
+
+	if lastErr == nil && lastPositions != nil && offset == 0 && cacheAddr != "" {
+		key := cacheKey(fmt.Sprintf("closed_positions:%d:%d", limit, offset), cacheAddr)
+		if err := setInCache(ctx, s.redis, key, lastPositions, ClosedPositionsTTL); err != nil {
+			logger.Error("ProfileService: Failed to cache closed positions: %v", err)
+		}
+	}
+
+	if lastErr != nil {
+		return nil, lastErr
+	}
+
 	return lastPositions, nil
 }
 

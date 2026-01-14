@@ -220,6 +220,31 @@ export interface PositionsResponse {
   count: number;
 }
 
+// Closed Positions
+export interface ClosedPosition {
+  asset: string;
+  conditionId: string;
+  tokenId: string;
+  outcome: string;
+  size: number;
+  avgPrice: number;
+  exitPrice: number;
+  initialValue: number;
+  exitValue: number;
+  realizedPnl: number;
+  pctPnl: number;
+  slug: string;
+  title?: string;
+  closedAt: string;
+  resolved: boolean;
+  winner: boolean;
+}
+
+export interface ClosedPositionsResponse {
+  positions: ClosedPosition[];
+  count: number;
+}
+
 // Activity Heatmap
 export interface ActivityDataPoint {
   date: string;
@@ -253,6 +278,54 @@ export interface Trade {
 export interface TradesResponse {
   trades: Trade[];
   count: number;
+}
+
+// Rewards
+export interface RewardsConfig {
+  asset_address: string;
+  start_date: string;
+  end_date: string;
+  rate_per_day: number;
+  total_rewards: number;
+}
+
+export interface RewardToken {
+  token_id: string;
+  outcome: string;
+  price: number;
+}
+
+export interface MarketReward {
+  condition_id: string;
+  question: string;
+  market_slug: string;
+  event_slug: string;
+  image: string;
+  rewards_max_spread: number;
+  rewards_min_size: number;
+  tokens: RewardToken[];
+  rewards_config: RewardsConfig[];
+}
+
+export interface RewardEarning {
+  asset_address: string;
+  earnings: number;
+  asset_rate: number;
+}
+
+export interface UserRewardsEarning extends MarketReward {
+  maker_address: string;
+  earning_percentage: number;
+  earnings: RewardEarning[];
+  market_competitiveness: number;
+}
+
+export interface UserRewardTotal {
+  date: string;
+  asset_address: string;
+  maker_address: string;
+  earnings: number;
+  asset_rate: number;
 }
 
 // Holders (Whale Table)

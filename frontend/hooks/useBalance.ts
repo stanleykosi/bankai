@@ -18,6 +18,10 @@ export interface BalanceResponse {
   balance_formatted: string;
   vault_address: string;
   token: string;
+  token_address?: string;
+  balance_stale?: boolean;
+  balance_unavailable?: boolean;
+  balance_fresh?: boolean;
 }
 
 export function useBalance() {
@@ -40,13 +44,13 @@ export function useBalance() {
       }
     },
     enabled: isAuthenticated && !!vaultAddress, // Only fetch when signed in and wallet exists
-    // Reduce chatter: no interval; refresh on demand via queryClient.invalidateQueries(["balance"])
-    refetchInterval: false,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
+    // Balance polling with backend cache to keep UI responsive.
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
     refetchOnMount: false,
-    retry: false,
-    staleTime: 5 * 60_000, // 5 minutes
-    gcTime: 30 * 60_000, // 30 minutes
+    retry: 1,
+    staleTime: 20_000,
+    gcTime: 10 * 60_000,
   });
 }

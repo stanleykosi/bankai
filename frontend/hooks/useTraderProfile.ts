@@ -12,6 +12,7 @@ import {
   fetchTraderProfile,
   fetchTraderStats,
   fetchTraderPositions,
+  fetchTraderClosedPositions,
   fetchRecentTrades,
 } from "@/lib/profile-api";
 
@@ -54,6 +55,22 @@ export function useTraderPositions(
     queryFn: () => fetchTraderPositions(address!, limit, offset, sortBy),
     enabled: Boolean(address),
     staleTime: 30_000, // 30 seconds
+  });
+}
+
+/**
+ * Hook for fetching trader closed positions
+ */
+export function useTraderClosedPositions(
+  address: string | undefined,
+  limit = 200,
+  offset = 0
+) {
+  return useQuery({
+    queryKey: ["trader-closed-positions", address, limit, offset],
+    queryFn: () => fetchTraderClosedPositions(address!, limit, offset),
+    enabled: Boolean(address),
+    staleTime: 60_000, // 1 minute
   });
 }
 

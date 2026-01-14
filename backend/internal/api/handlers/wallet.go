@@ -13,6 +13,9 @@
 package handlers
 
 import (
+	"math/big"
+	"strings"
+
 	"github.com/bankai-project/backend/internal/api/middleware"
 	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/models"
@@ -24,6 +27,7 @@ import (
 type WalletHandler struct {
 	Manager    *services.WalletManager
 	Blockchain *services.BlockchainService
+	CollateralAssetID string
 }
 
 type DeployWalletRequest struct {
@@ -31,10 +35,11 @@ type DeployWalletRequest struct {
 	Metadata  string `json:"metadata"`
 }
 
-func NewWalletHandler(manager *services.WalletManager, blockchain *services.BlockchainService) *WalletHandler {
+func NewWalletHandler(manager *services.WalletManager, blockchain *services.BlockchainService, collateralAssetID string) *WalletHandler {
 	return &WalletHandler{
 		Manager:    manager,
 		Blockchain: blockchain,
+		CollateralAssetID: strings.TrimSpace(collateralAssetID),
 	}
 }
 
@@ -212,11 +217,16 @@ func (h *WalletHandler) GetDepositAddress(c *fiber.Ctx) error {
 		})
 	}
 
+	tokenAddress := h.CollateralAssetID
+	if tokenAddress == "" && h.Blockchain != nil {
+		tokenAddress = h.Blockchain.USDCAddress()
+	}
+
 	return c.JSON(fiber.Map{
 		"vault_address": user.VaultAddress,
 		"network":       "polygon",
 		"token":         "USDC",
-		"token_address": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", // Native USDC (USDC.e deprecated as of 2024/2025)
+		"token_address": tokenAddress,
 	})
 }
 
@@ -249,7 +259,20 @@ func (h *WalletHandler) GetBalance(c *fiber.Ctx) error {
 		})
 	}
 
-	balance, err := h.Blockchain.GetUSDCBalance(c.Context(), user.VaultAddress)
+	fresh := false
+	if value := strings.TrimSpace(c.Query("fresh")); value != "" {
+		switch strings.ToLower(value) {
+		case "1", "true", "yes":
+			fresh = true
+		}
+	}
+
+	var balance *big.Int
+	if fresh {
+		balance, err = h.Blockchain.GetUSDCBalanceFresh(c.Context(), user.VaultAddress)
+	} else {
+		balance, err = h.Blockchain.GetUSDCBalance(c.Context(), user.VaultAddress)
+	}
 	if err != nil {
 		logger.Error("Failed to fetch USDC balance for %s: %v", user.VaultAddress, err)
 		if cached := h.Blockchain.GetCachedUSDCBalance(user.VaultAddress, true); cached != nil {
@@ -258,6 +281,7 @@ func (h *WalletHandler) GetBalance(c *fiber.Ctx) error {
 				"balance_formatted": h.Blockchain.FormatUSDCBalance(cached),
 				"vault_address":     user.VaultAddress,
 				"token":             "USDC",
+				"token_address":     h.Blockchain.USDCAddress(),
 				"balance_stale":     true,
 			})
 		}
@@ -266,6 +290,7 @@ func (h *WalletHandler) GetBalance(c *fiber.Ctx) error {
 			"balance_formatted":   "0.00",
 			"vault_address":       user.VaultAddress,
 			"token":               "USDC",
+			"token_address":       h.Blockchain.USDCAddress(),
 			"balance_unavailable": true,
 		})
 	}
@@ -275,6 +300,8 @@ func (h *WalletHandler) GetBalance(c *fiber.Ctx) error {
 		"balance_formatted": h.Blockchain.FormatUSDCBalance(balance),
 		"vault_address":     user.VaultAddress,
 		"token":             "USDC",
+		"token_address":     h.Blockchain.USDCAddress(),
+		"balance_fresh":     fresh,
 	})
 }
 

@@ -669,6 +669,7 @@ export function TradeForm({
         );
         setShares("");
         await queryClient.invalidateQueries({ queryKey: ["orders"] });
+        await queryClient.invalidateQueries({ queryKey: ["balance"] });
         // Async persist to backend for audit/history
         void syncOrderToBackend({
           orderId: response.orderID,
@@ -843,6 +844,7 @@ export function TradeForm({
         );
         setBatchOrders([]);
         await queryClient.invalidateQueries({ queryKey: ["orders"] });
+        await queryClient.invalidateQueries({ queryKey: ["balance"] });
         setTimeout(() => refreshUser(), 1500);
       } else {
         throw new Error("All orders in batch failed");

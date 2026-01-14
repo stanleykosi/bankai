@@ -61,7 +61,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	// Social & Intelligence Services
 	profileService := services.NewProfileService(dataAPIClient, gammaClient, clobClient, rdb)
 	socialService := services.NewSocialService(db, gammaClient)
-	watchlistService := services.NewWatchlistService(db)
+	watchlistService := services.NewWatchlistService(db, marketService)
 	notificationService := services.NewNotificationService(db, socialService)
 	alphaHubService := services.NewAlphaHubService(marketService, profileService, clobClient, tavilyClient, openaiClient, dataAPIClient, subgraphClient, cfg.Services.AIPicksMarketLimit, rdb)
 
@@ -77,7 +77,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	authHandler := handlers.NewAuthHandler(db, rdb, cfg)
 	userHandler := handlers.NewUserHandler(db)
 	marketHandler := handlers.NewMarketHandler(marketService)
-	walletHandler := handlers.NewWalletHandler(walletManager, blockchainService)
+	walletHandler := handlers.NewWalletHandler(walletManager, blockchainService, cfg.Polymarket.CollateralAssetID)
 	tradeHandler := handlers.NewTradeHandler(tradeService, notificationService, cfg, db)
 	oracleHandler := handlers.NewOracleHandler(oracleService)
 	analysisHandler := handlers.NewAnalysisHandler(alphaHubService)
@@ -145,6 +145,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	profile.Get("/:address", profileHandler.GetTraderProfile)
 	profile.Get("/:address/stats", profileHandler.GetTraderStats)
 	profile.Get("/:address/positions", profileHandler.GetTraderPositions)
+	profile.Get("/:address/closed-positions", profileHandler.GetTraderClosedPositions)
 	profile.Get("/:address/trades", profileHandler.GetRecentTrades)
 
 	// User Routes (Protected)

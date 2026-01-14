@@ -1,7 +1,7 @@
 /**
  * @description
  * Watchlist Service for market bookmark operations.
- * Manages user's starred markets in the database.
+ * Manages user's starred markets in the database and hydrates metadata via Redis-backed market cache.
  *
  * @dependencies
  * - gorm.io/gorm
@@ -22,13 +22,15 @@ import (
 
 // WatchlistService handles market bookmark operations
 type WatchlistService struct {
-	db *gorm.DB
+	db           *gorm.DB
+	marketService *MarketService
 }
 
 // NewWatchlistService creates a new WatchlistService
-func NewWatchlistService(db *gorm.DB) *WatchlistService {
+func NewWatchlistService(db *gorm.DB, marketService *MarketService) *WatchlistService {
 	return &WatchlistService{
-		db: db,
+		db:            db,
+		marketService: marketService,
 	}
 }
 
@@ -84,35 +86,62 @@ func (s *WatchlistService) GetWatchlist(ctx context.Context, userID uuid.UUID) (
 		return nil, result.Error
 	}
 
-	// Get market details for each bookmark
+	marketIDs := make([]string, 0, len(bookmarks))
+	for _, b := range bookmarks {
+		if b.MarketID != "" {
+			marketIDs = append(marketIDs, b.MarketID)
+		}
+	}
+
+	var marketMap map[string]*models.Market
+	if s.marketService != nil {
+		marketMap, _ = s.marketService.GetMarketsByConditionIDsWithGammaFallback(ctx, marketIDs)
+	}
+	if marketMap == nil {
+		marketMap = make(map[string]*models.Market)
+	}
+
+	// Build watchlist response with cached market metadata (Redis-backed)
 	items := make([]models.WatchlistItem, 0, len(bookmarks))
 	for _, b := range bookmarks {
-		var market models.Market
-		if err := s.db.WithContext(ctx).
-			Where("condition_id = ?", b.MarketID).
-			First(&market).Error; err != nil {
-			// Skip markets that no longer exist
-			continue
-		}
+		market := marketMap[b.MarketID]
 
-		// Parse outcome prices for YES/NO prices
 		var yesPrice, noPrice float64
-		if market.OutcomePrices != "" {
-			// OutcomePrices is typically stored as JSON array like "[0.65, 0.35]"
-			// For simplicity, we'll use the best bid/ask if available
-			yesPrice = market.BestBid
-			noPrice = 1 - market.BestBid
+		title := "Market unavailable"
+		slug := ""
+		imageURL := ""
+		volume24h := 0.0
+		oneDayChange := 0.0
+
+		if market != nil {
+			title = market.Title
+			slug = market.Slug
+			imageURL = market.ImageURL
+			volume24h = market.Volume24h
+			oneDayChange = market.OneDayPriceChange
+
+			if price, ok := calculateDisplayPrice(market.YesBestBid, market.YesBestAsk, market.YesPrice); ok {
+				yesPrice = price
+			}
+			if price, ok := calculateDisplayPrice(market.NoBestBid, market.NoBestAsk, market.NoPrice); ok {
+				noPrice = price
+			}
+			if yesPrice > 0 && noPrice == 0 {
+				noPrice = 1 - yesPrice
+			} else if noPrice > 0 && yesPrice == 0 {
+				yesPrice = 1 - noPrice
+			}
 		}
 
 		items = append(items, models.WatchlistItem{
 			MarketBookmark: b,
-			Title:          market.Title,
-			Slug:           market.Slug,
-			ImageURL:       market.ImageURL,
+			Title:          title,
+			Slug:           slug,
+			ImageURL:       imageURL,
 			YesPrice:       yesPrice,
 			NoPrice:        noPrice,
-			Volume24h:      market.Volume24h,
-			OneDayChange:   market.OneDayPriceChange,
+			Volume24h:      volume24h,
+			OneDayChange:   oneDayChange,
 		})
 	}
 

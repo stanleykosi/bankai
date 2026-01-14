@@ -13,6 +13,7 @@ import type {
   TraderProfileResponse,
   TraderStats,
   PositionsResponse,
+  ClosedPositionsResponse,
   TradesResponse,
 } from "@/types";
 
@@ -52,6 +53,21 @@ export async function fetchTraderPositions(
   const response = await api.get<PositionsResponse>(
     `/profile/${address}/positions`,
     { params: { limit, offset, sortBy } }
+  );
+  return response.data;
+}
+
+/**
+ * Fetch trader closed positions
+ */
+export async function fetchTraderClosedPositions(
+  address: string,
+  limit = 200,
+  offset = 0
+): Promise<ClosedPositionsResponse> {
+  const response = await api.get<ClosedPositionsResponse>(
+    `/profile/${address}/closed-positions`,
+    { params: { limit, offset } }
   );
   return response.data;
 }

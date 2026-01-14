@@ -57,7 +57,7 @@ type PolymarketConfig struct {
 	GammaURL             string
 	DataAPIURL           string // Polymarket Data API for positions, holders, trades
 	OrderbookSubgraphURL string // Goldsky Orderbook subgraph for deep trade history
-	CollateralAssetID    string // Native USDC on Polygon (used to price trades)
+	CollateralAssetID    string // USDC contract on Polygon used for collateral/pricing
 	BuilderAPIKey        string
 	BuilderSecret        string
 	BuilderPass          string
@@ -116,7 +116,7 @@ func Load() (*Config, error) {
 			GammaURL:             getEnv("POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com"),
 			DataAPIURL:           getEnv("POLYMARKET_DATA_API_URL", "https://data-api.polymarket.com"),
 			OrderbookSubgraphURL: getEnv("POLYMARKET_ORDERBOOK_SUBGRAPH_URL", "https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/orderbook-subgraph/0.0.1/gn"),
-			CollateralAssetID:    strings.ToLower(getEnv("POLYMARKET_COLLATERAL_ASSET_ID", "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359")),
+			CollateralAssetID:    strings.ToLower(getEnv("POLYMARKET_COLLATERAL_ASSET_ID", "0x2791bca1f2de4661ed88a30c99a7a9449aa84174")),
 			BuilderAPIKey:        sanitizeCredential(getEnv("POLY_BUILDER_API_KEY", "")),
 			BuilderSecret:        sanitizeCredential(getEnv("POLY_BUILDER_SECRET", "")), // Often empty/not used for local signing depending on setup, but good to have
 			BuilderPass:          sanitizeCredential(getEnv("POLY_BUILDER_PASSPHRASE", "")),

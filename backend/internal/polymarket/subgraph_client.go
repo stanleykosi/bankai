@@ -18,7 +18,7 @@ const (
 	defaultSubgraphPageSize  = 1000
 	defaultSubgraphMaxPages  = 120
 	DefaultSubgraphEndpoint  = "https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/orderbook-subgraph/0.0.1/gn"
-	defaultCollateralAssetID = "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359" // Native USDC on Polygon
+	defaultCollateralAssetID = "0x2791bca1f2de4661ed88a30c99a7a9449aa84174" // USDC on Polygon per Polymarket docs
 )
 
 var orderFilledQuery = `

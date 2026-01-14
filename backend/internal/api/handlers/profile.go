@@ -121,6 +121,33 @@ func (h *ProfileHandler) GetTraderPositions(c *fiber.Ctx) error {
 	})
 }
 
+// GetTraderClosedPositions returns closed/resolved positions for a trader
+// GET /api/v1/profile/:address/closed-positions
+func (h *ProfileHandler) GetTraderClosedPositions(c *fiber.Ctx) error {
+	address := c.Params("address")
+	if address == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Address is required",
+		})
+	}
+
+	limit, _ := strconv.Atoi(c.Query("limit", "50"))
+	offset, _ := strconv.Atoi(c.Query("offset", "0"))
+
+	positions, err := h.profileService.GetClosedPositions(c.Context(), address, limit, offset)
+	if err != nil {
+		logger.Error("ProfileHandler: Failed to get closed positions: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to fetch closed positions",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"positions": positions,
+		"count":     len(positions),
+	})
+}
+
 // GetRecentTrades returns recent trades for a trader
 // GET /api/v1/profile/:address/trades
 func (h *ProfileHandler) GetRecentTrades(c *fiber.Ctx) error {
