@@ -16,6 +16,7 @@ import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { Providers } from "./providers";
 import "./globals.css";
+import { PersistentOrdersWidget } from "@/components/terminal/PersistentOrdersWidget";
 
 // UI Font - with explicit weights to ensure proper loading
 const inter = Inter({ 
@@ -51,9 +52,10 @@ export default function RootLayout({
     <html lang="en" className="dark">
       <body className={`${inter.variable} ${jetbrainsMono.variable} font-sans bg-background text-foreground antialiased`}>
         <Providers>
-          <main className="min-h-screen w-full bg-black">
+          <main className="min-h-screen w-full bg-black pb-28">
             {children}
           </main>
+          <PersistentOrdersWidget />
         </Providers>
       </body>
     </html>

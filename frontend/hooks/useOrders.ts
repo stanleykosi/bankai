@@ -157,7 +157,7 @@ export function useOrders(enabled = true) {
     const client = await ensureClient();
     const [openOrders, trades] = await Promise.all([
       client.getOpenOrders(),
-      client.getTrades(),
+      client.getTrades(undefined, true),
     ]);
 
     const openRecords = (openOrders || []).map(mapOpenOrderToRecord);
@@ -193,7 +193,7 @@ export function useOrders(enabled = true) {
       isAuthenticated &&
       !isWalletLoading &&
       !credsLoading &&
-      Boolean(clobClientRef.current),
+      Boolean(clobClient),
   });
 
   const cancelOrderMutation = useMutation({

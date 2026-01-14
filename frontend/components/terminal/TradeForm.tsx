@@ -35,6 +35,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { WalletConnectButton } from "@/components/wallet/WalletConnectButton";
 import { Input } from "@/components/ui/input";
+import { NegativeRiskConvert } from "@/components/market/NegativeRiskConvert";
 import { useWallet } from "@/hooks/useWallet";
 import { useBalance } from "@/hooks/useBalance";
 import { useUserApiCredentials } from "@/hooks/useUserApiCredentials";
@@ -227,6 +228,7 @@ export function TradeForm({
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [localOutcomeIndex, setLocalOutcomeIndex] = useState(0);
   const [batchOrders, setBatchOrders] = useState<PreparedBatchOrder[]>([]);
+  const [convertOpen, setConvertOpen] = useState(false);
 
   const outcomeLabels = useMemo(
     () => parseOutcomeLabels(market?.outcomes),
@@ -289,6 +291,7 @@ export function TradeForm({
     outcomeOptions[selectedOutcomeIndex] ?? outcomeOptions[0];
   const selectedOutcomeLabel = selectedOutcome?.label ?? "Outcome";
   const hasBatchOrders = batchOrders.length > 0;
+  const isNegativeRisk = !!(market?.neg_risk || market?.neg_risk_other);
 
   // Market rule metadata
   const tickSize = useMemo(() => {
@@ -936,19 +939,32 @@ export function TradeForm({
       <CardHeader className="pb-3 border-b border-border/50">
         <CardTitle className="text-sm font-mono uppercase tracking-widest flex justify-between items-center">
           <span>Execution</span>
-          <div className="flex gap-2">
-            <span className={cn(
-              "px-2 py-0.5 rounded-sm text-[10px] cursor-pointer transition-colors",
-              side === "BUY" ? "bg-constructive text-black font-bold" : "bg-muted text-muted-foreground hover:text-foreground"
-            )} onClick={() => setSide("BUY")}>
-              BUY
-            </span>
-            <span className={cn(
-              "px-2 py-0.5 rounded-sm text-[10px] cursor-pointer transition-colors",
-              side === "SELL" ? "bg-destructive text-white font-bold" : "bg-muted text-muted-foreground hover:text-foreground"
-            )} onClick={() => setSide("SELL")}>
-              SELL
-            </span>
+          <div className="flex items-center gap-2">
+            <div className="flex gap-2">
+              <span className={cn(
+                "px-2 py-0.5 rounded-sm text-[10px] cursor-pointer transition-colors",
+                side === "BUY" ? "bg-constructive text-black font-bold" : "bg-muted text-muted-foreground hover:text-foreground"
+              )} onClick={() => setSide("BUY")}>
+                BUY
+              </span>
+              <span className={cn(
+                "px-2 py-0.5 rounded-sm text-[10px] cursor-pointer transition-colors",
+                side === "SELL" ? "bg-destructive text-white font-bold" : "bg-muted text-muted-foreground hover:text-foreground"
+              )} onClick={() => setSide("SELL")}>
+                SELL
+              </span>
+            </div>
+            {isNegativeRisk && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 px-3 text-[10px] font-mono uppercase tracking-widest"
+                onClick={() => setConvertOpen(true)}
+              >
+                Convert
+              </Button>
+            )}
           </div>
         </CardTitle>
       </CardHeader>
@@ -1351,6 +1367,13 @@ export function TradeForm({
           )}
         </div>
       </CardContent>
+      {isNegativeRisk && (
+        <NegativeRiskConvert
+          market={market}
+          open={convertOpen}
+          onOpenChange={setConvertOpen}
+        />
+      )}
     </Card>
   );
 }

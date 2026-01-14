@@ -138,6 +138,16 @@ export interface OrderHistoryResponse {
   offset: number;
 }
 
+export interface FillRecord {
+  id: string;
+  market_id?: string | null;
+  outcome: string;
+  side: "BUY" | "SELL";
+  price: number;
+  size: number;
+  matched_at: string;
+}
+
 export interface DepthEstimateLevel {
   price: number;
   available: number;
