@@ -13,7 +13,7 @@ import {
   USDC_DECIMALS,
 } from "@/lib/polymarket";
 
-const ZERO_BYTES32 = `0x${"0".repeat(64)}`;
+const ZERO_BYTES32: `0x${string}` = `0x${"0".repeat(64)}`;
 
 const ERC20_ABI = [
   {
