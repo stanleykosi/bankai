@@ -4,6 +4,8 @@
  * Mirrors the backend models for frontend consumption.
  */
 
+export * from "./settings";
+
 export interface Market {
   condition_id: string;
   gamma_market_id?: string;

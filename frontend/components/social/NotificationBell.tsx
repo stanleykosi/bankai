@@ -17,7 +17,7 @@ interface NotificationBellProps {
 }
 
 export function NotificationBell({ enabled = true, visible = true }: NotificationBellProps) {
-  const unreadCount = useUnreadCount();
+  const unreadCount = useUnreadCount(enabled);
   const [isOpen, setIsOpen] = useState(false);
 
   useEffect(() => {

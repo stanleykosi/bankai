@@ -62,7 +62,8 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	profileService := services.NewProfileService(dataAPIClient, gammaClient, clobClient, rdb)
 	socialService := services.NewSocialService(db, gammaClient)
 	watchlistService := services.NewWatchlistService(db, marketService)
-	notificationService := services.NewNotificationService(db, socialService)
+	settingsService := services.NewSettingsService(db)
+	notificationService := services.NewNotificationService(db, socialService, settingsService)
 	alphaHubService := services.NewAlphaHubService(marketService, profileService, clobClient, tavilyClient, openaiClient, dataAPIClient, subgraphClient, cfg.Services.AIPicksMarketLimit, rdb)
 
 	// Initialize Blockchain Service
@@ -87,6 +88,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	socialHandler := handlers.NewSocialHandler(db, socialService, notificationService, profileService)
 	watchlistHandler := handlers.NewWatchlistHandler(db, watchlistService)
 	holdersHandler := handlers.NewHoldersHandler(profileService)
+	settingsHandler := handlers.NewSettingsHandler(db, settingsService)
 
 	// 5. Define Routes
 	// Root route for easy health checks
@@ -191,6 +193,12 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	watchlist.Post("/toggle", watchlistHandler.ToggleBookmark)
 	watchlist.Delete("/:market_id", watchlistHandler.RemoveBookmark)
 	watchlist.Get("/check/:market_id", watchlistHandler.CheckIsBookmarked)
+
+	// Settings Routes (Protected)
+	settings := v1.Group("/settings", middleware.Protected())
+	settings.Get("/", settingsHandler.GetSettings)
+	settings.Patch("/", settingsHandler.UpdateSettings)
+	settings.Post("/reset", settingsHandler.ResetSettings)
 
 	// Internal sync route (secured via JOB_SYNC_SECRET header) for background workers
 	app.Post("/api/v1/trade/sync/internal", tradeHandler.SyncOrdersInternal)

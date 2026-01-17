@@ -5,7 +5,6 @@ go 1.24.0
 toolchain go1.24.7
 
 require (
-	github.com/MicahParks/keyfunc/v2 v2.1.0
 	github.com/alicebob/miniredis/v2 v2.31.0
 	github.com/ethereum/go-ethereum v1.16.7
 	github.com/gofiber/fiber/v2 v2.52.0
@@ -16,6 +15,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/redis/go-redis/v9 v9.17.0
 	gorm.io/driver/postgres v1.6.0
+	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.31.1
 )
 
@@ -50,6 +50,7 @@ require (
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.15 // indirect
+	github.com/mattn/go-sqlite3 v1.14.22 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
 	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible // indirect
 	github.com/supranational/blst v0.3.16-0.20250831170142-f48500c1fdbe // indirect

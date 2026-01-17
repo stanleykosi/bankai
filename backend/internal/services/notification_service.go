@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bankai-project/backend/internal/logger"
@@ -26,13 +27,15 @@ import (
 type NotificationService struct {
 	db            *gorm.DB
 	socialService *SocialService
+	settings      *SettingsService
 }
 
 // NewNotificationService creates a new NotificationService
-func NewNotificationService(db *gorm.DB, socialService *SocialService) *NotificationService {
+func NewNotificationService(db *gorm.DB, socialService *SocialService, settings *SettingsService) *NotificationService {
 	return &NotificationService{
 		db:            db,
 		socialService: socialService,
+		settings:      settings,
 	}
 }
 
@@ -63,6 +66,16 @@ func (s *NotificationService) CreateTradeAlert(ctx context.Context, data TradeAl
 		return nil // No followers, nothing to do
 	}
 
+	settingsMap := map[uuid.UUID]models.UserSettings{}
+	if s.settings != nil {
+		m, err := s.settings.GetSettingsForUsers(ctx, followerIDs)
+		if err != nil {
+			logger.Error("NotificationService: Failed to load settings: %v", err)
+			return err
+		}
+		settingsMap = m
+	}
+
 	// Marshal the data to JSON
 	dataJSON, err := json.Marshal(data)
 	if err != nil {
@@ -79,10 +92,27 @@ func (s *NotificationService) CreateTradeAlert(ctx context.Context, data TradeAl
 	message := fmt.Sprintf("%s placed a %s order for %.2f shares at $%.2f on %s",
 		traderName, data.Side, data.Size, data.Price, data.MarketTitle)
 
-	notifications := make([]models.Notification, len(followerIDs))
+	notifications := make([]models.Notification, 0, len(followerIDs))
 	now := time.Now()
-	for i, userID := range followerIDs {
-		notifications[i] = models.Notification{
+	for _, userID := range followerIDs {
+		if s.settings != nil {
+			userSettings, ok := settingsMap[userID]
+			if ok {
+				if strings.EqualFold(userSettings.NotificationChannel, NotificationChannelNone) {
+					continue
+				}
+				switch strings.ToUpper(strings.TrimSpace(userSettings.FollowedTraderAlerts)) {
+				case FollowedTraderAlertsNone:
+					continue
+				case FollowedTraderAlertsLargeOnly:
+					if data.Value < userSettings.WhaleAlertThresholdUSD {
+						continue
+					}
+				}
+			}
+		}
+
+		notifications = append(notifications, models.Notification{
 			ID:        uuid.New(),
 			UserID:    userID,
 			Type:      models.NotificationTypeTradeAlert,
@@ -91,7 +121,11 @@ func (s *NotificationService) CreateTradeAlert(ctx context.Context, data TradeAl
 			Data:      string(dataJSON),
 			Read:      false,
 			CreatedAt: now,
-		}
+		})
+	}
+
+	if len(notifications) == 0 {
+		return nil
 	}
 
 	// Batch insert notifications

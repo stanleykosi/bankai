@@ -18,13 +18,13 @@ import { useWallet } from "@/hooks/useWallet";
 /**
  * Hook for fetching notifications
  */
-export function useNotifications(limit = 50, offset = 0) {
+export function useNotifications(limit = 50, offset = 0, enabled = true) {
   const { isAuthenticated } = useWallet();
 
   return useQuery({
     queryKey: ["notifications", limit, offset],
     queryFn: () => fetchNotifications(limit, offset),
-    enabled: isAuthenticated,
+    enabled: Boolean(enabled) && isAuthenticated,
     staleTime: 30_000,
     refetchInterval: 60_000, // Poll every minute
   });
@@ -33,8 +33,8 @@ export function useNotifications(limit = 50, offset = 0) {
 /**
  * Hook for getting unread notification count
  */
-export function useUnreadCount() {
-  const { data } = useNotifications();
+export function useUnreadCount(enabled = true) {
+  const { data } = useNotifications(50, 0, enabled);
   return data?.unread_count ?? 0;
 }
 

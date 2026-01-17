@@ -35,6 +35,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { WalletConnectButton } from "@/components/wallet/WalletConnectButton";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { NegativeRiskConvert } from "@/components/market/NegativeRiskConvert";
 import { useWallet } from "@/hooks/useWallet";
 import { useBalance } from "@/hooks/useBalance";
@@ -46,6 +53,7 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { fetchDepthEstimate } from "@/lib/market-data";
 import { ensurePolygonChain } from "@/lib/chain-utils";
+import { useTerminalStore } from "@/lib/store";
 import type { DepthEstimate, Market } from "@/types";
 import { calculateDisplayPrice } from "@/lib/price-utils";
 
@@ -212,10 +220,22 @@ export function TradeForm({
     clobClientRef.current = clobClient;
   }, [clobClient]);
 
+  const slippageToleranceBps = useTerminalStore(
+    (state) => state.settings?.slippage_tolerance_bps ?? 100
+  );
+  const tradeConfirmationEnabled = useTerminalStore(
+    (state) => state.settings?.trade_confirmation_enabled ?? true
+  );
+  const defaultOrderTypePreference = useTerminalStore(
+    (state) => state.settings?.default_order_type ?? "GTC"
+  );
+
   const [side, setSide] = useState<OrderSide>("BUY");
-  const [orderType, setOrderType] = useState<OrderTypeValue>("GTC");
   const [executionType, setExecutionType] = useState<ExecutionType>("LIMIT");
   const [limitExpires, setLimitExpires] = useState(false);
+  const [marketFillBehavior, setMarketFillBehavior] = useState<"FAK" | "FOK">(
+    "FAK"
+  );
   const [gtdExpiration, setGtdExpiration] = useState<string>("");
   const [price, setPrice] = useState<string>("");
   const [shares, setShares] = useState<string>("");
@@ -224,6 +244,10 @@ export function TradeForm({
   const [isPlacingOrder, setIsPlacingOrder] = useState(false);
   const [isAddingToBatch, setIsAddingToBatch] = useState(false);
   const [isSubmittingBatch, setIsSubmittingBatch] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmMode, setConfirmMode] = useState<"single" | "batch" | null>(
+    null
+  );
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [localOutcomeIndex, setLocalOutcomeIndex] = useState(0);
@@ -306,6 +330,13 @@ export function TradeForm({
     return 1; // 1 share fallback
   }, [market?.order_min_size]);
 
+  const orderType: OrderTypeValue =
+    executionType === "MARKET"
+      ? marketFillBehavior
+      : limitExpires
+        ? "GTD"
+        : "GTC";
+
   const gtdExpirationSeconds = useMemo(() => {
     if (orderType !== "GTD" || !gtdExpiration) return null;
     const parsed = Date.parse(gtdExpiration);
@@ -336,13 +367,33 @@ export function TradeForm({
     }
   }, [orderType, gtdExpiration]);
 
+  const orderPrefsTouchedRef = useRef(false);
   useEffect(() => {
-    if (executionType === "MARKET") {
-      setOrderType("FAK");
-      return;
+    orderPrefsTouchedRef.current = false;
+  }, [market?.condition_id]);
+
+  useEffect(() => {
+    if (orderPrefsTouchedRef.current) return;
+    switch (defaultOrderTypePreference) {
+      case "GTD":
+        setExecutionType("LIMIT");
+        setLimitExpires(true);
+        break;
+      case "GTC":
+        setExecutionType("LIMIT");
+        setLimitExpires(false);
+        break;
+      case "FOK":
+        setExecutionType("MARKET");
+        setMarketFillBehavior("FOK");
+        break;
+      case "FAK":
+      default:
+        setExecutionType("MARKET");
+        setMarketFillBehavior("FAK");
+        break;
     }
-    setOrderType(limitExpires ? "GTD" : "GTC");
-  }, [executionType, limitExpires]);
+  }, [defaultOrderTypePreference, market?.condition_id]);
 
   // Pre-fill price based on market data when switching sides or loading
   const updateOutcomeIndex = useCallback(
@@ -496,6 +547,20 @@ export function TradeForm({
   const insufficientBalance =
     side === "BUY" && totalCost > currentBalance && currentBalance > 0;
 
+  const estimatedSlippageBps = useMemo(() => {
+    if (!isMarketOrderType) return null;
+    if (!marketReferencePrice || marketReferencePrice <= 0) return null;
+    if (!numericPrice || numericPrice <= 0) return null;
+    const ratio =
+      Math.abs(numericPrice - marketReferencePrice) / marketReferencePrice;
+    return Math.round(ratio * 10_000);
+  }, [isMarketOrderType, marketReferencePrice, numericPrice]);
+
+  const slippageOk = useMemo(() => {
+    if (estimatedSlippageBps === null) return true;
+    return estimatedSlippageBps <= slippageToleranceBps;
+  }, [estimatedSlippageBps, slippageToleranceBps]);
+
   const onTick = useMemo(() => {
     if (!isLimitOrderType) return true;
     if (!rawPrice || tickSize <= 0) return true;
@@ -512,6 +577,7 @@ export function TradeForm({
     if (!selectedOutcome?.tokenId) return false;
     if (numericPrice <= 0 || numericPrice >= 1) return false;
     if (!onTick) return false;
+    if (!slippageOk) return false;
     if (numericShares <= 0 || sizeTooSmall) return false;
     if (isBusy) return false;
     if (gtdExpirationError) return false;
@@ -532,6 +598,7 @@ export function TradeForm({
     currentBalance,
     selectedOutcome?.tokenId,
     gtdExpirationError,
+    slippageOk,
   ]);
 
   // Map our order type to SDK OrderType enum
@@ -555,8 +622,7 @@ export function TradeForm({
     return side === "BUY" ? Side.BUY : Side.SELL;
   }, [side]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const runSingleOrder = async () => {
     setError(null);
     setSuccessMsg(null);
     setIsPlacingOrder(true);
@@ -564,6 +630,12 @@ export function TradeForm({
     try {
       if (!eoaAddress || !vaultAddress) {
         throw new Error("Wallet not connected or vault not deployed.");
+      }
+
+      if (isMarketOrderType && !slippageOk) {
+        throw new Error(
+          `Estimated slippage (${estimatedSlippageBps ?? "?"} bps) exceeds your tolerance (${slippageToleranceBps} bps).`
+        );
       }
 
       // Ensure we're on Polygon network before proceeding
@@ -706,6 +778,16 @@ export function TradeForm({
     }
   };
 
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (tradeConfirmationEnabled) {
+      setConfirmMode("single");
+      setConfirmOpen(true);
+      return;
+    }
+    void runSingleOrder();
+  };
+
   const handleAddToBatch = async () => {
     if (!canSubmit) return;
     if (batchOrders.length >= 15) {
@@ -774,7 +856,7 @@ export function TradeForm({
     }
   };
 
-  const handleSubmitBatch = async () => {
+  const runBatchSubmit = async () => {
     if (!hasBatchOrders) return;
     
     // Ensure credentials are available
@@ -862,6 +944,16 @@ export function TradeForm({
     } finally {
       setIsSubmittingBatch(false);
     }
+  };
+
+  const handleSubmitBatch = () => {
+    if (!hasBatchOrders) return;
+    if (tradeConfirmationEnabled) {
+      setConfirmMode("batch");
+      setConfirmOpen(true);
+      return;
+    }
+    void runBatchSubmit();
   };
 
   const handleRemoveBatchOrder = (id: string) => {
@@ -1022,7 +1114,10 @@ export function TradeForm({
             <div className="flex rounded-md border border-border bg-background/40 p-1 text-[10px] font-mono uppercase tracking-wide">
               <button
                 type="button"
-                onClick={() => setExecutionType("LIMIT")}
+                onClick={() => {
+                  orderPrefsTouchedRef.current = true;
+                  setExecutionType("LIMIT");
+                }}
                 className={cn(
                   "flex-1 rounded-sm px-3 py-2 transition-colors",
                   executionType === "LIMIT"
@@ -1034,7 +1129,10 @@ export function TradeForm({
               </button>
               <button
                 type="button"
-                onClick={() => setExecutionType("MARKET")}
+                onClick={() => {
+                  orderPrefsTouchedRef.current = true;
+                  setExecutionType("MARKET");
+                }}
                 className={cn(
                   "flex-1 rounded-sm px-3 py-2 transition-colors",
                   executionType === "MARKET"
@@ -1050,6 +1148,40 @@ export function TradeForm({
                 ? "Posts to the book at your price."
                 : "Executes against live liquidity."}
             </p>
+            {executionType === "MARKET" && (
+              <div className="flex rounded-md border border-border bg-background/40 p-1 text-[10px] font-mono uppercase tracking-wide">
+                <button
+                  type="button"
+                  onClick={() => {
+                    orderPrefsTouchedRef.current = true;
+                    setMarketFillBehavior("FAK");
+                  }}
+                  className={cn(
+                    "flex-1 rounded-sm px-3 py-2 transition-colors",
+                    marketFillBehavior === "FAK"
+                      ? "bg-primary/20 text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  FAK
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    orderPrefsTouchedRef.current = true;
+                    setMarketFillBehavior("FOK");
+                  }}
+                  className={cn(
+                    "flex-1 rounded-sm px-3 py-2 transition-colors",
+                    marketFillBehavior === "FOK"
+                      ? "bg-primary/20 text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  FOK
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="space-y-3">
@@ -1063,7 +1195,10 @@ export function TradeForm({
                     <input
                       type="checkbox"
                       checked={limitExpires}
-                      onChange={(e) => setLimitExpires(e.target.checked)}
+                      onChange={(e) => {
+                        orderPrefsTouchedRef.current = true;
+                        setLimitExpires(e.target.checked);
+                      }}
                       className="h-3 w-3 accent-primary"
                     />
                     <span>Expires</span>
@@ -1176,6 +1311,22 @@ export function TradeForm({
                 ) : (
                   <p className="text-[10px] text-muted-foreground font-mono">
                     Enter size to preview fill price.
+                  </p>
+                )}
+                {estimatedSlippageBps !== null && depthEnabled && (
+                  <p
+                    className={cn(
+                      "text-[10px] font-mono",
+                      slippageOk ? "text-muted-foreground" : "text-amber-400"
+                    )}
+                  >
+                    Est. slippage {estimatedSlippageBps} bps (limit{" "}
+                    {slippageToleranceBps} bps)
+                  </p>
+                )}
+                {!slippageOk && (
+                  <p className="text-[10px] text-amber-400 font-mono">
+                    Slippage exceeds tolerance. Reduce size or update settings.
                   </p>
                 )}
               </div>
@@ -1374,6 +1525,103 @@ export function TradeForm({
           onOpenChange={setConvertOpen}
         />
       )}
+
+      <Dialog
+        open={confirmOpen}
+        onOpenChange={(next) => {
+          setConfirmOpen(next);
+          if (!next) {
+            setConfirmMode(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {confirmMode === "batch" ? "Confirm batch submission" : "Confirm trade"}
+            </DialogTitle>
+            <DialogDescription>
+              {confirmMode === "batch"
+                ? "Submit all queued orders to the orderbook."
+                : "Review your order details before submitting."}
+            </DialogDescription>
+          </DialogHeader>
+
+          {confirmMode === "single" && (
+            <div className="space-y-2 text-sm font-mono">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Order</span>
+                <span className="text-foreground">
+                  {side} {selectedOutcomeLabel} • {executionType} • {orderType}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Price</span>
+                <span className="text-foreground">${numericPrice.toFixed(3)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Shares</span>
+                <span className="text-foreground">{numericShares.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">
+                  {side === "BUY" ? "Est. cost" : "Est. proceeds"}
+                </span>
+                <span className="text-foreground">{formatUsd(totalCost)}</span>
+              </div>
+              {isMarketOrderType && estimatedSlippageBps !== null && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Est. slippage</span>
+                  <span className={cn("text-foreground", !slippageOk && "text-amber-400")}>
+                    {estimatedSlippageBps} bps (limit {slippageToleranceBps})
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {confirmMode === "batch" && (
+            <div className="space-y-2 text-sm font-mono">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Orders</span>
+                <span className="text-foreground">{batchOrders.length}</span>
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={isPlacingOrder || isSubmittingBatch || isAddingToBatch}
+              onClick={() => {
+                setConfirmOpen(false);
+                setConfirmMode(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={isPlacingOrder || isSubmittingBatch || isAddingToBatch}
+              onClick={() => {
+                const mode = confirmMode;
+                setConfirmOpen(false);
+                setConfirmMode(null);
+                if (mode === "batch") {
+                  void runBatchSubmit();
+                  return;
+                }
+                if (mode === "single") {
+                  void runSingleOrder();
+                }
+              }}
+            >
+              Confirm
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }
