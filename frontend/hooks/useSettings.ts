@@ -10,7 +10,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { fetchSettings, resetSettings, updateSettings } from "@/lib/settings-api";
-import type { UpdateSettingsPayload } from "@/types";
+import type { UpdateSettingsPayload, UserSettings } from "@/types";
 import { useWallet } from "@/hooks/useWallet";
 import { useTerminalStore } from "@/lib/store";
 
@@ -24,7 +24,7 @@ export function useSettings() {
     }
   }, [hasSession, isAuthenticated, isLoading, setSettings]);
 
-  return useQuery({
+  return useQuery<UserSettings, Error>({
     queryKey: ["settings"],
     queryFn: fetchSettings,
     enabled: !isLoading && (isAuthenticated || hasSession),
