@@ -54,6 +54,7 @@ const (
 	marketSyncLockKey     = 42
 	lanePoolCap           = 2000
 	orderBookCacheTTL     = 15 * time.Minute
+	orderBookMissingTTL   = 5 * time.Minute
 	orderBookFetchLockTTL = 4 * time.Second
 	orderBookLockWaitTTL  = 1200 * time.Millisecond
 	orderBookLockPoll     = 60 * time.Millisecond
@@ -921,6 +922,19 @@ func (s *MarketService) waitForCachedOrderBook(ctx context.Context, cacheKey str
 func (s *MarketService) fetchAndStoreOrderBook(ctx context.Context, marketID, tokenID, cacheKey string) (string, error) {
 	book, err := s.ClobClient.GetBook(ctx, tokenID)
 	if err != nil {
+		if errors.Is(err, clob.ErrOrderBookNotFound) {
+			// Cache an empty snapshot briefly to prevent repeated 404 polling loops.
+			empty := orderBookSnapshot{
+				AssetID: tokenID,
+				Market:  marketID,
+				Bids:    nil,
+				Asks:    nil,
+			}
+			if data, marshalErr := json.Marshal(empty); marshalErr == nil {
+				_ = s.Redis.Set(ctx, cacheKey, data, orderBookMissingTTL).Err()
+			}
+			return "", ErrOrderBookUnavailable
+		}
 		return "", err
 	}
 
@@ -973,6 +987,21 @@ func (s *MarketService) ReconcileOrderBooks(ctx context.Context, maxAssets int) 
 		return nil
 	}
 
+	// Only reconcile books for markets that explicitly support order books.
+	activeMarkets, err := s.loadAllActiveMarkets(ctx)
+	if err != nil {
+		return err
+	}
+	orderbookEnabled := make(map[string]struct{}, len(activeMarkets))
+	for _, market := range activeMarkets {
+		if market.EnableOrderBook {
+			orderbookEnabled[market.ConditionID] = struct{}{}
+		}
+	}
+	if len(orderbookEnabled) == 0 {
+		return nil
+	}
+
 	type tokenMeta struct {
 		MarketID string
 		TokenID  string
@@ -981,6 +1010,9 @@ func (s *MarketService) ReconcileOrderBooks(ctx context.Context, maxAssets int) 
 	seen := make(map[string]struct{}, len(assets)*2)
 	jobs := make([]tokenMeta, 0, len(assets)*2)
 	for _, asset := range assets {
+		if _, ok := orderbookEnabled[asset.ConditionID]; !ok {
+			continue
+		}
 		if asset.TokenIDYes != "" {
 			key := asset.ConditionID + ":" + asset.TokenIDYes
 			if _, ok := seen[key]; !ok {

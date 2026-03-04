@@ -18,10 +18,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	pathpkg "path"
 	"strconv"
 	"strings"
 	"time"
@@ -47,6 +49,8 @@ type Client struct {
 	RetryMax   int
 	RetryBase  time.Duration
 }
+
+var ErrOrderBookNotFound = errors.New("clob orderbook not found")
 
 func NewClient(cfg *config.Config) *Client {
 	retryMax := 4
@@ -633,8 +637,19 @@ func (c *Client) sendRequestDecode(ctx context.Context, method, path string, pay
 		break
 	}
 
-	// Debug: surface request context when a 400 occurs to diagnose payload issues.
+	// Treat missing orderbooks as an expected condition on some tokens.
+	isOrderBookNotFound := respStatus == http.StatusNotFound &&
+		reqRef != nil &&
+		reqRef.URL != nil &&
+		isBookEndpointPath(reqRef.URL.Path) &&
+		isNoOrderbookErrorBody(respBody)
+
+	// Debug: surface request context when a non-expected 4xx/5xx occurs.
 	if respStatus >= 400 {
+		if isOrderBookNotFound {
+			return ErrOrderBookNotFound
+		}
+
 		// Build a safe request descriptor
 		methodForLog := ""
 		if reqRef != nil {
@@ -690,6 +705,16 @@ func (c *Client) sendRequestDecode(ctx context.Context, method, path string, pay
 	}
 
 	return nil
+}
+
+func isNoOrderbookErrorBody(body []byte) bool {
+	msg := strings.ToLower(strings.TrimSpace(string(body)))
+	return strings.Contains(msg, "no orderbook exists")
+}
+
+func isBookEndpointPath(rawPath string) bool {
+	normalized := pathpkg.Clean("/" + strings.TrimSpace(rawPath))
+	return normalized == "/book" || strings.HasSuffix(normalized, "/book")
 }
 
 func shouldRetryHTTPStatus(status int) bool {
