@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Trade as ClobTrade } from "@polymarket/clob-client";
 
@@ -50,29 +50,33 @@ export function useFills(enabled = true) {
     clobClientRef.current = clobClient;
   }, [clobClient]);
 
-  const ensureClient = useCallback(async () => {
+  const ensureClient = async () => {
     if (clobClientRef.current) return clobClientRef.current;
     if (!credentials) {
       await getCredentials();
     }
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    if (!clobClientRef.current) {
-      throw new Error("Trading client not ready. Connect wallet to fetch fills.");
-    }
-    return clobClientRef.current;
-  }, [credentials, getCredentials]);
 
-  const fetchFills = useCallback(async (): Promise<FillRecord[]> => {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if (clobClientRef.current) {
+        return clobClientRef.current;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    throw new Error("Trading client not ready. Connect wallet to fetch fills.");
+  };
+
+  const fetchFills = async (): Promise<FillRecord[]> => {
     const client = await ensureClient();
     const trades = await client.getTrades(undefined, true);
     const fills = (trades || []).map(mapTradeToFill);
     return fills.sort(
       (a, b) => Date.parse(b.matched_at) - Date.parse(a.matched_at)
     );
-  }, [ensureClient]);
+  };
 
   const fillsQuery = useQuery({
-    queryKey: ["fills"],
+    queryKey: ["fills", user?.id || user?.eoa_address || "anon"],
     queryFn: fetchFills,
     enabled:
       enabled &&
@@ -81,6 +85,8 @@ export function useFills(enabled = true) {
       !credsLoading &&
       Boolean(clobClient),
     staleTime: 15_000,
+    refetchInterval: 20_000,
+    retry: 2,
   });
 
   const fills = useMemo(() => fillsQuery.data ?? [], [fillsQuery.data]);

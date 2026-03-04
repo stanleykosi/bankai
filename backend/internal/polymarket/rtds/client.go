@@ -52,6 +52,10 @@ type Client struct {
 	done    chan struct{}
 	handler *MessageHandler
 
+	workerPoolSize int
+	messageQueue   chan []byte
+	workersOnce    sync.Once
+
 	// subscriptions holds the current list of asset IDs to track
 	subscriptions []string
 	subMu         sync.Mutex
@@ -62,17 +66,52 @@ type Client struct {
 }
 
 func NewClient(cfg *config.Config, handler *MessageHandler) *Client {
+	workerPoolSize := 64
+	queueSize := 4096
+	if cfg != nil {
+		if cfg.Services.RTDSWorkerPoolSize > 0 {
+			workerPoolSize = cfg.Services.RTDSWorkerPoolSize
+		}
+		if cfg.Services.RTDSQueueSize > 0 {
+			queueSize = cfg.Services.RTDSQueueSize
+		}
+	}
+
 	// We use the specific market channel URL - this is a fixed endpoint
 	return &Client{
-		url:     MarketChannelURL,
-		handler: handler,
-		done:    make(chan struct{}),
+		url:            MarketChannelURL,
+		handler:        handler,
+		done:           make(chan struct{}),
+		workerPoolSize: workerPoolSize,
+		messageQueue:   make(chan []byte, queueSize),
 	}
 }
 
 // Connect establishes the WebSocket connection and starts the read loop
 func (c *Client) Connect(ctx context.Context) error {
+	c.startWorkers(ctx)
 	return c.connectWithRetry(ctx)
+}
+
+func (c *Client) startWorkers(ctx context.Context) {
+	c.workersOnce.Do(func() {
+		for i := 0; i < c.workerPoolSize; i++ {
+			go func(workerID int) {
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-c.done:
+						return
+					case msg := <-c.messageQueue:
+						if err := c.handler.HandleMessage(ctx, msg); err != nil {
+							log.Printf("RTDS worker[%d] message handling failed: %v", workerID, err)
+						}
+					}
+				}
+			}(i + 1)
+		}
+	})
 }
 
 func (c *Client) connectWithRetry(ctx context.Context) error {
@@ -257,12 +296,13 @@ func (c *Client) readLoop(ctx context.Context) {
 				return
 			}
 
-			// Async process to not block reader
-			go func(msg []byte) {
-				if err := c.handler.HandleMessage(ctx, msg); err != nil {
-					log.Printf("Error handling message: %v", err)
-				}
-			}(message)
+			// Bounded queue to cap concurrent handlers under load.
+			msgCopy := append([]byte(nil), message...)
+			select {
+			case c.messageQueue <- msgCopy:
+			default:
+				log.Printf("RTDS queue full (cap=%d), dropping message", cap(c.messageQueue))
+			}
 		}
 	}
 }

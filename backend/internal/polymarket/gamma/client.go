@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -31,14 +32,29 @@ const (
 type Client struct {
 	BaseURL    string
 	HTTPClient *http.Client
+	RetryMax   int
+	RetryBase  time.Duration
 }
 
 func NewClient(cfg *config.Config) *Client {
+	retryMax := 3
+	retryBase := 200 * time.Millisecond
+	if cfg != nil {
+		if cfg.Services.RetryMaxAttempts > 0 {
+			retryMax = cfg.Services.RetryMaxAttempts
+		}
+		if cfg.Services.RetryBaseDelayMs > 0 {
+			retryBase = time.Duration(cfg.Services.RetryBaseDelayMs) * time.Millisecond
+		}
+	}
+
 	return &Client{
 		BaseURL: cfg.Polymarket.GammaURL,
 		HTTPClient: &http.Client{
 			Timeout: DefaultTimeout,
 		},
+		RetryMax:  retryMax,
+		RetryBase: retryBase,
 	}
 }
 
@@ -90,7 +106,7 @@ func (c *Client) GetEvents(ctx context.Context, params GetEventsParams) ([]Gamma
 		return nil, err
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := c.doRequestWithRetry(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +137,7 @@ func (c *Client) GetMarket(ctx context.Context, id string) (*GammaMarket, error)
 		return nil, err
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := c.doRequestWithRetry(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +187,7 @@ func (c *Client) SearchProfiles(ctx context.Context, query string, limit int) ([
 		return nil, err
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := c.doRequestWithRetry(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -187,4 +203,63 @@ func (c *Client) SearchProfiles(ctx context.Context, query string, limit int) ([
 	}
 
 	return searchResp.Profiles, nil
+}
+
+func (c *Client) doRequestWithRetry(ctx context.Context, req *http.Request) (*http.Response, error) {
+	attempts := c.RetryMax
+	if attempts <= 0 {
+		attempts = 1
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		cloned := req.Clone(ctx)
+		resp, err := c.HTTPClient.Do(cloned)
+		if err != nil {
+			lastErr = err
+		} else if shouldRetryGammaStatus(resp.StatusCode) {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			lastErr = fmt.Errorf("gamma api retryable status %d", resp.StatusCode)
+		} else {
+			return resp, nil
+		}
+
+		if attempt < attempts-1 {
+			sleepWithContext(ctx, c.retryDelay(attempt))
+		}
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("gamma api request failed")
+	}
+	return nil, lastErr
+}
+
+func shouldRetryGammaStatus(status int) bool {
+	if status == http.StatusTooManyRequests || status == http.StatusRequestTimeout || status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout {
+		return true
+	}
+	return status >= 500
+}
+
+func (c *Client) retryDelay(attempt int) time.Duration {
+	base := c.RetryBase
+	if base <= 0 {
+		base = 200 * time.Millisecond
+	}
+	delay := base * time.Duration(1<<attempt)
+	if delay > 5*time.Second {
+		return 5 * time.Second
+	}
+	return delay
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
 }

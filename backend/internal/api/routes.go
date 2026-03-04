@@ -16,6 +16,8 @@
 package api
 
 import (
+	"time"
+
 	"github.com/bankai-project/backend/internal/api/handlers"
 	"github.com/bankai-project/backend/internal/api/middleware"
 	"github.com/bankai-project/backend/internal/config"
@@ -43,6 +45,19 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 		// but protected routes will fail.
 	}
 
+	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.TracingMiddleware())
+	app.Use(middleware.MetricsMiddleware())
+	app.Use(middleware.RateLimit(middleware.RateLimitConfig{
+		Redis:  rdb,
+		Prefix: "api",
+		Limit:  cfg.Services.APIRateLimitPerMin,
+		Window: time.Minute,
+		KeyFunc: func(c *fiber.Ctx) string {
+			return middleware.ClientIdentifier(c)
+		},
+	}))
+
 	// 2. Initialize Clients
 	gammaClient := gamma.NewClient(cfg)
 	relayerClient := relayer.NewClient(cfg)
@@ -64,7 +79,10 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	watchlistService := services.NewWatchlistService(db, marketService)
 	settingsService := services.NewSettingsService(db)
 	notificationService := services.NewNotificationService(db, socialService, settingsService)
+	adminService := services.NewAdminService(db, rdb, notificationService)
+	jobQueue := services.NewJobQueue(rdb, "jobs:default")
 	alphaHubService := services.NewAlphaHubService(marketService, profileService, clobClient, tavilyClient, openaiClient, dataAPIClient, subgraphClient, cfg.Services.AIPicksMarketLimit, rdb)
+	tpslService := services.NewTPSLService(rdb, clobClient, notificationService)
 
 	// Initialize Blockchain Service
 	blockchainService, err := services.NewBlockchainService(cfg)
@@ -79,7 +97,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	userHandler := handlers.NewUserHandler(db)
 	marketHandler := handlers.NewMarketHandler(marketService)
 	walletHandler := handlers.NewWalletHandler(walletManager, blockchainService, cfg.Polymarket.CollateralAssetID)
-	tradeHandler := handlers.NewTradeHandler(tradeService, notificationService, cfg, db)
+	tradeHandler := handlers.NewTradeHandler(tradeService, notificationService, cfg, db, rdb)
 	oracleHandler := handlers.NewOracleHandler(oracleService)
 	analysisHandler := handlers.NewAnalysisHandler(alphaHubService)
 
@@ -89,6 +107,8 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	watchlistHandler := handlers.NewWatchlistHandler(db, watchlistService)
 	holdersHandler := handlers.NewHoldersHandler(profileService)
 	settingsHandler := handlers.NewSettingsHandler(db, settingsService)
+	tpslHandler := handlers.NewTPSLHandler(tpslService)
+	adminHandler := handlers.NewAdminHandler(adminService, jobQueue)
 
 	// 5. Define Routes
 	// Root route for easy health checks
@@ -111,9 +131,19 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 
 	// Auth Routes (Public)
 	auth := v1.Group("/auth")
+	auth.Use(middleware.RateLimit(middleware.RateLimitConfig{
+		Redis:  rdb,
+		Prefix: "auth",
+		Limit:  cfg.Services.AuthRateLimitPerMin,
+		Window: time.Minute,
+		KeyFunc: func(c *fiber.Ctx) string {
+			return middleware.ClientIdentifier(c)
+		},
+	}))
 	auth.Post("/challenge", authHandler.Challenge)
 	auth.Post("/verify", authHandler.Verify)
 	auth.Post("/logout", authHandler.Logout)
+	auth.Get("/signer-assertion", middleware.Protected(), middleware.AccountGuard(rdb, db), authHandler.SignerAssertion)
 
 	// Market Routes (Public)
 	markets := v1.Group("/markets")
@@ -151,11 +181,20 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	profile.Get("/:address/trades", profileHandler.GetRecentTrades)
 
 	// User Routes (Protected)
-	user := v1.Group("/user", middleware.Protected())
+	user := v1.Group("/user", middleware.Protected(), middleware.AccountGuard(rdb, db))
 	user.Get("/me", userHandler.GetMe)
 
 	// Wallet Routes (Protected)
-	wallet := v1.Group("/wallet", middleware.Protected())
+	wallet := v1.Group("/wallet", middleware.Protected(), middleware.AccountGuard(rdb, db))
+	wallet.Use(middleware.RateLimit(middleware.RateLimitConfig{
+		Redis:  rdb,
+		Prefix: "wallet",
+		Limit:  cfg.Services.WalletRateLimitPerMin,
+		Window: time.Minute,
+		KeyFunc: func(c *fiber.Ctx) string {
+			return middleware.ClientIdentifier(c)
+		},
+	}))
 	wallet.Get("/", walletHandler.GetWallet)
 	wallet.Get("", walletHandler.GetWallet)
 	wallet.Get("/deploy/typed-data", walletHandler.GetDeployTypedData)
@@ -163,19 +202,29 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	wallet.Post("/update", walletHandler.UpdateWallet)
 	wallet.Get("/deposit", walletHandler.GetDepositAddress)
 	wallet.Get("/balance", walletHandler.GetBalance)
+	wallet.Get("/withdraw/nonce", walletHandler.GetWithdrawNonce)
 	wallet.Post("/withdraw", walletHandler.Withdraw)
 
 	// Trade Routes (Protected)
-	trade := v1.Group("/trade", middleware.Protected())
+	trade := v1.Group("/trade", middleware.Protected(), middleware.AccountGuard(rdb, db))
+	trade.Use(middleware.RateLimit(middleware.RateLimitConfig{
+		Redis:  rdb,
+		Prefix: "trade",
+		Limit:  cfg.Services.TradeRateLimitPerMin,
+		Window: time.Minute,
+		KeyFunc: func(c *fiber.Ctx) string {
+			return middleware.ClientIdentifier(c)
+		},
+	}))
 	// PostTrade and PostBatchTrade endpoints removed - frontend uses SDK directly
 	// GetAuthTypedData endpoint removed - SDK handles API key derivation
-	trade.Get("/orders", tradeHandler.GetOrders)
-	trade.Post("/cancel", tradeHandler.CancelOrder)
-	trade.Post("/cancel/batch", tradeHandler.CancelOrders)
-	trade.Post("/sync", tradeHandler.SyncOrders) // Persist Polymarket orders/trades from SDK ingestion
+	trade.Post("/sync", tradeHandler.SyncOrders)
+	trade.Get("/triggers", tpslHandler.ListRules)
+	trade.Post("/triggers", tpslHandler.CreateRule)
+	trade.Delete("/triggers/:id", tpslHandler.CancelRule)
 
 	// Social Routes (Protected)
-	social := v1.Group("/social", middleware.Protected())
+	social := v1.Group("/social", middleware.Protected(), middleware.AccountGuard(rdb, db))
 	social.Post("/follow", socialHandler.FollowTrader)
 	social.Delete("/follow/:address", socialHandler.UnfollowTrader)
 	social.Get("/following", socialHandler.GetFollowing)
@@ -186,7 +235,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	social.Post("/notifications/read-all", socialHandler.MarkAllNotificationsRead)
 
 	// Watchlist Routes (Protected)
-	watchlist := v1.Group("/watchlist", middleware.Protected())
+	watchlist := v1.Group("/watchlist", middleware.Protected(), middleware.AccountGuard(rdb, db))
 	watchlist.Get("/", watchlistHandler.GetWatchlist)
 	watchlist.Get("", watchlistHandler.GetWatchlist)
 	watchlist.Post("/bookmark", watchlistHandler.BookmarkMarket)
@@ -195,11 +244,28 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	watchlist.Get("/check/:market_id", watchlistHandler.CheckIsBookmarked)
 
 	// Settings Routes (Protected)
-	settings := v1.Group("/settings", middleware.Protected())
+	settings := v1.Group("/settings", middleware.Protected(), middleware.AccountGuard(rdb, db))
 	settings.Get("/", settingsHandler.GetSettings)
 	settings.Patch("/", settingsHandler.UpdateSettings)
 	settings.Post("/reset", settingsHandler.ResetSettings)
 
-	// Internal sync route (secured via JOB_SYNC_SECRET header) for background workers
-	app.Post("/api/v1/trade/sync/internal", tradeHandler.SyncOrdersInternal)
+	// Admin routes (Protected + wallet allowlist)
+	admin := v1.Group("/admin", middleware.Protected(), middleware.AccountGuard(rdb, db), middleware.AdminOnly(cfg.Services.AdminWalletAllow))
+	admin.Use(middleware.RateLimit(middleware.RateLimitConfig{
+		Redis:  rdb,
+		Prefix: "admin",
+		Limit:  cfg.Services.AdminRateLimitPerMin,
+		Window: time.Minute,
+		KeyFunc: func(c *fiber.Ctx) string {
+			return middleware.ClientIdentifier(c)
+		},
+	}))
+	admin.Get("/moderation/blocks", adminHandler.ListBlockedAccounts)
+	admin.Post("/moderation/block", adminHandler.BlockAccount)
+	admin.Post("/moderation/unblock", adminHandler.UnblockAccount)
+	admin.Get("/moderation/actions", adminHandler.ActionLog)
+	admin.Patch("/markets/:condition_id", adminHandler.ModerateMarket)
+	admin.Post("/notifications/broadcast", adminHandler.Broadcast)
+
+	// Order sync routes removed: frontend reads order lifecycle directly from Polymarket.
 }

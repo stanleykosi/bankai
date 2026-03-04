@@ -70,7 +70,14 @@ func main() {
 
 	marketService := services.NewMarketService(pgDB, redisClient, gammaClient, clobClient)
 	profileService := services.NewProfileService(dataAPIClient, gammaClient, clobClient, redisClient)
+	socialService := services.NewSocialService(pgDB, gammaClient)
+	settingsService := services.NewSettingsService(pgDB)
+	notificationService := services.NewNotificationService(pgDB, socialService, settingsService)
+	adminService := services.NewAdminService(pgDB, redisClient, notificationService)
+	tpslService := services.NewTPSLService(redisClient, clobClient, notificationService)
 	alphaHubService := services.NewAlphaHubService(marketService, profileService, clobClient, tavilyClient, openaiClient, dataAPIClient, subgraphClient, cfg.Services.AIPicksMarketLimit, redisClient)
+	jobQueue := services.NewJobQueue(redisClient, "jobs:default")
+	jobProcessor := services.NewJobProcessor(marketService, tpslService, notificationService, adminService)
 	cacheAllowlist := rtds.NewCacheAllowlist(20 * time.Minute)
 	msgHandler := rtds.NewMessageHandler(pgDB, redisClient)
 	msgHandler.SetCacheAllowlist(cacheAllowlist)
@@ -81,6 +88,8 @@ func main() {
 	// 4. Context with Cancellation
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	jobQueue.StartWorkers(ctx, cfg.Services.JobWorkerPoolSize, jobProcessor.Process)
+	go enqueueRecurringJobs(ctx, jobQueue, cfg)
 
 	// 5. Connect WebSocket
 	go func() {
@@ -366,6 +375,73 @@ func alphaHubDailyLoop(ctx context.Context, svc *services.AlphaHubService, snaps
 		case <-ticker.C:
 			logger.Info("AlphaHub: running scheduled daily snapshot")
 			run("scheduled")
+		}
+	}
+}
+
+func enqueueRecurringJobs(ctx context.Context, queue *services.JobQueue, cfg *config.Config) {
+	if queue == nil {
+		return
+	}
+
+	tpslInterval := time.Duration(cfg.Services.TPSLCheckIntervalSeconds) * time.Second
+	if tpslInterval <= 0 {
+		tpslInterval = 15 * time.Second
+	}
+	marketInterval := time.Duration(cfg.Services.MarketReconcileIntervalSeconds) * time.Second
+	if marketInterval <= 0 {
+		marketInterval = 2 * time.Minute
+	}
+	bookInterval := time.Duration(cfg.Services.OrderbookReconcileIntervalSecs) * time.Second
+	if bookInterval <= 0 {
+		bookInterval = 45 * time.Second
+	}
+	cleanupInterval := time.Duration(cfg.Services.NotificationCleanupMinutes) * time.Minute
+	if cleanupInterval <= 0 {
+		cleanupInterval = 2 * time.Hour
+	}
+
+	enqueue := func(jobType services.JobType, payload interface{}) {
+		// Keep backlog bounded; stale jobs are worse than dropped periodic ticks.
+		if queue.QueueLength(ctx) > 20000 {
+			return
+		}
+		raw, err := services.MarshalJobPayload(payload)
+		if err != nil {
+			return
+		}
+		_, _ = queue.Enqueue(ctx, services.Job{
+			Type:        jobType,
+			Payload:     raw,
+			MaxAttempts: 3,
+		})
+	}
+
+	enqueue(services.JobTypeTPSLEvaluate, map[string]int{"limit": 300})
+	enqueue(services.JobTypeReconcileMarkets, nil)
+	enqueue(services.JobTypeReconcileOrderBooks, map[string]int{"max_assets": 250})
+
+	tpslTicker := time.NewTicker(tpslInterval)
+	marketTicker := time.NewTicker(marketInterval)
+	bookTicker := time.NewTicker(bookInterval)
+	cleanupTicker := time.NewTicker(cleanupInterval)
+	defer tpslTicker.Stop()
+	defer marketTicker.Stop()
+	defer bookTicker.Stop()
+	defer cleanupTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tpslTicker.C:
+			enqueue(services.JobTypeTPSLEvaluate, map[string]int{"limit": 300})
+		case <-marketTicker.C:
+			enqueue(services.JobTypeReconcileMarkets, nil)
+		case <-bookTicker.C:
+			enqueue(services.JobTypeReconcileOrderBooks, map[string]int{"max_assets": 250})
+		case <-cleanupTicker.C:
+			enqueue(services.JobTypeCleanupNotifications, map[string]int{"retention_hours": 24 * 30})
 		}
 	}
 }

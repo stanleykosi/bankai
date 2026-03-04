@@ -153,41 +153,7 @@ CREATE TABLE IF NOT EXISTS price_history (
 -- Composite index for fast chart queries: "Get prices for Market X ordered by time"
 CREATE INDEX idx_price_history_market_time ON price_history(market_id, outcome, timestamp DESC);
 
--- 4. Orders Table
--- Audit log of orders relayed through Bankai
-CREATE TABLE IF NOT EXISTS orders (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES users(id),
-    
-    -- The ID returned by Polymarket CLOB
-    clob_order_id VARCHAR(255),
-    
-    market_id VARCHAR(66) REFERENCES markets(condition_id),
-    side VARCHAR(4) CHECK (side IN ('BUY', 'SELL')),
-    outcome VARCHAR(64),
-    outcome_token_id VARCHAR(255),
-    status_detail VARCHAR(32),
-    order_hashes TEXT[],
-    error_msg TEXT,
-    
-    price DECIMAL NOT NULL,
-    size DECIMAL NOT NULL,
-    order_type VARCHAR(10) CHECK (order_type IN ('MARKET', 'LIMIT', 'FOK', 'FAK', 'GTD', 'GTC')),
-    
-    status VARCHAR(20) DEFAULT 'PENDING', -- PENDING, OPEN, FILLED, CANCELED, FAILED
-    
-    tx_hash VARCHAR(66), -- If executed on-chain (for redemption/etc, though matching is off-chain)
-    source VARCHAR(16) DEFAULT 'UNKNOWN',
-    
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX idx_orders_user ON orders(user_id);
-CREATE INDEX idx_orders_status ON orders(status);
-CREATE INDEX idx_orders_source ON orders(source);
-
--- 5. AI Analysis Cache (Optional/Advanced)
+-- 4. AI Analysis Cache (Optional/Advanced)
 -- Stores RAG results to avoid re-querying expensive LLMs for same market
 CREATE TABLE IF NOT EXISTS market_analysis (
     market_id VARCHAR(66) PRIMARY KEY REFERENCES markets(condition_id),

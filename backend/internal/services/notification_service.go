@@ -41,6 +41,7 @@ func NewNotificationService(db *gorm.DB, socialService *SocialService, settings 
 
 // TradeAlertData contains data for a trade alert notification
 type TradeAlertData struct {
+	OrderID       string  `json:"order_id,omitempty"`
 	TraderAddress string  `json:"trader_address"`
 	TraderName    string  `json:"trader_name,omitempty"`
 	MarketSlug    string  `json:"market_slug"`
@@ -55,6 +56,12 @@ type TradeAlertData struct {
 
 // CreateTradeAlert creates trade alert notifications for all followers of a trader
 func (s *NotificationService) CreateTradeAlert(ctx context.Context, data TradeAlertData) error {
+	if s == nil || s.db == nil || s.socialService == nil {
+		return fmt.Errorf("notification service unavailable")
+	}
+	data.TraderAddress = strings.ToLower(strings.TrimSpace(data.TraderAddress))
+	data.OrderID = strings.TrimSpace(data.OrderID)
+
 	// Get all users following this trader
 	followerIDs, err := s.socialService.GetFollowerUserIDs(ctx, data.TraderAddress)
 	if err != nil {
@@ -64,6 +71,12 @@ func (s *NotificationService) CreateTradeAlert(ctx context.Context, data TradeAl
 
 	if len(followerIDs) == 0 {
 		return nil // No followers, nothing to do
+	}
+
+	existingRecipients, err := s.listExistingTradeAlertRecipients(ctx, followerIDs, data)
+	if err != nil {
+		logger.Error("NotificationService: Failed to dedupe trade alerts: %v", err)
+		return err
 	}
 
 	settingsMap := map[uuid.UUID]models.UserSettings{}
@@ -95,6 +108,9 @@ func (s *NotificationService) CreateTradeAlert(ctx context.Context, data TradeAl
 	notifications := make([]models.Notification, 0, len(followerIDs))
 	now := time.Now()
 	for _, userID := range followerIDs {
+		if _, alreadyNotified := existingRecipients[userID]; alreadyNotified {
+			continue
+		}
 		if s.settings != nil {
 			userSettings, ok := settingsMap[userID]
 			if ok {
@@ -139,6 +155,48 @@ func (s *NotificationService) CreateTradeAlert(ctx context.Context, data TradeAl
 		len(notifications), data.TraderAddress)
 
 	return nil
+}
+
+func (s *NotificationService) listExistingTradeAlertRecipients(
+	ctx context.Context,
+	followerIDs []uuid.UUID,
+	data TradeAlertData,
+) (map[uuid.UUID]struct{}, error) {
+	out := make(map[uuid.UUID]struct{})
+	if len(followerIDs) == 0 || strings.TrimSpace(data.OrderID) == "" || strings.TrimSpace(data.TraderAddress) == "" {
+		return out, nil
+	}
+
+	query := s.db.WithContext(ctx).
+		Model(&models.Notification{}).
+		Select("user_id").
+		Where("user_id IN ? AND type = ?", followerIDs, models.NotificationTypeTradeAlert)
+
+	switch s.db.Dialector.Name() {
+	case "postgres":
+		query = query.
+			Where("data::jsonb ->> 'order_id' = ?", data.OrderID).
+			Where("data::jsonb ->> 'trader_address' = ?", data.TraderAddress)
+	default:
+		// Fallback for non-Postgres tests/environments.
+		query = query.
+			Where("data LIKE ?", `%"order_id":"`+data.OrderID+`"%`).
+			Where("data LIKE ?", `%"trader_address":"`+data.TraderAddress+`"%`)
+	}
+
+	rows := make([]struct {
+		UserID uuid.UUID `gorm:"column:user_id"`
+	}, 0, len(followerIDs))
+	if err := query.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	for _, row := range rows {
+		if row.UserID != uuid.Nil {
+			out[row.UserID] = struct{}{}
+		}
+	}
+	return out, nil
 }
 
 // GetNotifications returns notifications for a user
@@ -253,6 +311,73 @@ func (s *NotificationService) DeleteOldNotifications(ctx context.Context, olderT
 	}
 
 	return nil
+}
+
+// CreateSystemNotification creates a single system notification for one user.
+func (s *NotificationService) CreateSystemNotification(
+	ctx context.Context,
+	userID uuid.UUID,
+	title string,
+	message string,
+	data map[string]interface{},
+) error {
+	if userID == uuid.Nil {
+		return fmt.Errorf("user id is required")
+	}
+	_, err := s.CreateSystemNotifications(ctx, []uuid.UUID{userID}, title, message, data)
+	return err
+}
+
+// CreateSystemNotifications inserts system notifications in bulk.
+func (s *NotificationService) CreateSystemNotifications(
+	ctx context.Context,
+	userIDs []uuid.UUID,
+	title string,
+	message string,
+	data map[string]interface{},
+) (int, error) {
+	if len(userIDs) == 0 {
+		return 0, nil
+	}
+
+	payload := "{}"
+	if data != nil {
+		if marshaled, err := json.Marshal(data); err == nil {
+			payload = string(marshaled)
+		}
+	}
+
+	trimmedTitle := strings.TrimSpace(title)
+	trimmedMessage := strings.TrimSpace(message)
+	if trimmedTitle == "" {
+		trimmedTitle = "System Notification"
+	}
+
+	now := time.Now().UTC()
+	notifications := make([]models.Notification, 0, len(userIDs))
+	for _, userID := range userIDs {
+		if userID == uuid.Nil {
+			continue
+		}
+		notifications = append(notifications, models.Notification{
+			ID:        uuid.New(),
+			UserID:    userID,
+			Type:      models.NotificationTypeSystem,
+			Title:     trimmedTitle,
+			Message:   trimmedMessage,
+			Data:      payload,
+			Read:      false,
+			CreatedAt: now,
+		})
+	}
+	if len(notifications) == 0 {
+		return 0, nil
+	}
+
+	if err := s.db.WithContext(ctx).CreateInBatches(notifications, 500).Error; err != nil {
+		return 0, err
+	}
+	return len(notifications), nil
 }
 
 // Helper to truncate address for display

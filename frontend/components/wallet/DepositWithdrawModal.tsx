@@ -6,8 +6,11 @@
 
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Copy, Check, ExternalLink, Wallet, ArrowDown, ArrowUp } from "lucide-react";
+import { useAccount, useSignMessage, useSwitchChain } from "wagmi";
+import { polygon } from "viem/chains";
+import { encodeFunctionData, encodePacked, hashTypedData, hexToBigInt, Hex } from "viem";
 import {
   Dialog,
   DialogContent,
@@ -19,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { useWallet } from "@/hooks/useWallet";
 import { useBalance } from "@/hooks/useBalance";
 import { api } from "@/lib/api";
+import { ensurePolygonChain } from "@/lib/chain-utils";
 import { cn } from "@/lib/utils";
 
 interface DepositWithdrawModalProps {
@@ -27,6 +31,31 @@ interface DepositWithdrawModalProps {
 }
 
 type TabType = "deposit" | "withdraw";
+
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const FALLBACK_USDC = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+
+const splitAndPackSig = (sig: `0x${string}`): `0x${string}` => {
+  let v = parseInt(sig.slice(-2), 16);
+  switch (v) {
+    case 0:
+    case 1:
+      v += 31;
+      break;
+    case 27:
+    case 28:
+      v += 4;
+      break;
+    default:
+      throw new Error("Invalid signature v");
+  }
+
+  const normalizedSig = `${sig.slice(0, -2)}${v.toString(16).padStart(2, "0")}` as `0x${string}`;
+  const r = hexToBigInt(`0x${normalizedSig.slice(2, 66)}` as Hex);
+  const s = hexToBigInt(`0x${normalizedSig.slice(66, 130)}` as Hex);
+  const packedV = Number(hexToBigInt(`0x${normalizedSig.slice(130, 132)}` as Hex));
+  return encodePacked(["uint256", "uint256", "uint8"], [r, s, packedV]);
+};
 
 export function DepositWithdrawModal({
   open,
@@ -41,6 +70,10 @@ export function DepositWithdrawModal({
 
   const { vaultAddress } = useWallet();
   const { data: balanceData, refetch } = useBalance();
+  const { chainId } = useAccount();
+  const { switchChainAsync } = useSwitchChain();
+  const { signMessageAsync } = useSignMessage();
+  const chainIdRef = useRef<number | undefined>(chainId);
 
   const [depositData, setDepositData] = useState<{
     vault_address: string;
@@ -58,6 +91,10 @@ export function DepositWithdrawModal({
       setError("Failed to load deposit information");
     }
   }, []);
+
+  useEffect(() => {
+    chainIdRef.current = chainId;
+  }, [chainId]);
 
   const handleCopy = async (text: string) => {
     try {
@@ -86,6 +123,10 @@ export function DepositWithdrawModal({
       setError("Invalid amount");
       return;
     }
+    if (!vaultAddress || !/^0x[a-fA-F0-9]{40}$/.test(vaultAddress)) {
+      setError("Vault address unavailable. Reconnect wallet and try again.");
+      return;
+    }
 
     try {
       setIsSubmitting(true);
@@ -93,12 +134,103 @@ export function DepositWithdrawModal({
 
       // Convert amount to USDC units (6 decimals)
       const amountInUnits = Math.floor(amount * 1000000).toString();
+      const tokenAddress =
+        depositData?.token_address ||
+        balanceData?.token_address ||
+        FALLBACK_USDC;
+
+      if (!/^0x[a-fA-F0-9]{40}$/.test(tokenAddress)) {
+        throw new Error("Invalid collateral token address");
+      }
+
+      const transferData = encodeFunctionData({
+        abi: [
+          {
+            type: "function",
+            name: "transfer",
+            stateMutability: "nonpayable",
+            inputs: [
+              { name: "to", type: "address" },
+              { name: "value", type: "uint256" },
+            ],
+            outputs: [{ name: "", type: "bool" }],
+          },
+        ],
+        functionName: "transfer",
+        args: [withdrawAddress as `0x${string}`, BigInt(amountInUnits)],
+      });
+
+      const nonceResp = await api.get("/wallet/withdraw/nonce");
+      const nonce = String(nonceResp?.data?.nonce || "").trim();
+      if (!nonce) {
+        throw new Error("Unable to fetch relayer nonce");
+      }
+
+      await ensurePolygonChain(() => chainIdRef.current, switchChainAsync);
+
+      const safeTxPayload = {
+        domain: {
+          chainId: BigInt(polygon.id),
+          verifyingContract: vaultAddress as `0x${string}`,
+        },
+        types: {
+          SafeTx: [
+            { name: "to", type: "address" },
+            { name: "value", type: "uint256" },
+            { name: "data", type: "bytes" },
+            { name: "operation", type: "uint8" },
+            { name: "safeTxGas", type: "uint256" },
+            { name: "baseGas", type: "uint256" },
+            { name: "gasPrice", type: "uint256" },
+            { name: "gasToken", type: "address" },
+            { name: "refundReceiver", type: "address" },
+            { name: "nonce", type: "uint256" },
+          ],
+        } as const,
+        primaryType: "SafeTx" as const,
+        message: {
+          to: tokenAddress as `0x${string}`,
+          value: BigInt(0),
+          data: transferData,
+          operation: 0,
+          safeTxGas: BigInt(0),
+          baseGas: BigInt(0),
+          gasPrice: BigInt(0),
+          gasToken: ZERO_ADDRESS as `0x${string}`,
+          refundReceiver: ZERO_ADDRESS as `0x${string}`,
+          nonce: BigInt(nonce),
+        },
+      };
+
+      const safeTxHash = hashTypedData({
+        domain: safeTxPayload.domain,
+        types: safeTxPayload.types,
+        primaryType: safeTxPayload.primaryType,
+        message: safeTxPayload.message,
+      });
+
+      const signature = await signMessageAsync({
+        message: { raw: safeTxHash },
+      });
+
+      const packedSignature = splitAndPackSig(signature);
 
       await api.post(
         "/wallet/withdraw",
         {
           to_address: withdrawAddress,
           amount: amountInUnits,
+          safe_tx_to: tokenAddress,
+          safe_tx_data: transferData,
+          nonce,
+          signature: packedSignature,
+          operation: "0",
+          safe_txn_gas: "0",
+          base_gas: "0",
+          gas_price: "0",
+          gas_token: ZERO_ADDRESS,
+          refund_receiver: ZERO_ADDRESS,
+          metadata: "bankai:withdraw",
         }
       );
 
@@ -318,8 +450,8 @@ export function DepositWithdrawModal({
                   </Button>
 
                   <p className="text-xs text-muted-foreground text-center">
-                    Note: Withdrawal requires signing a Safe transaction. This
-                    feature is currently in development.
+                    Withdrawal is signed as a SafeTx and submitted to the
+                    Polymarket relayer.
                   </p>
                 </>
               )}

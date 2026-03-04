@@ -33,10 +33,16 @@ type AuthMiddlewareConfig struct {
 
 var mwConfig *AuthMiddlewareConfig
 
+const (
+	AuthTokenTypeSession         = "session"
+	AuthTokenTypeSignerAssertion = "signer_assertion"
+)
+
 // AuthClaims defines JWT claims for wallet auth.
 type AuthClaims struct {
 	jwt.RegisteredClaims
-	Wallet string `json:"wallet"`
+	Wallet    string `json:"wallet"`
+	TokenType string `json:"token_type,omitempty"`
 }
 
 // InitAuthMiddleware initializes the JWT config. Should be called at startup.
@@ -96,6 +102,9 @@ func Protected() fiber.Handler {
 
 		if mwConfig.Issuer != "" && claims.Issuer != "" && claims.Issuer != mwConfig.Issuer {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid token issuer"})
+		}
+		if strings.EqualFold(strings.TrimSpace(claims.TokenType), AuthTokenTypeSignerAssertion) {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid token scope"})
 		}
 
 		// 4. Extract User ID (sub)

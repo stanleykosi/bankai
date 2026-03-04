@@ -43,9 +43,22 @@ type Client struct {
 	APIKey     string
 	APISecret  string
 	Passphrase string
+	RetryMax   int
+	RetryBase  time.Duration
 }
 
 func NewClient(cfg *config.Config) *Client {
+	retryMax := 4
+	retryBase := 200 * time.Millisecond
+	if cfg != nil {
+		if cfg.Services.RetryMaxAttempts > 0 {
+			retryMax = cfg.Services.RetryMaxAttempts
+		}
+		if cfg.Services.RetryBaseDelayMs > 0 {
+			retryBase = time.Duration(cfg.Services.RetryBaseDelayMs) * time.Millisecond
+		}
+	}
+
 	return &Client{
 		BaseURL:    cfg.Polymarket.RelayerURL,
 		APIKey:     cfg.Polymarket.BuilderAPIKey,
@@ -54,6 +67,8 @@ func NewClient(cfg *config.Config) *Client {
 		HTTPClient: &http.Client{
 			Timeout: DefaultTimeout,
 		},
+		RetryMax:  retryMax,
+		RetryBase: retryBase,
 	}
 }
 
@@ -75,10 +90,25 @@ type deployedResponse struct {
 	Deployed bool `json:"deployed"`
 }
 
+type nonceResponse struct {
+	Nonce string `json:"nonce"`
+}
+
 // DeploySafe submits a SAFE-CREATE TransactionRequest to the relayer.
 func (c *Client) DeploySafe(ctx context.Context, request *TransactionRequest) (*RelayerResponse, error) {
 	if request == nil {
 		return nil, fmt.Errorf("transaction request cannot be nil")
+	}
+	return c.submitTransaction(ctx, request)
+}
+
+// SubmitSafeTransaction submits a pre-signed SAFE transaction request.
+func (c *Client) SubmitSafeTransaction(ctx context.Context, request *TransactionRequest) (*RelayerResponse, error) {
+	if request == nil {
+		return nil, fmt.Errorf("transaction request cannot be nil")
+	}
+	if request.Type != TransactionTypeSafe {
+		return nil, fmt.Errorf("transaction type must be SAFE")
 	}
 	return c.submitTransaction(ctx, request)
 }
@@ -98,7 +128,7 @@ func (c *Client) GetDeployed(ctx context.Context, safeAddress string) (bool, err
 		return false, fmt.Errorf("failed to sign relayer request: %w", err)
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := c.doRequestWithRetry(ctx, req)
 	if err != nil {
 		return false, fmt.Errorf("relayer request failed: %w", err)
 	}
@@ -116,6 +146,46 @@ func (c *Client) GetDeployed(ctx context.Context, safeAddress string) (bool, err
 	}
 
 	return result.Deployed, nil
+}
+
+// GetNonce returns the next relayer nonce for a signer address and transaction type.
+func (c *Client) GetNonce(ctx context.Context, signerAddress string, txType TransactionType) (string, error) {
+	signerAddress = strings.TrimSpace(signerAddress)
+	if signerAddress == "" {
+		return "", fmt.Errorf("signer address is required")
+	}
+	if txType == "" {
+		txType = TransactionTypeSafe
+	}
+
+	u := fmt.Sprintf("%s/nonce?address=%s&type=%s", c.BaseURL, signerAddress, string(txType))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	if err := c.setHeaders(req, nil); err != nil {
+		return "", fmt.Errorf("failed to sign relayer request: %w", err)
+	}
+
+	resp, err := c.doRequestWithRetry(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("relayer request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("relayer returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var out nonceResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("failed to decode nonce response: %w", err)
+	}
+	if strings.TrimSpace(out.Nonce) == "" {
+		return "", fmt.Errorf("relayer returned empty nonce")
+	}
+	return out.Nonce, nil
 }
 
 // submitTransaction sends a transaction to the relayer
@@ -137,7 +207,7 @@ func (c *Client) submitTransaction(ctx context.Context, payload interface{}) (*R
 		return nil, fmt.Errorf("failed to sign relayer request: %w", err)
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := c.doRequestWithRetry(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("relayer request failed: %w", err)
 	}
@@ -211,6 +281,101 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max] + "..."
+}
+
+func (c *Client) doRequestWithRetry(ctx context.Context, req *http.Request) (*http.Response, error) {
+	maxAttempts := c.RetryMax
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		cloned := req.Clone(ctx)
+		if req.GetBody != nil {
+			body, getErr := req.GetBody()
+			if getErr != nil {
+				return nil, getErr
+			}
+			cloned.Body = body
+		}
+		resp, err := c.HTTPClient.Do(cloned)
+		if err != nil {
+			lastErr = err
+			if attempt < maxAttempts && shouldRetryTransport(cloned.Method) {
+				sleepWithContext(ctx, c.retryDelay(attempt))
+				continue
+			}
+			return nil, lastErr
+		}
+
+		if shouldRetryRequest(cloned.Method, resp.StatusCode) && attempt < maxAttempts {
+			resp.Body.Close()
+			sleepWithContext(ctx, c.retryDelay(attempt))
+			continue
+		}
+
+		return resp, nil
+	}
+
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("request failed")
+}
+
+func shouldRetryStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, http.StatusRequestTimeout, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return status >= 500
+	}
+}
+
+func shouldRetryRequest(method string, status int) bool {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return shouldRetryStatus(status)
+	default:
+		// Avoid replaying non-idempotent requests such as POST /submit.
+		return false
+	}
+}
+
+func shouldRetryTransport(method string) bool {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Client) retryDelay(attempt int) time.Duration {
+	base := c.RetryBase
+	if base <= 0 {
+		base = 200 * time.Millisecond
+	}
+	if attempt <= 0 {
+		attempt = 1
+	}
+	delay := base * time.Duration(1<<(attempt-1))
+	if delay > 2*time.Second {
+		delay = 2 * time.Second
+	}
+	return delay
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
 }
 
 // CheckAuth performs a lightweight POST /submit with a no-op transaction to verify credentials.

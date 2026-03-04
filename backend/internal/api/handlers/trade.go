@@ -1,16 +1,9 @@
 /**
  * @description
- * HTTP Handlers for Trade execution.
- * Handles order placement and relay to Polymarket CLOB.
- * Includes validation that the authenticated user owns the signing address.
+ * HTTP handlers for trade actions that still require backend access.
  *
- * @dependencies
- * - github.com/gofiber/fiber/v2
- * - backend/internal/services
- * - backend/internal/api/middleware
- * - backend/internal/polymarket/clob
- * - backend/internal/models
- * - gorm.io/gorm
+ * Order placement/history persistence are handled directly in the frontend via
+ * the official Polymarket SDK and CLOB API.
  */
 
 package handlers
@@ -18,8 +11,6 @@ package handlers
 import (
 	"context"
 	"errors"
-	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -27,10 +18,9 @@ import (
 	"github.com/bankai-project/backend/internal/config"
 	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/models"
-	"github.com/bankai-project/backend/internal/polymarket/clob"
 	"github.com/bankai-project/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
-	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
@@ -39,19 +29,18 @@ type TradeHandler struct {
 	Notifications *services.NotificationService
 	Config        *config.Config
 	DB            *gorm.DB
+	Redis         *redis.Client
 }
 
-func NewTradeHandler(service *services.TradeService, notifications *services.NotificationService, cfg *config.Config, db *gorm.DB) *TradeHandler {
+func NewTradeHandler(service *services.TradeService, notifications *services.NotificationService, cfg *config.Config, db *gorm.DB, rdb *redis.Client) *TradeHandler {
 	return &TradeHandler{
 		Service:       service,
 		Notifications: notifications,
 		Config:        cfg,
 		DB:            db,
+		Redis:         rdb,
 	}
 }
-
-// PostTradeRequest and BatchTradeRequest types have been removed.
-// The frontend now uses the official Polymarket SDK directly, so these request types are no longer needed.
 
 type CancelTradeRequest struct {
 	OrderID string `json:"orderId"`
@@ -61,58 +50,26 @@ type CancelTradesRequest struct {
 	OrderIDs []string `json:"orderIds"`
 }
 
-// SyncOrdersRequest is used by the frontend (after fetching via the SDK) to persist orders.
 type SyncOrdersRequest struct {
-	Orders []services.SyncedOrder `json:"orders"`
+	Orders []SyncedOrder `json:"orders"`
 }
 
-var validOrderTypes = map[clob.OrderType]struct{}{
-	clob.OrderTypeGTC: {},
-	clob.OrderTypeGTD: {},
-	clob.OrderTypeFOK: {},
-	clob.OrderTypeFAK: {},
+type SyncedOrder struct {
+	OrderID        string    `json:"orderId"`
+	MarketID       string    `json:"marketId"`
+	Outcome        string    `json:"outcome"`
+	OutcomeTokenID string    `json:"outcomeTokenId"`
+	MakerAddress   string    `json:"makerAddress"`
+	Side           string    `json:"side"`
+	Price          float64   `json:"price"`
+	Size           float64   `json:"size"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
-// GetAuthTypedData endpoint has been removed.
-// The frontend now uses the official Polymarket SDK's deriveApiKey/createApiKey methods,
-// which handle EIP-712 signing internally.
-
-// PostTrade and PostBatchTrade endpoints have been removed.
-// The frontend now uses the official Polymarket SDK directly for order creation, signing, and submission.
-// This eliminates the need for backend order relaying and ensures compatibility with the official SDK.
-
-// GetOrders returns the authenticated user's order history
-func (h *TradeHandler) GetOrders(c *fiber.Ctx) error {
-	userID, err := middleware.GetUserID(c)
-	if err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
-	}
-
-	user, err := h.fetchUserRecord(c.Context(), userID)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User profile not found. Please sync user first."})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Database error"})
-	}
-
-	limit, offset, parseErr := parsePagination(c.Query("limit"), c.Query("offset"))
-	if parseErr != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": parseErr.Error()})
-	}
-
-	orders, total, svcErr := h.Service.ListOrders(c.Context(), user.ID, limit, offset)
-	if svcErr != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": svcErr.Error()})
-	}
-
-	return c.JSON(fiber.Map{
-		"data":   orders,
-		"total":  total,
-		"limit":  limit,
-		"offset": offset,
-	})
-}
+const seenTradeAlertTTL = 30 * 24 * time.Hour
+const pendingTradeAlertTTL = 2 * time.Minute
 
 func (h *TradeHandler) CancelOrder(c *fiber.Ctx) error {
 	userID, err := middleware.GetUserID(c)
@@ -138,6 +95,9 @@ func (h *TradeHandler) CancelOrder(c *fiber.Ctx) error {
 
 	resp, svcErr := h.Service.CancelOrder(c.Context(), user, req.OrderID)
 	if svcErr != nil {
+		if errors.Is(svcErr, services.ErrBackendCancellationDisabled) {
+			return c.Status(fiber.StatusGone).JSON(fiber.Map{"error": svcErr.Error()})
+		}
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": svcErr.Error()})
 	}
 
@@ -168,13 +128,16 @@ func (h *TradeHandler) CancelOrders(c *fiber.Ctx) error {
 
 	resp, svcErr := h.Service.CancelOrders(c.Context(), user, req.OrderIDs)
 	if svcErr != nil {
+		if errors.Is(svcErr, services.ErrBackendCancellationDisabled) {
+			return c.Status(fiber.StatusGone).JSON(fiber.Map{"error": svcErr.Error()})
+		}
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": svcErr.Error()})
 	}
 
 	return c.JSON(resp)
 }
 
-// SyncOrders persists Polymarket orders fetched via the SDK into Postgres for history/audit.
+// SyncOrders emits follower trade alerts for SDK-fetched order lifecycle snapshots.
 func (h *TradeHandler) SyncOrders(c *fiber.Ctx) error {
 	userID, err := middleware.GetUserID(c)
 	if err != nil {
@@ -196,43 +159,9 @@ func (h *TradeHandler) SyncOrders(c *fiber.Ctx) error {
 	if len(req.Orders) == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "orders array is required"})
 	}
+	req.Orders = normalizeSyncedOrderMakers(user, req.Orders)
 
-	existingOrders := h.getExistingOrderIDs(c.Context(), user.ID, req.Orders)
-
-	if err := h.Service.SyncOrdersFromSDK(c.Context(), user, req.Orders); err != nil {
-		logger.Error("SyncOrders failed: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to sync orders"})
-	}
-
-	h.notifyFollowers(c.Context(), user, req.Orders, existingOrders)
-
-	return c.JSON(fiber.Map{"status": "ok"})
-}
-
-// SyncOrdersInternal allows background workers to persist orders by maker address using JOB_SYNC_SECRET.
-func (h *TradeHandler) SyncOrdersInternal(c *fiber.Ctx) error {
-	secret := c.Get("X-Job-Secret")
-	if secret == "" || secret != h.Config.Services.SyncJobSecret {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
-	}
-
-	var req SyncOrdersRequest
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
-	}
-	if len(req.Orders) == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "orders array is required"})
-	}
-
-	existingOrders := h.getExistingOrderIDsByAddress(c.Context(), req.Orders)
-
-	if err := h.Service.SyncOrdersByAddress(c.Context(), req.Orders); err != nil {
-		logger.Error("SyncOrdersInternal failed: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to sync orders"})
-	}
-
-	h.notifyFollowersByAddress(c.Context(), req.Orders, existingOrders)
-
+	h.notifyFollowers(c.Context(), user, req.Orders)
 	return c.JSON(fiber.Map{"status": "ok"})
 }
 
@@ -244,150 +173,127 @@ func (h *TradeHandler) fetchUserRecord(ctx context.Context, userID string) (*mod
 	return &user, nil
 }
 
-func (h *TradeHandler) getExistingOrderIDs(ctx context.Context, userID uuid.UUID, orders []services.SyncedOrder) map[string]struct{} {
-	existing := make(map[string]struct{})
-	if len(orders) == 0 {
-		return existing
-	}
-
-	orderIDs := uniqueOrderIDs(orders)
-	if len(orderIDs) == 0 {
-		return existing
-	}
-
-	var rows []models.Order
-	if err := h.DB.WithContext(ctx).
-		Select("clob_order_id").
-		Where("user_id = ? AND clob_order_id IN ?", userID, orderIDs).
-		Find(&rows).Error; err != nil {
-		logger.Error("TradeHandler: Failed to check existing orders: %v", err)
-		return existing
-	}
-
-	for _, row := range rows {
-		if row.CLOBOrderID != "" {
-			existing[row.CLOBOrderID] = struct{}{}
-		}
-	}
-
-	return existing
+func normalizeAddress(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
 }
 
-func (h *TradeHandler) getExistingOrderIDsByAddress(ctx context.Context, orders []services.SyncedOrder) map[string]struct{} {
-	existing := make(map[string]struct{})
-	if len(orders) == 0 {
-		return existing
+func normalizeSyncedOrderMakers(user *models.User, orders []SyncedOrder) []SyncedOrder {
+	if user == nil || len(orders) == 0 {
+		return orders
 	}
 
-	orderIDs := uniqueOrderIDs(orders)
-	if len(orderIDs) == 0 {
-		return existing
+	vault := normalizeAddress(user.VaultAddress)
+	eoa := normalizeAddress(user.EOAAddress)
+	preferred := vault
+	if preferred == "" {
+		preferred = eoa
 	}
 
-	var rows []models.Order
-	if err := h.DB.WithContext(ctx).
-		Select("clob_order_id").
-		Where("clob_order_id IN ?", orderIDs).
-		Find(&rows).Error; err != nil {
-		logger.Error("TradeHandler: Failed to check existing orders: %v", err)
-		return existing
+	allowed := map[string]struct{}{}
+	if vault != "" {
+		allowed[vault] = struct{}{}
+	}
+	if eoa != "" {
+		allowed[eoa] = struct{}{}
 	}
 
-	for _, row := range rows {
-		if row.CLOBOrderID != "" {
-			existing[row.CLOBOrderID] = struct{}{}
+	normalized := make([]SyncedOrder, len(orders))
+	for i, order := range orders {
+		maker := normalizeAddress(order.MakerAddress)
+		if maker == "" {
+			order.MakerAddress = preferred
+			normalized[i] = order
+			continue
 		}
+
+		if _, ok := allowed[maker]; ok {
+			order.MakerAddress = maker
+		} else {
+			// `maker_address` can be a counterparty on taker-side fills.
+			order.MakerAddress = preferred
+		}
+		normalized[i] = order
 	}
 
-	return existing
+	return normalized
 }
 
-func (h *TradeHandler) notifyFollowers(ctx context.Context, user *models.User, orders []services.SyncedOrder, existing map[string]struct{}) {
-	if h.Notifications == nil || len(orders) == 0 {
+func (h *TradeHandler) notifyFollowers(ctx context.Context, user *models.User, orders []SyncedOrder) {
+	if h == nil || h.Notifications == nil || len(orders) == 0 {
 		return
 	}
 
-	marketMap := fetchMarketMap(ctx, h.DB, orders)
-	sent := make(map[string]struct{})
+	marketMap := h.fetchMarketMap(ctx, orders)
+	seenInBatch := make(map[string]struct{}, len(orders))
+	userScope := ""
+	vaultAddress := ""
+	eoaAddress := ""
+	if user != nil {
+		userScope = strings.TrimSpace(user.ID.String())
+		vaultAddress = strings.ToLower(strings.TrimSpace(user.VaultAddress))
+		eoaAddress = strings.ToLower(strings.TrimSpace(user.EOAAddress))
+	}
 
 	for _, order := range orders {
-		if shouldSkipNotification(order, existing) {
+		orderID := strings.TrimSpace(order.OrderID)
+		if orderID == "" {
 			continue
 		}
-		if _, ok := sent[order.OrderID]; ok {
+		if !shouldNotifyForStatus(order.Status) {
+			continue
+		}
+		if _, ok := seenInBatch[orderID]; ok {
 			continue
 		}
 
-		traderAddress := strings.ToLower(strings.TrimSpace(order.MakerAddress))
-		if traderAddress == "" && user != nil {
-			if user.VaultAddress != "" {
-				traderAddress = strings.ToLower(user.VaultAddress)
-			} else if user.EOAAddress != "" {
-				traderAddress = strings.ToLower(user.EOAAddress)
+		preferredTraderAddress := vaultAddress
+		if preferredTraderAddress == "" {
+			preferredTraderAddress = eoaAddress
+		}
+		traderAddress := preferredTraderAddress
+		candidate := normalizeAddress(order.MakerAddress)
+		if candidate != "" {
+			if candidate == vaultAddress || candidate == eoaAddress {
+				traderAddress = candidate
 			}
 		}
 		if traderAddress == "" {
 			continue
 		}
 
-		data := buildTradeAlertData(order, traderAddress, marketMap)
-		if err := h.Notifications.CreateTradeAlert(ctx, data); err != nil {
-			logger.Error("TradeHandler: Failed to create trade alert: %v", err)
-		} else {
-			sent[order.OrderID] = struct{}{}
-		}
-	}
-}
-
-func (h *TradeHandler) notifyFollowersByAddress(ctx context.Context, orders []services.SyncedOrder, existing map[string]struct{}) {
-	if h.Notifications == nil || len(orders) == 0 {
-		return
-	}
-
-	marketMap := fetchMarketMap(ctx, h.DB, orders)
-	sent := make(map[string]struct{})
-
-	for _, order := range orders {
-		if shouldSkipNotification(order, existing) {
+		reserved, reserveErr := h.reserveOrderAlert(ctx, userScope, orderID)
+		if reserveErr != nil {
+			logger.Error("TradeHandler: Failed to reserve dedupe key for order %s: %v", orderID, reserveErr)
 			continue
 		}
-		if _, ok := sent[order.OrderID]; ok {
-			continue
-		}
-
-		traderAddress := strings.ToLower(strings.TrimSpace(order.MakerAddress))
-		if traderAddress == "" {
+		if !reserved {
 			continue
 		}
 
 		data := buildTradeAlertData(order, traderAddress, marketMap)
 		if err := h.Notifications.CreateTradeAlert(ctx, data); err != nil {
-			logger.Error("TradeHandler: Failed to create trade alert: %v", err)
-		} else {
-			sent[order.OrderID] = struct{}{}
+			logger.Error("TradeHandler: Failed to create trade alert for order %s: %v", orderID, err)
+			h.releaseOrderAlert(ctx, userScope, orderID)
+			continue
+		}
+
+		seenInBatch[orderID] = struct{}{}
+		if err := h.confirmOrderAlert(ctx, userScope, orderID); err != nil {
+			logger.Error("TradeHandler: Failed to confirm dedupe key for order %s: %v", orderID, err)
 		}
 	}
 }
 
-func shouldSkipNotification(order services.SyncedOrder, existing map[string]struct{}) bool {
-	if order.OrderID == "" {
-		return true
+func (h *TradeHandler) fetchMarketMap(ctx context.Context, orders []SyncedOrder) map[string]models.Market {
+	marketMap := make(map[string]models.Market)
+	if h == nil || h.DB == nil || len(orders) == 0 {
+		return marketMap
 	}
-	if _, ok := existing[order.OrderID]; ok {
-		return true
-	}
-	status := strings.ToLower(strings.TrimSpace(order.Status))
-	if strings.Contains(status, "cancel") || strings.Contains(status, "fail") {
-		return true
-	}
-	return false
-}
 
-func uniqueOrderIDs(orders []services.SyncedOrder) []string {
-	seen := make(map[string]struct{})
+	seen := make(map[string]struct{}, len(orders))
 	ids := make([]string, 0, len(orders))
 	for _, order := range orders {
-		id := strings.TrimSpace(order.OrderID)
+		id := strings.TrimSpace(order.MarketID)
 		if id == "" {
 			continue
 		}
@@ -397,66 +303,108 @@ func uniqueOrderIDs(orders []services.SyncedOrder) []string {
 		seen[id] = struct{}{}
 		ids = append(ids, id)
 	}
-	return ids
-}
-
-func fetchMarketMap(ctx context.Context, db *gorm.DB, orders []services.SyncedOrder) map[string]models.Market {
-	marketMap := make(map[string]models.Market)
-	if db == nil || len(orders) == 0 {
-		return marketMap
-	}
-
-	seen := make(map[string]struct{})
-	ids := make([]string, 0, len(orders))
-	for _, order := range orders {
-		if order.MarketID == "" {
-			continue
-		}
-		if _, ok := seen[order.MarketID]; ok {
-			continue
-		}
-		seen[order.MarketID] = struct{}{}
-		ids = append(ids, order.MarketID)
-	}
 	if len(ids) == 0 {
 		return marketMap
 	}
 
 	var markets []models.Market
-	if err := db.WithContext(ctx).
-		Where("condition_id IN ?", ids).
-		Find(&markets).Error; err != nil {
-		logger.Error("TradeHandler: Failed to load markets for notifications: %v", err)
+	if err := h.DB.WithContext(ctx).Where("condition_id IN ?", ids).Find(&markets).Error; err != nil {
+		logger.Error("TradeHandler: Failed to load markets for alerts: %v", err)
 		return marketMap
 	}
-
 	for _, market := range markets {
-		if market.ConditionID != "" {
+		if strings.TrimSpace(market.ConditionID) != "" {
 			marketMap[market.ConditionID] = market
 		}
 	}
-
 	return marketMap
 }
 
-func buildTradeAlertData(order services.SyncedOrder, traderAddress string, marketMap map[string]models.Market) services.TradeAlertData {
+func normalizeTradeAlertScope(userScope string) string {
+	userScope = strings.TrimSpace(userScope)
+	if userScope == "" {
+		return "anon"
+	}
+	return strings.ToLower(userScope)
+}
+
+func tradeAlertSeenKey(userScope, orderID string) string {
+	return "trade:alert:seen:" + normalizeTradeAlertScope(userScope) + ":" + strings.ToLower(strings.TrimSpace(orderID))
+}
+
+func (h *TradeHandler) reserveOrderAlert(ctx context.Context, userScope, orderID string) (bool, error) {
+	orderID = strings.TrimSpace(orderID)
+	if orderID == "" {
+		return false, nil
+	}
+	if h == nil || h.Redis == nil {
+		// Fail-open; durable dedupe happens in Postgres notifications.
+		return true, nil
+	}
+
+	ok, err := h.Redis.SetNX(ctx, tradeAlertSeenKey(userScope, orderID), "pending", pendingTradeAlertTTL).Result()
+	if err != nil {
+		// Redis errors should not suppress alerts.
+		return true, nil
+	}
+	return ok, nil
+}
+
+func (h *TradeHandler) confirmOrderAlert(ctx context.Context, userScope, orderID string) error {
+	orderID = strings.TrimSpace(orderID)
+	if orderID == "" {
+		return nil
+	}
+	if h == nil || h.Redis == nil {
+		return nil
+	}
+
+	return h.Redis.Set(ctx, tradeAlertSeenKey(userScope, orderID), "sent", seenTradeAlertTTL).Err()
+}
+
+func (h *TradeHandler) releaseOrderAlert(ctx context.Context, userScope, orderID string) {
+	orderID = strings.TrimSpace(orderID)
+	if orderID == "" || h == nil || h.Redis == nil {
+		return
+	}
+
+	if err := h.Redis.Del(ctx, tradeAlertSeenKey(userScope, orderID)).Err(); err != nil {
+		logger.Error("TradeHandler: Failed to release dedupe key for order %s: %v", orderID, err)
+	}
+}
+
+func shouldNotifyForStatus(raw string) bool {
+	status := strings.ToLower(strings.TrimSpace(raw))
+	if status == "" {
+		return true
+	}
+	if strings.Contains(status, "cancel") ||
+		strings.Contains(status, "fail") ||
+		strings.Contains(status, "reject") ||
+		strings.Contains(status, "expire") {
+		return false
+	}
+	return true
+}
+
+func buildTradeAlertData(order SyncedOrder, traderAddress string, marketMap map[string]models.Market) services.TradeAlertData {
 	side := strings.ToUpper(strings.TrimSpace(order.Side))
 	if side == "" {
 		side = "BUY"
 	}
-	outcome := order.Outcome
+	outcome := strings.TrimSpace(order.Outcome)
 	if outcome == "" {
 		outcome = "Outcome"
 	}
 
-	marketTitle := order.MarketID
-	marketSlug := order.MarketID
-	if market, ok := marketMap[order.MarketID]; ok {
-		if market.Title != "" {
-			marketTitle = market.Title
+	marketTitle := strings.TrimSpace(order.MarketID)
+	marketSlug := strings.TrimSpace(order.MarketID)
+	if market, ok := marketMap[strings.TrimSpace(order.MarketID)]; ok {
+		if strings.TrimSpace(market.Title) != "" {
+			marketTitle = strings.TrimSpace(market.Title)
 		}
-		if market.Slug != "" {
-			marketSlug = market.Slug
+		if strings.TrimSpace(market.Slug) != "" {
+			marketSlug = strings.TrimSpace(market.Slug)
 		}
 	}
 	if marketTitle == "" {
@@ -475,6 +423,7 @@ func buildTradeAlertData(order services.SyncedOrder, traderAddress string, marke
 	}
 
 	return services.TradeAlertData{
+		OrderID:       strings.TrimSpace(order.OrderID),
 		TraderAddress: traderAddress,
 		MarketSlug:    marketSlug,
 		MarketTitle:   marketTitle,
@@ -486,34 +435,3 @@ func buildTradeAlertData(order services.SyncedOrder, traderAddress string, marke
 		Timestamp:     ts.UTC().Format(time.RFC3339),
 	}
 }
-
-func parsePagination(limitRaw, offsetRaw string) (int, int, error) {
-	limit := 50
-	offset := 0
-	if limitRaw != "" {
-		val, err := strconv.Atoi(limitRaw)
-		if err != nil || val <= 0 {
-			return 0, 0, fmt.Errorf("invalid limit")
-		}
-		limit = val
-	}
-	if offsetRaw != "" {
-		val, err := strconv.Atoi(offsetRaw)
-		if err != nil || val < 0 {
-			return 0, 0, fmt.Errorf("invalid offset")
-		}
-		offset = val
-	}
-	return limit, offset, nil
-}
-
-func normalizeOrderType(raw clob.OrderType) (clob.OrderType, error) {
-	normalized := clob.OrderType(strings.ToUpper(string(raw)))
-	if _, ok := validOrderTypes[normalized]; !ok {
-		return "", fmt.Errorf("invalid orderType: %s", raw)
-	}
-	return normalized, nil
-}
-
-// normalizeSignatureType function has been removed.
-// The frontend now uses the official Polymarket SDK which handles signature types internally.

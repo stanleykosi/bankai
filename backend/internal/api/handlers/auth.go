@@ -76,8 +76,9 @@ type siweMessage struct {
 }
 
 const (
-	siweHeaderSuffix = " wants you to sign in with your Ethereum account:"
-	nonceKeyPrefix   = "auth:nonce:"
+	siweHeaderSuffix   = " wants you to sign in with your Ethereum account:"
+	nonceKeyPrefix     = "auth:nonce:"
+	signerAssertionTTL = 2 * time.Minute
 )
 
 // Challenge returns a SIWE message for the client to sign.
@@ -241,7 +242,8 @@ func (h *AuthHandler) issueAuthCookie(c *fiber.Ctx, user *models.User, wallet st
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(exp),
 		},
-		Wallet: wallet,
+		Wallet:    wallet,
+		TokenType: middleware.AuthTokenTypeSession,
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS512, claims)
@@ -264,6 +266,51 @@ func (h *AuthHandler) issueAuthCookie(c *fiber.Ctx, user *models.User, wallet st
 	}
 	c.Cookie(cookie)
 	return nil
+}
+
+// SignerAssertion issues a short-lived bearer token for frontend signer minting.
+// GET /api/v1/auth/signer-assertion
+func (h *AuthHandler) SignerAssertion(c *fiber.Ctx) error {
+	if h == nil || h.Cfg == nil || strings.TrimSpace(h.Cfg.Auth.JWTSecret) == "" {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "auth configuration unavailable",
+		})
+	}
+
+	userID, err := middleware.GetUserID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unauthorized"})
+	}
+	wallet, err := middleware.GetWalletAddress(c)
+	if err != nil || strings.TrimSpace(wallet) == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "wallet context missing"})
+	}
+
+	now := time.Now().UTC()
+	exp := now.Add(signerAssertionTTL)
+	claims := middleware.AuthClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   strings.TrimSpace(userID),
+			Issuer:    h.Cfg.Auth.JWTIssuer,
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(exp),
+		},
+		Wallet:    strings.ToLower(strings.TrimSpace(wallet)),
+		TokenType: middleware.AuthTokenTypeSignerAssertion,
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS512, claims)
+	signed, signErr := token.SignedString([]byte(h.Cfg.Auth.JWTSecret))
+	if signErr != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "failed to issue signer assertion",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"token":      signed,
+		"expires_at": exp.Unix(),
+	})
 }
 
 func generateNonce() (string, error) {

@@ -66,19 +66,37 @@ type PolymarketConfig struct {
 
 // ServicesConfig holds external service keys (AI, Auth, etc.)
 type ServicesConfig struct {
-	TavilyAPIKey        string
-	OpenAIAPIKey        string
-	OpenAIBaseURL       string
-	OpenAIModel         string
-	OpenAIMaxTokens     int
-	OpenAIMaxContext    int
-	PolygonRPCURL       string
-	SyncJobSecret       string
-	AIPicksMarketLimit  int
-	AlphaSnapshotHour   int // UTC hour to run daily AI snapshot; -1 to run immediately
-	MaxTrackedAssets    int // RTDS subscription cap; 0 = no cap
-	StreamRecentHours   int // When >0, subscribe all markets with volume in the last N hours; 0 = subscribe all active markets
-	RTDSActivityEnabled bool
+	TavilyAPIKey                   string
+	OpenAIAPIKey                   string
+	OpenAIBaseURL                  string
+	OpenAIModel                    string
+	OpenAIMaxTokens                int
+	OpenAIMaxContext               int
+	PolygonRPCURL                  string
+	SyncJobSecret                  string
+	AIPicksMarketLimit             int
+	AlphaSnapshotHour              int // UTC hour to run daily AI snapshot; -1 to run immediately
+	MaxTrackedAssets               int // RTDS subscription cap; 0 = no cap
+	StreamRecentHours              int // When >0, subscribe all markets with volume in the last N hours; 0 = subscribe all active markets
+	RTDSActivityEnabled            bool
+	APIRateLimitPerMin             int
+	AuthRateLimitPerMin            int
+	SignRateLimitPerMin            int
+	TradeRateLimitPerMin           int
+	WalletRateLimitPerMin          int
+	AdminRateLimitPerMin           int
+	RTDSWorkerPoolSize             int
+	RTDSQueueSize                  int
+	RetryMaxAttempts               int
+	RetryBaseDelayMs               int
+	MetricsEnabled                 bool
+	MetricsToken                   string
+	AdminWalletAllow               []string
+	JobWorkerPoolSize              int
+	TPSLCheckIntervalSeconds       int
+	MarketReconcileIntervalSeconds int
+	OrderbookReconcileIntervalSecs int
+	NotificationCleanupMinutes     int
 }
 
 // AuthConfig holds wallet-only auth configuration
@@ -135,19 +153,37 @@ func Load() (*Config, error) {
 			CookieSameSite:  getEnv("AUTH_COOKIE_SAMESITE", "lax"),
 		},
 		Services: ServicesConfig{
-			TavilyAPIKey:        getEnv("TAVILY_API_KEY", ""),
-			OpenAIAPIKey:        getEnv("OPENAI_API_KEY", ""),
-			OpenAIBaseURL:       getEnv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"),
-			OpenAIModel:         getEnv("OPENAI_MODEL", "minimax/minimax-m2.1"),
-			OpenAIMaxTokens:     getEnvAsInt("OPENAI_MAX_TOKENS", 10000),
-			OpenAIMaxContext:    getEnvAsInt("OPENAI_MAX_CONTEXT_TOKENS", 204800),
-			PolygonRPCURL:       getEnv("POLYGON_RPC_URL", ""),
-			SyncJobSecret:       getEnv("JOB_SYNC_SECRET", ""),
-			AIPicksMarketLimit:  getEnvAsInt("AI_PICKS_MARKET_LIMIT", 0),
-			AlphaSnapshotHour:   getEnvAsInt("ALPHA_SNAPSHOT_HOUR_UTC", -1),
-			MaxTrackedAssets:    getEnvAsInt("STREAM_MAX_TRACKED_ASSETS", 0),
-			StreamRecentHours:   getEnvAsInt("STREAM_RECENT_HOURS", 0),
-			RTDSActivityEnabled: getEnvAsBool("RTDS_ACTIVITY_ENABLED", true),
+			TavilyAPIKey:                   getEnv("TAVILY_API_KEY", ""),
+			OpenAIAPIKey:                   getEnv("OPENAI_API_KEY", ""),
+			OpenAIBaseURL:                  getEnv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"),
+			OpenAIModel:                    getEnv("OPENAI_MODEL", "minimax/minimax-m2.1"),
+			OpenAIMaxTokens:                getEnvAsInt("OPENAI_MAX_TOKENS", 10000),
+			OpenAIMaxContext:               getEnvAsInt("OPENAI_MAX_CONTEXT_TOKENS", 204800),
+			PolygonRPCURL:                  getEnv("POLYGON_RPC_URL", ""),
+			SyncJobSecret:                  getEnv("JOB_SYNC_SECRET", ""),
+			AIPicksMarketLimit:             getEnvAsInt("AI_PICKS_MARKET_LIMIT", 0),
+			AlphaSnapshotHour:              getEnvAsInt("ALPHA_SNAPSHOT_HOUR_UTC", -1),
+			MaxTrackedAssets:               getEnvAsInt("STREAM_MAX_TRACKED_ASSETS", 0),
+			StreamRecentHours:              getEnvAsInt("STREAM_RECENT_HOURS", 0),
+			RTDSActivityEnabled:            getEnvAsBool("RTDS_ACTIVITY_ENABLED", true),
+			APIRateLimitPerMin:             getEnvAsInt("API_RATE_LIMIT_PER_MINUTE", 240),
+			AuthRateLimitPerMin:            getEnvAsInt("AUTH_RATE_LIMIT_PER_MINUTE", 30),
+			SignRateLimitPerMin:            getEnvAsInt("SIGN_RATE_LIMIT_PER_MINUTE", 60),
+			TradeRateLimitPerMin:           getEnvAsInt("TRADE_RATE_LIMIT_PER_MINUTE", 120),
+			WalletRateLimitPerMin:          getEnvAsInt("WALLET_RATE_LIMIT_PER_MINUTE", 60),
+			AdminRateLimitPerMin:           getEnvAsInt("ADMIN_RATE_LIMIT_PER_MINUTE", 30),
+			RTDSWorkerPoolSize:             getEnvAsInt("RTDS_WORKER_POOL_SIZE", 64),
+			RTDSQueueSize:                  getEnvAsInt("RTDS_QUEUE_SIZE", 4096),
+			RetryMaxAttempts:               getEnvAsInt("POLY_RETRY_MAX_ATTEMPTS", 4),
+			RetryBaseDelayMs:               getEnvAsInt("POLY_RETRY_BASE_DELAY_MS", 200),
+			MetricsEnabled:                 getEnvAsBool("METRICS_ENABLED", false),
+			MetricsToken:                   getEnv("METRICS_TOKEN", ""),
+			AdminWalletAllow:               normalizeAddresses(getEnvAsCSV("ADMIN_WALLET_ALLOWLIST")),
+			JobWorkerPoolSize:              getEnvAsInt("JOB_WORKER_POOL_SIZE", 6),
+			TPSLCheckIntervalSeconds:       getEnvAsInt("TPSL_CHECK_INTERVAL_SECONDS", 15),
+			MarketReconcileIntervalSeconds: getEnvAsInt("MARKET_RECONCILE_INTERVAL_SECONDS", 120),
+			OrderbookReconcileIntervalSecs: getEnvAsInt("ORDERBOOK_RECONCILE_INTERVAL_SECONDS", 45),
+			NotificationCleanupMinutes:     getEnvAsInt("NOTIFICATION_CLEANUP_INTERVAL_MINUTES", 120),
 		},
 	}
 
@@ -245,4 +281,40 @@ func getEnvAsBool(key string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func getEnvAsCSV(key string) []string {
+	value := strings.TrimSpace(getEnv(key, ""))
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		clean := strings.TrimSpace(p)
+		if clean != "" {
+			out = append(out, clean)
+		}
+	}
+	return out
+}
+
+func normalizeAddresses(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		addr := strings.ToLower(strings.TrimSpace(item))
+		if addr == "" {
+			continue
+		}
+		if _, ok := seen[addr]; ok {
+			continue
+		}
+		seen[addr] = struct{}{}
+		out = append(out, addr)
+	}
+	return out
 }

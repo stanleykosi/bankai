@@ -10,13 +10,20 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { OrderRecord, OrderStatus } from "@/types";
 import { cn } from "@/lib/utils";
 
-const cancellableStatuses: OrderStatus[] = ["PENDING", "OPEN"];
+const cancellableStatuses: OrderStatus[] = [
+  "PENDING",
+  "OPEN",
+  "PARTIALLY_FILLED",
+];
 
 const statusColorMap: Record<OrderStatus, string> = {
   PENDING: "bg-amber-500/10 text-amber-400",
   OPEN: "bg-blue-500/10 text-blue-400",
+  PARTIALLY_FILLED: "bg-indigo-500/10 text-indigo-300",
   FILLED: "bg-emerald-500/10 text-emerald-400",
   CANCELED: "bg-muted text-muted-foreground",
+  EXPIRED: "bg-muted text-muted-foreground",
+  REJECTED: "bg-destructive/10 text-destructive",
   FAILED: "bg-destructive/10 text-destructive",
 };
 
@@ -310,4 +317,3 @@ export function OrdersPanel() {
     </Card>
   );
 }
-

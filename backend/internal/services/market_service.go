@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bankai-project/backend/internal/models"
@@ -50,8 +51,12 @@ const (
 
 	PriceUpdateChannel = "market:price_updates"
 
-	marketSyncLockKey = 42
-	lanePoolCap       = 2000
+	marketSyncLockKey     = 42
+	lanePoolCap           = 2000
+	orderBookCacheTTL     = 15 * time.Minute
+	orderBookFetchLockTTL = 4 * time.Second
+	orderBookLockWaitTTL  = 1200 * time.Millisecond
+	orderBookLockPoll     = 60 * time.Millisecond
 )
 
 var (
@@ -870,6 +875,50 @@ func (s *MarketService) fetchAndCacheOrderBook(ctx context.Context, marketID, to
 		return "", errors.New("clob client not configured")
 	}
 
+	cacheKey := fmt.Sprintf("book:%s:%s", marketID, tokenID)
+	lockKey := fmt.Sprintf("lock:book:%s:%s", marketID, tokenID)
+	locked, err := s.Redis.SetNX(ctx, lockKey, "1", orderBookFetchLockTTL).Result()
+	if err != nil {
+		log.Printf("fetchAndCacheOrderBook lock unavailable for %s/%s: %v", marketID, tokenID, err)
+	} else if !locked {
+		if cached, ok := s.waitForCachedOrderBook(ctx, cacheKey); ok {
+			return cached, nil
+		}
+		// Lock holder may have crashed or timed out before writing cache; fetch directly.
+		return s.fetchAndStoreOrderBook(ctx, marketID, tokenID, cacheKey)
+	}
+	defer func() {
+		if locked {
+			_ = s.Redis.Del(ctx, lockKey).Err()
+		}
+	}()
+
+	return s.fetchAndStoreOrderBook(ctx, marketID, tokenID, cacheKey)
+}
+
+func (s *MarketService) waitForCachedOrderBook(ctx context.Context, cacheKey string) (string, bool) {
+	deadline := time.Now().Add(orderBookLockWaitTTL)
+	for {
+		cached, err := s.Redis.Get(ctx, cacheKey).Result()
+		if err == nil && strings.TrimSpace(cached) != "" {
+			return cached, true
+		}
+		if err != nil && !errors.Is(err, redis.Nil) {
+			return "", false
+		}
+		if time.Now().After(deadline) {
+			return "", false
+		}
+
+		select {
+		case <-ctx.Done():
+			return "", false
+		case <-time.After(orderBookLockPoll):
+		}
+	}
+}
+
+func (s *MarketService) fetchAndStoreOrderBook(ctx context.Context, marketID, tokenID, cacheKey string) (string, error) {
 	book, err := s.ClobClient.GetBook(ctx, tokenID)
 	if err != nil {
 		return "", err
@@ -900,12 +949,100 @@ func (s *MarketService) fetchAndCacheOrderBook(ctx context.Context, marketID, to
 		return "", err
 	}
 
-	key := fmt.Sprintf("book:%s:%s", marketID, tokenID)
-	if err := s.Redis.Set(ctx, key, data, 15*time.Minute).Err(); err != nil {
+	if err := s.Redis.Set(ctx, cacheKey, data, orderBookCacheTTL).Err(); err != nil {
 		return "", err
 	}
 
 	return string(data), nil
+}
+
+// ReconcileOrderBooks refreshes top-market order books in Redis for depth/market-order estimates.
+func (s *MarketService) ReconcileOrderBooks(ctx context.Context, maxAssets int) error {
+	if s.ClobClient == nil {
+		return nil
+	}
+	if maxAssets <= 0 {
+		maxAssets = 250
+	}
+
+	assets, err := s.GetMarketAssets(ctx, maxAssets)
+	if err != nil {
+		return err
+	}
+	if len(assets) == 0 {
+		return nil
+	}
+
+	type tokenMeta struct {
+		MarketID string
+		TokenID  string
+	}
+
+	seen := make(map[string]struct{}, len(assets)*2)
+	jobs := make([]tokenMeta, 0, len(assets)*2)
+	for _, asset := range assets {
+		if asset.TokenIDYes != "" {
+			key := asset.ConditionID + ":" + asset.TokenIDYes
+			if _, ok := seen[key]; !ok {
+				seen[key] = struct{}{}
+				jobs = append(jobs, tokenMeta{MarketID: asset.ConditionID, TokenID: asset.TokenIDYes})
+			}
+		}
+		if asset.TokenIDNo != "" {
+			key := asset.ConditionID + ":" + asset.TokenIDNo
+			if _, ok := seen[key]; !ok {
+				seen[key] = struct{}{}
+				jobs = append(jobs, tokenMeta{MarketID: asset.ConditionID, TokenID: asset.TokenIDNo})
+			}
+		}
+	}
+
+	sem := make(chan struct{}, 8)
+	errCh := make(chan error, len(jobs))
+	var wg sync.WaitGroup
+	var launchErr error
+
+	for _, job := range jobs {
+		select {
+		case <-ctx.Done():
+			launchErr = ctx.Err()
+			break
+		default:
+		}
+		if launchErr != nil {
+			break
+		}
+
+		key := fmt.Sprintf("book:%s:%s", job.MarketID, job.TokenID)
+		if ttl, ttlErr := s.Redis.TTL(ctx, key).Result(); ttlErr == nil && ttl > 2*time.Minute {
+			continue
+		}
+
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(meta tokenMeta) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if _, err := s.fetchAndCacheOrderBook(ctx, meta.MarketID, meta.TokenID); err != nil && !errors.Is(err, ErrOrderBookUnavailable) {
+				select {
+				case errCh <- err:
+				case <-ctx.Done():
+				}
+			}
+		}(job)
+	}
+
+	wg.Wait()
+	close(errCh)
+	for reconcileErr := range errCh {
+		if reconcileErr != nil {
+			return reconcileErr
+		}
+	}
+	if launchErr != nil {
+		return launchErr
+	}
+	return nil
 }
 
 func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []models.Market) {

@@ -107,8 +107,11 @@ export interface User {
 export type OrderStatus =
   | "PENDING"
   | "OPEN"
+  | "PARTIALLY_FILLED"
   | "FILLED"
   | "CANCELED"
+  | "EXPIRED"
+  | "REJECTED"
   | "FAILED";
 
 export interface OrderRecord {

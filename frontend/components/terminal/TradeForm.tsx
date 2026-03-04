@@ -47,14 +47,15 @@ import { useWallet } from "@/hooks/useWallet";
 import { useBalance } from "@/hooks/useBalance";
 import { useUserApiCredentials } from "@/hooks/useUserApiCredentials";
 import { useClobClient } from "@/hooks/useClobClient";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { Side, OrderType } from "@polymarket/clob-client";
 import type { UserOrder, UserMarketOrder } from "@polymarket/clob-client";
-import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { fetchDepthEstimate } from "@/lib/market-data";
 import { ensurePolygonChain } from "@/lib/chain-utils";
 import { useTerminalStore } from "@/lib/store";
-import type { DepthEstimate, Market } from "@/types";
+import { mapOrderStatus } from "@/lib/order-lifecycle";
+import type { DepthEstimate, Market, OrderRecord } from "@/types";
 import { calculateDisplayPrice } from "@/lib/price-utils";
 
 interface TradeFormProps {
@@ -165,53 +166,9 @@ export function TradeForm({
     vaultAddress: user?.vault_address ?? null,
     walletType: user?.wallet_type ?? null,
   });
-
-  const syncOrderToBackend = useCallback(
-    async (order: {
-      orderId: string;
-      marketId: string;
-      outcome: string;
-      outcomeTokenId: string;
-      side: OrderSide;
-      price: number;
-      size: number;
-      orderType: OrderTypeValue;
-      status: string;
-      orderHashes: string[];
-      source: "BANKAI" | "EXTERNAL" | "UNKNOWN";
-      makerAddress?: string | null;
-    }) => {
-      try {
-        await api.post(
-          "/trade/sync",
-          {
-            orders: [
-              {
-                orderId: order.orderId,
-                marketId: order.marketId,
-                outcome: order.outcome,
-                outcomeTokenId: order.outcomeTokenId,
-                side: order.side,
-                price: order.price,
-                size: order.size,
-                orderType: order.orderType,
-                status: order.status,
-                statusDetail: order.status,
-                orderHashes: order.orderHashes,
-                source: order.source,
-                makerAddress: order.makerAddress ?? "",
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-              },
-            ],
-          },
-          { withCredentials: true }
-        );
-      } catch (err) {
-        console.error("Failed to sync order to backend", err);
-      }
-    },
-    []
+  const ordersQueryKey = useMemo(
+    () => ["orders", user?.id || user?.eoa_address || "anon"] as const,
+    [user?.id, user?.eoa_address]
   );
 
   // Use ref to track latest clobClient (avoids stale closure issues)
@@ -219,6 +176,22 @@ export function TradeForm({
   useEffect(() => {
     clobClientRef.current = clobClient;
   }, [clobClient]);
+
+  const upsertOptimisticOrders = useCallback(
+    (incoming: OrderRecord[]) => {
+      if (!incoming.length) return;
+      queryClient.setQueryData<OrderRecord[]>(ordersQueryKey, (prev = []) => {
+        const merged = new Map(prev.map((order) => [order.clob_order_id, order]));
+        for (const order of incoming) {
+          merged.set(order.clob_order_id, order);
+        }
+        return Array.from(merged.values()).sort(
+          (a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)
+        );
+      });
+    },
+    [ordersQueryKey, queryClient]
+  );
 
   const slippageToleranceBps = useTerminalStore(
     (state) => state.settings?.slippage_tolerance_bps ?? 100
@@ -470,6 +443,7 @@ export function TradeForm({
     Boolean(selectedOutcome?.tokenId) &&
     numericShares > 0 &&
     Number.isFinite(numericShares);
+  const debouncedDepthSize = useDebouncedValue(numericShares, 250);
   const {
     data: depthEstimate,
     isFetching: isDepthLoading,
@@ -479,16 +453,16 @@ export function TradeForm({
       market.condition_id,
       selectedOutcome?.tokenId,
       side,
-      numericShares,
+      debouncedDepthSize,
     ],
     queryFn: () =>
       fetchDepthEstimate(
         market.condition_id,
         selectedOutcome?.tokenId as string,
         side,
-        numericShares
+        debouncedDepthSize
       ),
-    enabled: depthEnabled,
+    enabled: depthEnabled && debouncedDepthSize > 0,
     staleTime: 10_000,
   });
   const depthFillPercent = depthEstimate?.requestedSize
@@ -739,27 +713,37 @@ export function TradeForm({
       }
 
       if (response.orderID) {
+        const nowIso = new Date().toISOString();
+        upsertOptimisticOrders([
+          {
+            id: response.orderID,
+            user_id: user?.id ?? "",
+            clob_order_id: response.orderID,
+            market_id: market?.condition_id ?? null,
+            side,
+            outcome: selectedOutcomeLabel,
+            outcome_token_id: tokenId,
+            price: numericPrice,
+            size: numericShares,
+            order_type: orderType,
+            status: mapOrderStatus(response.status, "OPEN"),
+            status_detail: response.status ?? null,
+            order_hashes: response.orderHashes ?? null,
+            source: "BANKAI",
+            maker_address: vaultAddress ?? "",
+            error_msg: null,
+            tx_hash: null,
+            created_at: nowIso,
+            updated_at: nowIso,
+          },
+        ]);
+
         setSuccessMsg(
           `Order placed for ${side} ${selectedOutcomeLabel}!`
         );
         setShares("");
         await queryClient.invalidateQueries({ queryKey: ["orders"] });
         await queryClient.invalidateQueries({ queryKey: ["balance"] });
-        // Async persist to backend for audit/history
-        void syncOrderToBackend({
-          orderId: response.orderID,
-          marketId: market?.condition_id ?? "",
-          outcome: selectedOutcomeLabel,
-          outcomeTokenId: tokenId,
-          side,
-          price: numericPrice,
-          size: numericShares,
-          orderType,
-          status: response.status ?? "OPEN",
-          orderHashes: response.orderHashes ?? [],
-          source: "BANKAI",
-          makerAddress: vaultAddress,
-        });
         setTimeout(() => refreshUser(), 1500);
       } else {
         throw new Error(
@@ -922,6 +906,45 @@ export function TradeForm({
 
       const successful = results.filter((r) => r.status === "fulfilled").length;
       const failed = results.filter((r) => r.status === "rejected").length;
+
+      const optimisticRecords: OrderRecord[] = [];
+      const nowIso = new Date().toISOString();
+      results.forEach((result, idx) => {
+        if (result.status !== "fulfilled") {
+          return;
+        }
+        const response = result.value as any;
+        if (!response?.orderID) {
+          return;
+        }
+        const entry = batchOrders[idx];
+        if (!entry) {
+          return;
+        }
+        optimisticRecords.push({
+          id: response.orderID,
+          user_id: user?.id ?? "",
+          clob_order_id: response.orderID,
+          market_id: market?.condition_id ?? null,
+          side: entry.summary.side,
+          outcome: entry.summary.outcomeLabel,
+          outcome_token_id: entry.orderParams.tokenId,
+          price: entry.summary.price,
+          size: entry.summary.shares,
+          order_type: String(entry.orderParams.orderType),
+          status: mapOrderStatus(response.status, "OPEN"),
+          status_detail: response.status ?? null,
+          order_hashes: response.orderHashes ?? null,
+          source: "BANKAI",
+          maker_address: vaultAddress ?? "",
+          error_msg: null,
+          tx_hash: null,
+          created_at: nowIso,
+          updated_at: nowIso,
+        });
+      });
+
+      upsertOptimisticOrders(optimisticRecords);
 
       if (successful > 0) {
         setSuccessMsg(

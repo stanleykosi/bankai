@@ -44,9 +44,22 @@ type Client struct {
 	APIKey     string
 	APISecret  string
 	Passphrase string
+	RetryMax   int
+	RetryBase  time.Duration
 }
 
 func NewClient(cfg *config.Config) *Client {
+	retryMax := 4
+	retryBase := 200 * time.Millisecond
+	if cfg != nil {
+		if cfg.Services.RetryMaxAttempts > 0 {
+			retryMax = cfg.Services.RetryMaxAttempts
+		}
+		if cfg.Services.RetryBaseDelayMs > 0 {
+			retryBase = time.Duration(cfg.Services.RetryBaseDelayMs) * time.Millisecond
+		}
+	}
+
 	return &Client{
 		BaseURL:    cfg.Polymarket.ClobURL,
 		APIKey:     cfg.Polymarket.BuilderAPIKey,
@@ -55,6 +68,8 @@ func NewClient(cfg *config.Config) *Client {
 		HTTPClient: &http.Client{
 			Timeout: DefaultTimeout,
 		},
+		RetryMax:  retryMax,
+		RetryBase: retryBase,
 	}
 }
 
@@ -72,6 +87,9 @@ func (c *Client) PostOrders(ctx context.Context, req PostOrdersRequest, userCred
 
 // CancelOrder cancels a single order
 func (c *Client) CancelOrder(ctx context.Context, req *CancelOrderRequest, userCreds *APIKeyCredentials) (*CancelResponse, error) {
+	if err := requireUserCredentials(userCreds); err != nil {
+		return nil, err
+	}
 	var resp CancelResponse
 	if err := c.sendRequestDecode(ctx, http.MethodDelete, "/order", req, &resp, userCreds); err != nil {
 		return nil, err
@@ -81,11 +99,24 @@ func (c *Client) CancelOrder(ctx context.Context, req *CancelOrderRequest, userC
 
 // CancelOrders cancels multiple orders
 func (c *Client) CancelOrders(ctx context.Context, req *CancelOrdersRequest, userCreds *APIKeyCredentials) (*CancelResponse, error) {
+	if err := requireUserCredentials(userCreds); err != nil {
+		return nil, err
+	}
 	var resp CancelResponse
 	if err := c.sendRequestDecode(ctx, http.MethodDelete, "/orders", req, &resp, userCreds); err != nil {
 		return nil, err
 	}
 	return &resp, nil
+}
+
+func requireUserCredentials(userCreds *APIKeyCredentials) error {
+	if userCreds == nil {
+		return fmt.Errorf("user api credentials are required")
+	}
+	if strings.TrimSpace(userCreds.Key) == "" || strings.TrimSpace(userCreds.Secret) == "" || strings.TrimSpace(userCreds.Passphrase) == "" {
+		return fmt.Errorf("incomplete user api credentials")
+	}
+	return nil
 }
 
 // GetBook fetches the current order book for a token (asset) from the CLOB API.
@@ -551,33 +582,63 @@ func (c *Client) sendRequestDecode(ctx context.Context, method, path string, pay
 	}
 
 	u := fmt.Sprintf("%s%s", c.BaseURL, path)
-	req, err := http.NewRequestWithContext(ctx, method, u, bytes.NewBuffer(body))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+	maxAttempts := c.RetryMax
+	if maxAttempts <= 0 {
+		maxAttempts = 1
 	}
 
-	// Sign the request for Builder Attribution
-	if err := c.setHeaders(req, body, userCreds); err != nil {
-		return fmt.Errorf("failed to sign request: %w", err)
-	}
+	var respBody []byte
+	var respStatus int
+	var lastErr error
+	var reqRef *http.Request
 
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("clob request failed: %w", err)
-	}
-	defer resp.Body.Close()
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		req, reqErr := http.NewRequestWithContext(ctx, method, u, bytes.NewBuffer(body))
+		if reqErr != nil {
+			return fmt.Errorf("failed to create request: %w", reqErr)
+		}
+		reqRef = req
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
+		if signErr := c.setHeaders(req, body, userCreds); signErr != nil {
+			return fmt.Errorf("failed to sign request: %w", signErr)
+		}
+
+		resp, doErr := c.HTTPClient.Do(req)
+		if doErr != nil {
+			lastErr = fmt.Errorf("clob request failed: %w", doErr)
+			if attempt < maxAttempts && shouldRetryTransport(method) {
+				sleepWithContext(ctx, c.retryDelay(attempt))
+				continue
+			}
+			return lastErr
+		}
+
+		respStatus = resp.StatusCode
+		respBody, err = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response body: %w", err)
+			if attempt < maxAttempts && shouldRetryTransport(method) {
+				sleepWithContext(ctx, c.retryDelay(attempt))
+				continue
+			}
+			return lastErr
+		}
+
+		if shouldRetryRequest(method, respStatus) && attempt < maxAttempts {
+			sleepWithContext(ctx, c.retryDelay(attempt))
+			continue
+		}
+
+		break
 	}
 
 	// Debug: surface request context when a 400 occurs to diagnose payload issues.
-	if resp.StatusCode >= 400 {
+	if respStatus >= 400 {
 		// Build a safe request descriptor
-		method := ""
-		if req != nil {
-			method = req.Method
+		methodForLog := ""
+		if reqRef != nil {
+			methodForLog = reqRef.Method
 		}
 
 		// Avoid logging secrets; only include owner key for correlation when present.
@@ -589,34 +650,37 @@ func (c *Client) sendRequestDecode(ctx context.Context, method, path string, pay
 		}
 
 		// For URL clarity, decode path+query only.
-		path := req.URL.Path
-		if req.URL.RawQuery != "" {
-			path = fmt.Sprintf("%s?%s", path, req.URL.RawQuery)
-		}
-		if decoded, derr := url.QueryUnescape(path); derr == nil {
-			path = decoded
+		pathForLog := path
+		if reqRef != nil {
+			pathForLog = reqRef.URL.Path
+			if reqRef.URL.RawQuery != "" {
+				pathForLog = fmt.Sprintf("%s?%s", pathForLog, reqRef.URL.RawQuery)
+			}
+			if decoded, derr := url.QueryUnescape(pathForLog); derr == nil {
+				pathForLog = decoded
+			}
 		}
 
 		logger.Error(
 			"CLOB 4xx: status=%d method=%s path=%s owner=%s body=%s",
-			resp.StatusCode, method, path, shortKey(ownerKey), string(respBody),
+			respStatus, methodForLog, pathForLog, shortKey(ownerKey), string(respBody),
 		)
 	}
 
-	if resp.StatusCode >= 400 {
+	if respStatus >= 400 {
 		if looksLikeHTML(respBody) {
-			return fmt.Errorf("clob waf blocked request (status %d)", resp.StatusCode)
+			return fmt.Errorf("clob waf blocked request (status %d)", respStatus)
 		}
 		var errResp ErrorResponse
 		if jsonErr := json.Unmarshal(respBody, &errResp); jsonErr == nil && errResp.Error != "" {
-			return fmt.Errorf("clob error (%d): %s | body: %s", resp.StatusCode, errResp.Error, string(respBody))
+			return fmt.Errorf("clob error (%d): %s | body: %s", respStatus, errResp.Error, string(respBody))
 		}
 		// Try parsing as PostOrderResponse errorMsg
 		var poResp PostOrderResponse
 		if jsonErr := json.Unmarshal(respBody, &poResp); jsonErr == nil && !poResp.Success {
-			return fmt.Errorf("clob error (%d): %s | body: %s", resp.StatusCode, poResp.ErrorMsg, string(respBody))
+			return fmt.Errorf("clob error (%d): %s | body: %s", respStatus, poResp.ErrorMsg, string(respBody))
 		}
-		return fmt.Errorf("clob error (%d): %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("clob error (%d): %s", respStatus, string(respBody))
 	}
 
 	if result != nil {
@@ -626,6 +690,62 @@ func (c *Client) sendRequestDecode(ctx context.Context, method, path string, pay
 	}
 
 	return nil
+}
+
+func shouldRetryHTTPStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, http.StatusRequestTimeout, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return status >= 500
+	}
+}
+
+func shouldRetryRequest(method string, status int) bool {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return shouldRetryHTTPStatus(status)
+	default:
+		// Avoid replaying mutations (e.g., POST order submission) on transient transport errors.
+		return false
+	}
+}
+
+func shouldRetryTransport(method string) bool {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	default:
+		// Never replay non-idempotent methods on transport ambiguity.
+		return false
+	}
+}
+
+func (c *Client) retryDelay(attempt int) time.Duration {
+	base := c.RetryBase
+	if base <= 0 {
+		base = 200 * time.Millisecond
+	}
+	if attempt <= 0 {
+		attempt = 1
+	}
+	// simple capped exponential backoff
+	delay := base * time.Duration(1<<(attempt-1))
+	if delay > 2*time.Second {
+		delay = 2 * time.Second
+	}
+	return delay
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
 }
 
 func (c *Client) setHeaders(req *http.Request, body []byte, userCreds *APIKeyCredentials) error {

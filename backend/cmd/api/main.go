@@ -19,8 +19,10 @@ package main
 import (
 	"os"
 	"strings"
+	"time"
 
 	"github.com/bankai-project/backend/internal/api"
+	"github.com/bankai-project/backend/internal/api/middleware"
 	"github.com/bankai-project/backend/internal/config"
 	"github.com/bankai-project/backend/internal/db"
 	"github.com/bankai-project/backend/internal/logger"
@@ -57,6 +59,10 @@ func main() {
 		AppName:       "Bankai Trading Terminal",
 		StrictRouting: true,
 		CaseSensitive: true,
+		ReadTimeout:   15 * time.Second,
+		WriteTimeout:  30 * time.Second,
+		IdleTimeout:   60 * time.Second,
+		BodyLimit:     2 * 1024 * 1024,
 	})
 
 	// 4. Global Middleware
@@ -83,6 +89,14 @@ func main() {
 		AllowMethods:     "GET, POST, PUT, DELETE, OPTIONS",
 		AllowCredentials: allowCredentials,
 	}))
+
+	if cfg.Services.MetricsEnabled {
+		if strings.TrimSpace(cfg.Services.MetricsToken) == "" {
+			logger.Error("METRICS_ENABLED is true but METRICS_TOKEN is empty; /metrics endpoint disabled")
+		} else {
+			app.Get("/metrics", middleware.MetricsHandler(cfg.Services.MetricsToken))
+		}
+	}
 
 	// 5. Setup Routes
 	// Updated to pass redisClient

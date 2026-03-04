@@ -8,11 +8,12 @@
 
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useWalletClient, useAccount } from "wagmi";
 import { ClobClient } from "@polymarket/clob-client";
 import { BuilderConfig } from "@polymarket/builder-signing-sdk";
 import { walletClientToEthersSigner } from "@/lib/ethers-adapter";
+import { api } from "@/lib/api";
 import { POLYGON_CHAIN_ID } from "@/lib/polymarket";
 import type { UserApiCredentials } from "./useUserApiCredentials";
 
@@ -56,13 +57,174 @@ export function useClobClient({
 }: UseClobClientParams) {
   const { data: walletClient } = useWalletClient();
   const { address: eoaAddress } = useAccount();
+  const [signerToken, setSignerToken] = useState<string | null>(null);
+  const signerTokenRef = useRef<string | null>(null);
+  const signerTokenExpiryRef = useRef<number>(0);
+  const backendAssertionRef = useRef<string | null>(null);
+  const backendAssertionExpiryRef = useRef<number>(0);
+
+  useEffect(() => {
+    signerTokenRef.current = signerToken;
+  }, [signerToken]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let controller: AbortController | null = null;
+    const nowSeconds = () => Math.floor(Date.now() / 1000);
+    const clearToken = () => {
+      signerTokenRef.current = null;
+      signerTokenExpiryRef.current = 0;
+      setSignerToken(null);
+    };
+    const setFreshToken = (token: string, expiresAt: number) => {
+      signerTokenRef.current = token;
+      signerTokenExpiryRef.current = expiresAt;
+      setSignerToken(token);
+    };
+    const clearBackendAssertion = () => {
+      backendAssertionRef.current = null;
+      backendAssertionExpiryRef.current = 0;
+    };
+    const hasUsableToken = () =>
+      Boolean(
+        signerTokenRef.current &&
+          signerTokenExpiryRef.current > nowSeconds() + 5
+      );
+    const hasUsableBackendAssertion = () =>
+      Boolean(
+        backendAssertionRef.current &&
+          backendAssertionExpiryRef.current > nowSeconds() + 5
+      );
+
+    const fetchBackendAssertion = async () => {
+      const response = await api.get<{
+        token?: string;
+        expires_at?: number | string;
+      }>("/auth/signer-assertion");
+      const token =
+        typeof response?.data?.token === "string"
+          ? response.data.token.trim()
+          : "";
+      const expiresAtRaw =
+        typeof response?.data?.expires_at === "number"
+          ? response.data.expires_at
+          : Number(response?.data?.expires_at);
+      const expiresAt = Number.isFinite(expiresAtRaw)
+        ? Math.floor(expiresAtRaw)
+        : nowSeconds() + 60;
+      if (!token || expiresAt <= nowSeconds()) {
+        throw new Error("invalid signer assertion");
+      }
+      backendAssertionRef.current = token;
+      backendAssertionExpiryRef.current = expiresAt;
+      return token;
+    };
+
+    const scheduleRefresh = (delayMs: number) => {
+      if (cancelled) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        void fetchToken();
+      }, delayMs);
+    };
+
+    const fetchToken = async () => {
+      if (cancelled) return;
+      const nextController = new AbortController();
+      controller = nextController;
+
+      try {
+        const assertionToken = hasUsableBackendAssertion()
+          ? backendAssertionRef.current
+          : await fetchBackendAssertion();
+        if (!assertionToken) {
+          clearToken();
+          scheduleRefresh(10_000);
+          return;
+        }
+
+        const res = await fetch("/api/polymarket/sign", {
+          method: "GET",
+          credentials: "include",
+          headers: {
+            Authorization: `Bearer ${assertionToken}`,
+          },
+          signal: nextController.signal,
+        });
+        if (cancelled) return;
+
+        if (!res.ok) {
+          // Auth failures should immediately drop the token; transient failures should not.
+          if (res.status === 401 || res.status === 403 || !hasUsableToken()) {
+            clearToken();
+            clearBackendAssertion();
+          }
+          scheduleRefresh(res.status === 429 ? 15_000 : 10_000);
+          return;
+        }
+
+        const payload = await res.json();
+        if (cancelled) return;
+        const nextToken =
+          typeof payload?.token === "string" ? payload.token.trim() : "";
+        const expiresAtRaw =
+          typeof payload?.expires_at === "number"
+            ? payload.expires_at
+            : Number(payload?.expires_at);
+        const expiresAt = Number.isFinite(expiresAtRaw)
+          ? Math.floor(expiresAtRaw)
+          : nowSeconds() + 90;
+
+        if (!nextToken || expiresAt <= nowSeconds()) {
+          if (!hasUsableToken()) {
+            clearToken();
+          }
+          scheduleRefresh(10_000);
+          return;
+        }
+
+        setFreshToken(nextToken, expiresAt);
+        const refreshMs = Math.max(
+          10_000,
+          (expiresAt - nowSeconds() - 15) * 1000
+        );
+        scheduleRefresh(refreshMs);
+      } catch {
+        if (cancelled) return;
+        if (!hasUsableToken()) {
+          clearToken();
+        }
+        clearBackendAssertion();
+        scheduleRefresh(10_000);
+      } finally {
+        if (controller === nextController) {
+          controller = null;
+        }
+      }
+    };
+
+    if (credentials && eoaAddress && vaultAddress) {
+      void fetchToken();
+    } else {
+      clearToken();
+      clearBackendAssertion();
+    }
+
+    return () => {
+      cancelled = true;
+      if (controller) controller.abort();
+      if (timer) clearTimeout(timer);
+    };
+  }, [credentials, eoaAddress, vaultAddress]);
 
   const clobClient = useMemo(() => {
     if (
       !walletClient ||
       !eoaAddress ||
       !vaultAddress ||
-      !credentials
+      !credentials ||
+      !signerToken
     ) {
       return null;
     }
@@ -81,6 +243,7 @@ export function useClobClient({
       const builderConfig = new BuilderConfig({
         remoteBuilderConfig: {
           url: remoteSigningUrl,
+          token: signerToken,
         },
       });
 
@@ -117,7 +280,7 @@ export function useClobClient({
       console.error("Failed to create ClobClient:", error);
       return null;
     }
-  }, [walletClient, eoaAddress, vaultAddress, credentials, walletType]);
+  }, [walletClient, eoaAddress, vaultAddress, credentials, walletType, signerToken]);
 
   return { clobClient };
 }

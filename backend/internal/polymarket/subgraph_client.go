@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -60,6 +61,8 @@ type SubgraphClient struct {
 	Endpoint          string
 	HTTPClient        *http.Client
 	CollateralAssetID string
+	RetryMax          int
+	RetryBase         time.Duration
 }
 
 // NewSubgraphClient constructs a client using configuration defaults and sane fallbacks.
@@ -81,6 +84,8 @@ func NewSubgraphClient(cfg *config.Config) *SubgraphClient {
 		HTTPClient: &http.Client{
 			Timeout: defaultSubgraphTimeout,
 		},
+		RetryMax:  3,
+		RetryBase: 250 * time.Millisecond,
 	}
 }
 
@@ -148,15 +153,11 @@ func (c *SubgraphClient) queryOrderFills(ctx context.Context, timestamp int64) (
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := c.doRequestWithRetry(ctx, req, data)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("subgraph error: status %d", resp.StatusCode)
-	}
 
 	var parsed struct {
 		Data struct {
@@ -209,4 +210,71 @@ func (c *SubgraphClient) queryOrderFills(ctx context.Context, timestamp int64) (
 	}
 
 	return events, nil
+}
+
+func (c *SubgraphClient) doRequestWithRetry(ctx context.Context, req *http.Request, body []byte) (*http.Response, error) {
+	attempts := c.RetryMax
+	if attempts <= 0 {
+		attempts = 1
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		cloned := req.Clone(ctx)
+		if len(body) > 0 {
+			cloned.Body = io.NopCloser(bytes.NewReader(body))
+		}
+
+		resp, err := c.HTTPClient.Do(cloned)
+		if err != nil {
+			lastErr = err
+		} else if shouldRetrySubgraph(resp.StatusCode) {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			lastErr = fmt.Errorf("subgraph retryable status %d", resp.StatusCode)
+		} else if resp.StatusCode != http.StatusOK {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("subgraph error: status %d", resp.StatusCode)
+		} else {
+			return resp, nil
+		}
+
+		if attempt < attempts-1 {
+			sleepWithContextSubgraph(ctx, c.retryDelay(attempt))
+		}
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("subgraph request failed")
+	}
+	return nil, lastErr
+}
+
+func shouldRetrySubgraph(status int) bool {
+	if status == http.StatusTooManyRequests || status == http.StatusRequestTimeout || status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout {
+		return true
+	}
+	return status >= 500
+}
+
+func (c *SubgraphClient) retryDelay(attempt int) time.Duration {
+	base := c.RetryBase
+	if base <= 0 {
+		base = 250 * time.Millisecond
+	}
+	d := base * time.Duration(1<<attempt)
+	if d > 5*time.Second {
+		return 5 * time.Second
+	}
+	return d
+}
+
+func sleepWithContextSubgraph(ctx context.Context, d time.Duration) {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
 }

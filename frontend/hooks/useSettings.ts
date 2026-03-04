@@ -24,18 +24,24 @@ export function useSettings() {
     }
   }, [hasSession, isAuthenticated, isLoading, setSettings]);
 
-  return useQuery<UserSettings, Error>({
+  const query = useQuery<UserSettings, Error>({
     queryKey: ["settings"],
     queryFn: fetchSettings,
     enabled: !isLoading && (isAuthenticated || hasSession),
     staleTime: 5 * 60_000,
-    onSuccess: (data) => {
-      setSettings(data);
-    },
-    onError: () => {
-      setSettings(null);
-    },
   });
+
+  useEffect(() => {
+    if (query.data) {
+      setSettings(query.data);
+      return;
+    }
+    if (query.isError) {
+      setSettings(null);
+    }
+  }, [query.data, query.isError, setSettings]);
+
+  return query;
 }
 
 export function useUpdateSettingsMutation() {
@@ -68,9 +74,10 @@ export function useSettingsManager() {
   const settingsQuery = useSettings();
   const updateMutation = useUpdateSettingsMutation();
   const resetMutation = useResetSettingsMutation();
+  const settings = (settingsQuery.data as UserSettings | undefined) ?? null;
 
   return {
-    settings: settingsQuery.data ?? null,
+    settings,
     isLoading: settingsQuery.isLoading,
     error: settingsQuery.error,
     refetch: settingsQuery.refetch,
