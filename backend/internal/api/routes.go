@@ -245,7 +245,9 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 
 	// Settings Routes (Protected)
 	settings := v1.Group("/settings", middleware.Protected(), middleware.AccountGuard(rdb, db))
+	settings.Get("", settingsHandler.GetSettings)
 	settings.Get("/", settingsHandler.GetSettings)
+	settings.Patch("", settingsHandler.UpdateSettings)
 	settings.Patch("/", settingsHandler.UpdateSettings)
 	settings.Post("/reset", settingsHandler.ResetSettings)
 

@@ -21,12 +21,12 @@ import { useWallet } from "@/hooks/useWallet";
  * Hook for checking if user is following a trader
  */
 export function useIsFollowing(targetAddress: string | undefined) {
-  const { isAuthenticated, hasSession } = useWallet();
+  const { isAuthenticated, hasSession, isLoading } = useWallet();
 
   return useQuery({
     queryKey: ["is-following", targetAddress],
     queryFn: () => checkIsFollowing(targetAddress!),
-    enabled: Boolean(targetAddress) && (isAuthenticated || hasSession),
+    enabled: Boolean(targetAddress) && !isLoading && (isAuthenticated || hasSession),
     staleTime: 30_000,
   });
 }
@@ -35,12 +35,12 @@ export function useIsFollowing(targetAddress: string | undefined) {
  * Hook for getting list of followed traders
  */
 export function useFollowing() {
-  const { isAuthenticated, hasSession } = useWallet();
+  const { isAuthenticated, hasSession, isLoading } = useWallet();
 
   return useQuery({
     queryKey: ["following-list"],
     queryFn: () => fetchFollowing(),
-    enabled: isAuthenticated || hasSession,
+    enabled: !isLoading && (isAuthenticated || hasSession),
     staleTime: 60_000,
   });
 }
@@ -49,12 +49,12 @@ export function useFollowing() {
  * Hook for getting followed traders ranked by performance
  */
 export function useFollowingPerformance() {
-  const { isAuthenticated, hasSession } = useWallet();
+  const { isAuthenticated, hasSession, isLoading } = useWallet();
 
   return useQuery({
     queryKey: ["following-performance"],
     queryFn: () => fetchFollowingPerformance(),
-    enabled: isAuthenticated || hasSession,
+    enabled: !isLoading && (isAuthenticated || hasSession),
     staleTime: 30_000,
   });
 }
