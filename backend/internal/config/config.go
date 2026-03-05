@@ -69,6 +69,8 @@ type ServicesConfig struct {
 	TavilyAPIKey                   string
 	OpenAIAPIKey                   string
 	OpenAIBaseURL                  string
+	SynthDataAPIKey                string
+	SynthDataBaseURL               string
 	OpenAIModel                    string
 	OpenAIMaxTokens                int
 	OpenAIMaxContext               int
@@ -97,6 +99,29 @@ type ServicesConfig struct {
 	MarketReconcileIntervalSeconds int
 	OrderbookReconcileIntervalSecs int
 	NotificationCleanupMinutes     int
+	UpDownEnabled                  bool
+	UpDownReadOnly                 bool
+	UpDownKillSwitch               bool
+	UpDownEnterpriseEnabled        bool
+	UpDownPollIntervalSeconds      int
+	UpDownStaleThresholdSeconds    int
+	UpDownClockDriftMaxSeconds     int
+	UpDownEVMinThreshold           float64
+	UpDownFeeBps                   float64
+	UpDownDepthProbeShares         float64
+	UpDownKellyFraction            float64
+	UpDownMaxFractionPerTrade      float64
+	UpDownAssetExposureCap         float64
+	UpDownDailyDrawdownThrottle    float64
+	UpDownNotionalBankroll         float64
+	UpDownMinConfidence            float64
+	UpDownMaxSpreadToTrade         float64
+	UpDownMinTopDepth              float64
+	UpDownNoTradeCutoff5mSeconds   int
+	UpDownNoTradeCutoff15mSeconds  int
+	UpDownNoTradeCutoff1hSeconds   int
+	UpDownNoTradeCutoff4hSeconds   int
+	UpDownMaxMarkets               int
 }
 
 // AuthConfig holds wallet-only auth configuration
@@ -156,6 +181,8 @@ func Load() (*Config, error) {
 			TavilyAPIKey:                   getEnv("TAVILY_API_KEY", ""),
 			OpenAIAPIKey:                   getEnv("OPENAI_API_KEY", ""),
 			OpenAIBaseURL:                  getEnv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"),
+			SynthDataAPIKey:                getEnv("SYNTHDATA_API_KEY", ""),
+			SynthDataBaseURL:               getEnv("SYNTHDATA_BASE_URL", "https://api.synthdata.co"),
 			OpenAIModel:                    getEnv("OPENAI_MODEL", "minimax/minimax-m2.1"),
 			OpenAIMaxTokens:                getEnvAsInt("OPENAI_MAX_TOKENS", 10000),
 			OpenAIMaxContext:               getEnvAsInt("OPENAI_MAX_CONTEXT_TOKENS", 204800),
@@ -184,6 +211,29 @@ func Load() (*Config, error) {
 			MarketReconcileIntervalSeconds: getEnvAsInt("MARKET_RECONCILE_INTERVAL_SECONDS", 120),
 			OrderbookReconcileIntervalSecs: getEnvAsInt("ORDERBOOK_RECONCILE_INTERVAL_SECONDS", 45),
 			NotificationCleanupMinutes:     getEnvAsInt("NOTIFICATION_CLEANUP_INTERVAL_MINUTES", 120),
+			UpDownEnabled:                  getEnvAsBool("UPDOWN_ENABLED", true),
+			UpDownReadOnly:                 getEnvAsBool("UPDOWN_READ_ONLY", false),
+			UpDownKillSwitch:               getEnvAsBool("UPDOWN_KILL_SWITCH", false),
+			UpDownEnterpriseEnabled:        getEnvAsBool("UPDOWN_ENTERPRISE_ENABLED", true),
+			UpDownPollIntervalSeconds:      getEnvAsInt("UPDOWN_POLL_INTERVAL_SECONDS", 2),
+			UpDownStaleThresholdSeconds:    getEnvAsInt("UPDOWN_STALE_THRESHOLD_SECONDS", 8),
+			UpDownClockDriftMaxSeconds:     getEnvAsInt("UPDOWN_CLOCK_DRIFT_MAX_SECONDS", 5),
+			UpDownEVMinThreshold:           getEnvAsFloat("UPDOWN_EV_MIN_THRESHOLD", 0.0125),
+			UpDownFeeBps:                   getEnvAsFloat("UPDOWN_FEE_BPS", 8),
+			UpDownDepthProbeShares:         getEnvAsFloat("UPDOWN_DEPTH_PROBE_SHARES", 50),
+			UpDownKellyFraction:            getEnvAsFloat("UPDOWN_KELLY_FRACTION", 0.35),
+			UpDownMaxFractionPerTrade:      getEnvAsFloat("UPDOWN_MAX_FRACTION_PER_TRADE", 0.06),
+			UpDownAssetExposureCap:         getEnvAsFloat("UPDOWN_ASSET_EXPOSURE_CAP", 0.18),
+			UpDownDailyDrawdownThrottle:    getEnvAsFloat("UPDOWN_DAILY_DRAWDOWN_THROTTLE", 0.65),
+			UpDownNotionalBankroll:         getEnvAsFloat("UPDOWN_NOTIONAL_BANKROLL", 1000),
+			UpDownMinConfidence:            getEnvAsFloat("UPDOWN_MIN_CONFIDENCE", 0.50),
+			UpDownMaxSpreadToTrade:         getEnvAsFloat("UPDOWN_MAX_SPREAD_TO_TRADE", 0.05),
+			UpDownMinTopDepth:              getEnvAsFloat("UPDOWN_MIN_TOP_DEPTH", 50),
+			UpDownNoTradeCutoff5mSeconds:   getEnvAsInt("UPDOWN_NO_TRADE_CUTOFF_5M_SECONDS", 30),
+			UpDownNoTradeCutoff15mSeconds:  getEnvAsInt("UPDOWN_NO_TRADE_CUTOFF_15M_SECONDS", 30),
+			UpDownNoTradeCutoff1hSeconds:   getEnvAsInt("UPDOWN_NO_TRADE_CUTOFF_1H_SECONDS", 120),
+			UpDownNoTradeCutoff4hSeconds:   getEnvAsInt("UPDOWN_NO_TRADE_CUTOFF_4H_SECONDS", 300),
+			UpDownMaxMarkets:               getEnvAsInt("UPDOWN_MAX_MARKETS", 64),
 		},
 	}
 
@@ -264,6 +314,15 @@ func getEnvAsInt(key string, fallback int) int {
 	}
 	if value, err := strconv.Atoi(valueStr); err == nil {
 		return value
+	}
+	return fallback
+}
+
+func getEnvAsFloat(key string, fallback float64) float64 {
+	if value, exists := os.LookupEnv(key); exists {
+		if parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64); err == nil {
+			return parsed
+		}
 	}
 	return fallback
 }

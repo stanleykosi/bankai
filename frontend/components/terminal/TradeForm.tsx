@@ -2,14 +2,14 @@
  * @description
  * Trade Form Component.
  * The primary interface for executing trades (Buy/Sell) on a specific market.
- * 
+ *
  * Features:
  * - Switch between Buy/Sell.
  * - Input Limit Price and Shares amount.
  * - Real-time total calculation.
  * - Wallet connection check.
  * - EIP-712 Signing & Order Submission.
- * 
+ *
  * @dependencies
  * - wagmi: Signing
  * - api: Backend communication
@@ -17,7 +17,13 @@
 
 "use client";
 
-import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
+import React, {
+  useState,
+  useMemo,
+  useEffect,
+  useCallback,
+  useRef,
+} from "react";
 import Link from "next/link";
 import { useAccount, useSwitchChain } from "wagmi";
 import { polygon } from "viem/chains";
@@ -62,6 +68,17 @@ interface TradeFormProps {
   market: Market;
   selectedOutcomeIndex?: number;
   onOutcomeChange?: (index: number) => void;
+  recommendationPrefill?: TradeRecommendationPrefill | null;
+  externalBlockReason?: string | null;
+}
+
+export interface TradeRecommendationPrefill {
+  side: "BUY" | "SELL";
+  outcomeIndex: number;
+  limitPrice?: number;
+  sizeShares?: number;
+  disabled?: boolean;
+  applyToken?: string;
 }
 
 type OrderSide = "BUY" | "SELL";
@@ -79,7 +96,6 @@ type OutcomeOption = {
   bestAsk?: number;
   accent: "constructive" | "destructive";
 };
-
 
 const toDateTimeLocalValue = (date: Date) => {
   const tzOffsetMs = date.getTimezoneOffset() * 60 * 1000;
@@ -105,7 +121,6 @@ type PreparedBatchOrder = {
     shares: number;
   };
 };
-
 
 const formatPriceLabel = (value?: number) => {
   if (typeof value !== "number" || Number.isNaN(value)) {
@@ -140,6 +155,8 @@ export function TradeForm({
   market,
   selectedOutcomeIndex: controlledOutcomeIndex,
   onOutcomeChange,
+  recommendationPrefill,
+  externalBlockReason,
 }: TradeFormProps) {
   const { user, eoaAddress, isAuthenticated, refreshUser } = useWallet();
   const { data: balanceData, isLoading: isBalanceLoading } = useBalance();
@@ -168,7 +185,7 @@ export function TradeForm({
   });
   const ordersQueryKey = useMemo(
     () => ["orders", user?.id || user?.eoa_address || "anon"] as const,
-    [user?.id, user?.eoa_address]
+    [user?.id, user?.eoa_address],
   );
 
   // Use ref to track latest clobClient (avoids stale closure issues)
@@ -181,33 +198,35 @@ export function TradeForm({
     (incoming: OrderRecord[]) => {
       if (!incoming.length) return;
       queryClient.setQueryData<OrderRecord[]>(ordersQueryKey, (prev = []) => {
-        const merged = new Map(prev.map((order) => [order.clob_order_id, order]));
+        const merged = new Map(
+          prev.map((order) => [order.clob_order_id, order]),
+        );
         for (const order of incoming) {
           merged.set(order.clob_order_id, order);
         }
         return Array.from(merged.values()).sort(
-          (a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)
+          (a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at),
         );
       });
     },
-    [ordersQueryKey, queryClient]
+    [ordersQueryKey, queryClient],
   );
 
   const slippageToleranceBps = useTerminalStore(
-    (state) => state.settings?.slippage_tolerance_bps ?? 100
+    (state) => state.settings?.slippage_tolerance_bps ?? 100,
   );
   const tradeConfirmationEnabled = useTerminalStore(
-    (state) => state.settings?.trade_confirmation_enabled ?? true
+    (state) => state.settings?.trade_confirmation_enabled ?? true,
   );
   const defaultOrderTypePreference = useTerminalStore(
-    (state) => state.settings?.default_order_type ?? "GTC"
+    (state) => state.settings?.default_order_type ?? "GTC",
   );
 
   const [side, setSide] = useState<OrderSide>("BUY");
   const [executionType, setExecutionType] = useState<ExecutionType>("LIMIT");
   const [limitExpires, setLimitExpires] = useState(false);
   const [marketFillBehavior, setMarketFillBehavior] = useState<"FAK" | "FOK">(
-    "FAK"
+    "FAK",
   );
   const [gtdExpiration, setGtdExpiration] = useState<string>("");
   const [price, setPrice] = useState<string>("");
@@ -219,7 +238,7 @@ export function TradeForm({
   const [isSubmittingBatch, setIsSubmittingBatch] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmMode, setConfirmMode] = useState<"single" | "batch" | null>(
-    null
+    null,
   );
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -229,25 +248,24 @@ export function TradeForm({
 
   const outcomeLabels = useMemo(
     () => parseOutcomeLabels(market?.outcomes),
-    [market?.outcomes]
+    [market?.outcomes],
   );
 
   const outcomeOptions = useMemo<OutcomeOption[]>(() => {
-    const labels =
-      outcomeLabels.length > 0 ? outcomeLabels : OUTCOME_FALLBACKS;
+    const labels = outcomeLabels.length > 0 ? outcomeLabels : OUTCOME_FALLBACKS;
 
     // Calculate current display price for each outcome (midpoint unless spread > 10c)
     const yesCurrentPrice = calculateDisplayPrice(
       market?.yes_best_bid,
       market?.yes_best_ask,
       market?.yes_price,
-      market?.condition_id ? `${market.condition_id}:yes` : undefined
+      market?.condition_id ? `${market.condition_id}:yes` : undefined,
     );
     const noCurrentPrice = calculateDisplayPrice(
       market?.no_best_bid,
       market?.no_best_ask,
       market?.no_price,
-      market?.condition_id ? `${market.condition_id}:no` : undefined
+      market?.condition_id ? `${market.condition_id}:no` : undefined,
     );
 
     return [
@@ -328,7 +346,6 @@ export function TradeForm({
     return null;
   }, [orderType, gtdExpiration, gtdExpirationSeconds]);
 
-
   useEffect(() => {
     if (orderType !== "GTD") {
       setGtdExpiration("");
@@ -341,6 +358,8 @@ export function TradeForm({
   }, [orderType, gtdExpiration]);
 
   const orderPrefsTouchedRef = useRef(false);
+  const prefillSignatureRef = useRef<string>("");
+  const skipNextAutoPriceRef = useRef(false);
   useEffect(() => {
     orderPrefsTouchedRef.current = false;
   }, [market?.condition_id]);
@@ -378,7 +397,7 @@ export function TradeForm({
       setLocalOutcomeIndex(nextIndex);
       onOutcomeChange?.(nextIndex);
     },
-    [controlledOutcomeIndex, onOutcomeChange]
+    [controlledOutcomeIndex, onOutcomeChange],
   );
 
   useEffect(() => {
@@ -386,6 +405,10 @@ export function TradeForm({
   }, [market?.condition_id, updateOutcomeIndex]);
 
   useEffect(() => {
+    if (skipNextAutoPriceRef.current) {
+      skipNextAutoPriceRef.current = false;
+      return;
+    }
     if (!selectedOutcome) {
       setPrice("");
       return;
@@ -394,8 +417,13 @@ export function TradeForm({
     // Use display price as the default for limit orders
     // For market orders, we'll use best bid/ask directly
     const { bestAsk, bestBid, lastPrice } = selectedOutcome;
-    const displayPrice = calculateDisplayPrice(bestBid, bestAsk, lastPrice, selectedOutcome?.tokenId ?? undefined);
-    
+    const displayPrice = calculateDisplayPrice(
+      bestBid,
+      bestAsk,
+      lastPrice,
+      selectedOutcome?.tokenId ?? undefined,
+    );
+
     if (side === "BUY") {
       // For BUY: prefer best ask (what you'd pay), fall back to display price
       if (typeof bestAsk === "number" && bestAsk > 0) {
@@ -413,20 +441,86 @@ export function TradeForm({
     }
   }, [side, selectedOutcome]);
 
+  useEffect(() => {
+    if (!recommendationPrefill || recommendationPrefill.disabled) {
+      return;
+    }
+    const nextOutcomeIndex = Math.max(
+      0,
+      Math.min(1, recommendationPrefill.outcomeIndex),
+    );
+    const signature = [
+      market?.condition_id ?? "",
+      recommendationPrefill.side,
+      nextOutcomeIndex,
+      recommendationPrefill.limitPrice ?? "",
+      recommendationPrefill.sizeShares ?? "",
+      recommendationPrefill.applyToken ?? "",
+    ].join("|");
+    if (prefillSignatureRef.current === signature) {
+      return;
+    }
+    prefillSignatureRef.current = signature;
+
+    if (
+      recommendationPrefill.side !== side ||
+      nextOutcomeIndex !== selectedOutcomeIndex
+    ) {
+      skipNextAutoPriceRef.current = true;
+    }
+    setSide(recommendationPrefill.side);
+    updateOutcomeIndex(nextOutcomeIndex);
+    orderPrefsTouchedRef.current = true;
+    setExecutionType("LIMIT");
+    setLimitExpires(false);
+    setAmountMode("shares");
+
+    if (
+      typeof recommendationPrefill.limitPrice === "number" &&
+      recommendationPrefill.limitPrice > 0
+    ) {
+      setPrice(recommendationPrefill.limitPrice.toFixed(3));
+    }
+    if (
+      typeof recommendationPrefill.sizeShares === "number" &&
+      recommendationPrefill.sizeShares > 0
+    ) {
+      setShares(recommendationPrefill.sizeShares.toFixed(2));
+    }
+    setSuccessMsg("Strategy prefill applied.");
+  }, [
+    market?.condition_id,
+    recommendationPrefill,
+    selectedOutcomeIndex,
+    side,
+    updateOutcomeIndex,
+  ]);
+
   const rawPrice = parseFloat(price) || 0;
   const isLimitOrderType = executionType === "LIMIT";
   const isMarketOrderType = executionType === "MARKET";
   const marketReferencePrice = useMemo(() => {
     const last = selectedOutcome?.lastPrice ?? 0;
     if (side === "BUY") {
-      if (typeof selectedOutcome?.bestAsk === "number" && selectedOutcome.bestAsk > 0) {
+      if (
+        typeof selectedOutcome?.bestAsk === "number" &&
+        selectedOutcome.bestAsk > 0
+      ) {
         return selectedOutcome.bestAsk;
       }
-    } else if (typeof selectedOutcome?.bestBid === "number" && selectedOutcome.bestBid > 0) {
+    } else if (
+      typeof selectedOutcome?.bestBid === "number" &&
+      selectedOutcome.bestBid > 0
+    ) {
       return selectedOutcome.bestBid;
     }
     return last;
-  }, [selectedOutcome?.bestAsk, selectedOutcome?.bestBid, selectedOutcome?.lastPrice, side]);
+  }, [
+    selectedOutcome?.bestAsk,
+    selectedOutcome?.bestBid,
+    selectedOutcome?.lastPrice,
+    side,
+  ]);
   const conversionPrice = isLimitOrderType ? rawPrice : marketReferencePrice;
   const numericShares =
     amountMode === "shares"
@@ -444,42 +538,48 @@ export function TradeForm({
     numericShares > 0 &&
     Number.isFinite(numericShares);
   const debouncedDepthSize = useDebouncedValue(numericShares, 250);
-  const {
-    data: depthEstimate,
-    isFetching: isDepthLoading,
-  } = useQuery<DepthEstimate | null>({
-    queryKey: [
-      "depth-estimate",
-      market.condition_id,
-      selectedOutcome?.tokenId,
-      side,
-      debouncedDepthSize,
-    ],
-    queryFn: () =>
-      fetchDepthEstimate(
+  const { data: depthEstimate, isFetching: isDepthLoading } =
+    useQuery<DepthEstimate | null>({
+      queryKey: [
+        "depth-estimate",
         market.condition_id,
-        selectedOutcome?.tokenId as string,
+        selectedOutcome?.tokenId,
         side,
-        debouncedDepthSize
-      ),
-    enabled: depthEnabled && debouncedDepthSize > 0,
-    staleTime: 10_000,
-  });
+        debouncedDepthSize,
+      ],
+      queryFn: () =>
+        fetchDepthEstimate(
+          market.condition_id,
+          selectedOutcome?.tokenId as string,
+          side,
+          debouncedDepthSize,
+        ),
+      enabled: depthEnabled && debouncedDepthSize > 0,
+      staleTime: 10_000,
+    });
   const depthFillPercent = depthEstimate?.requestedSize
     ? Math.min(
-      (depthEstimate.fillableSize / depthEstimate.requestedSize) * 100,
-      100
-    )
+        (depthEstimate.fillableSize / depthEstimate.requestedSize) * 100,
+        100,
+      )
     : 0;
   const executionPrice = useMemo(() => {
     if (isLimitOrderType) {
       return rawPrice;
     }
-    if (typeof depthEstimate?.estimatedAveragePrice === "number" && depthEstimate.estimatedAveragePrice > 0) {
+    if (
+      typeof depthEstimate?.estimatedAveragePrice === "number" &&
+      depthEstimate.estimatedAveragePrice > 0
+    ) {
       return depthEstimate.estimatedAveragePrice;
     }
     return marketReferencePrice;
-  }, [depthEstimate?.estimatedAveragePrice, isLimitOrderType, marketReferencePrice, rawPrice]);
+  }, [
+    depthEstimate?.estimatedAveragePrice,
+    isLimitOrderType,
+    marketReferencePrice,
+    rawPrice,
+  ]);
   const numericPrice = executionPrice;
   const inputDollars = parseFloat(dollarAmount) || 0;
   const totalCost =
@@ -555,6 +655,7 @@ export function TradeForm({
     if (numericShares <= 0 || sizeTooSmall) return false;
     if (isBusy) return false;
     if (gtdExpirationError) return false;
+    if (externalBlockReason) return false;
     if (side === "BUY" && totalCost > currentBalance && currentBalance > 0)
       return false;
     return true;
@@ -573,6 +674,7 @@ export function TradeForm({
     selectedOutcome?.tokenId,
     gtdExpirationError,
     slippageOk,
+    externalBlockReason,
   ]);
 
   // Map our order type to SDK OrderType enum
@@ -597,6 +699,12 @@ export function TradeForm({
   }, [side]);
 
   const runSingleOrder = async () => {
+    if (!canSubmit) {
+      if (externalBlockReason) {
+        setError(externalBlockReason);
+      }
+      return;
+    }
     setError(null);
     setSuccessMsg(null);
     setIsPlacingOrder(true);
@@ -608,16 +716,13 @@ export function TradeForm({
 
       if (isMarketOrderType && !slippageOk) {
         throw new Error(
-          `Estimated slippage (${estimatedSlippageBps ?? "?"} bps) exceeds your tolerance (${slippageToleranceBps} bps).`
+          `Estimated slippage (${estimatedSlippageBps ?? "?"} bps) exceeds your tolerance (${slippageToleranceBps} bps).`,
         );
       }
 
       // Ensure we're on Polygon network before proceeding
       // This is critical for Phantom Wallet which validates chainId in EIP-712 signatures
-      await ensurePolygonChain(
-        () => chainIdRef.current,
-        switchChainAsync
-      );
+      await ensurePolygonChain(() => chainIdRef.current, switchChainAsync);
 
       const tokenId = selectedOutcome?.tokenId;
       if (!tokenId) {
@@ -640,7 +745,9 @@ export function TradeForm({
       }
 
       if (!currentClient) {
-        throw new Error("Trading client not ready. Please ensure your wallet is connected and try again.");
+        throw new Error(
+          "Trading client not ready. Please ensure your wallet is connected and try again.",
+        );
       }
 
       // Calculate expiration
@@ -651,7 +758,7 @@ export function TradeForm({
         if (!gtdExpirationSeconds || gtdExpirationSeconds <= 0) {
           throw new Error(
             gtdExpirationError ??
-            "Invalid expiration provided for GTD order. Choose a timestamp at least 90 seconds from now."
+              "Invalid expiration provided for GTD order. Choose a timestamp at least 90 seconds from now.",
           );
         }
         expiration = gtdExpirationSeconds;
@@ -679,7 +786,7 @@ export function TradeForm({
         response = await currentClient.createAndPostOrder(
           limitOrder,
           { negRisk: isNegRisk },
-          sdkOrderType as OrderType.GTC | OrderType.GTD
+          sdkOrderType as OrderType.GTC | OrderType.GTD,
         );
       } else {
         // Create market order using SDK (handles signing and submission)
@@ -700,7 +807,7 @@ export function TradeForm({
         response = await currentClient.createAndPostMarketOrder(
           marketOrder,
           { negRisk: isNegRisk },
-          sdkOrderType as OrderType.FOK | OrderType.FAK
+          sdkOrderType as OrderType.FOK | OrderType.FAK,
         );
       }
 
@@ -738,24 +845,20 @@ export function TradeForm({
           },
         ]);
 
-        setSuccessMsg(
-          `Order placed for ${side} ${selectedOutcomeLabel}!`
-        );
+        setSuccessMsg(`Order placed for ${side} ${selectedOutcomeLabel}!`);
         setShares("");
         await queryClient.invalidateQueries({ queryKey: ["orders"] });
         await queryClient.invalidateQueries({ queryKey: ["balance"] });
         setTimeout(() => refreshUser(), 1500);
       } else {
         throw new Error(
-          responseError || "Order submission failed - no order ID returned"
+          responseError || "Order submission failed - no order ID returned",
         );
       }
     } catch (err: any) {
       console.error("Trade failed:", err);
       setError(
-        err?.response?.data?.error ||
-        err?.message ||
-        "Failed to place order"
+        err?.response?.data?.error || err?.message || "Failed to place order",
       );
     } finally {
       setIsPlacingOrder(false);
@@ -764,6 +867,12 @@ export function TradeForm({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canSubmit) {
+      if (externalBlockReason) {
+        setError(externalBlockReason);
+      }
+      return;
+    }
     if (tradeConfirmationEnabled) {
       setConfirmMode("single");
       setConfirmOpen(true);
@@ -791,8 +900,7 @@ export function TradeForm({
       if (orderType === "GTD") {
         if (!gtdExpirationSeconds || gtdExpirationSeconds <= 0) {
           throw new Error(
-            gtdExpirationError ??
-            "Invalid expiration provided for GTD order."
+            gtdExpirationError ?? "Invalid expiration provided for GTD order.",
           );
         }
         expiration = gtdExpirationSeconds;
@@ -825,15 +933,13 @@ export function TradeForm({
         },
       ]);
       setShares("");
-      setSuccessMsg(
-        `Added ${side} ${selectedOutcomeLabel} to batch queue.`
-      );
+      setSuccessMsg(`Added ${side} ${selectedOutcomeLabel} to batch queue.`);
     } catch (err: any) {
       console.error("Add to batch failed:", err);
       setError(
         err?.response?.data?.error ||
-        err.message ||
-        "Failed to add order to batch"
+          err.message ||
+          "Failed to add order to batch",
       );
     } finally {
       setIsAddingToBatch(false);
@@ -842,7 +948,11 @@ export function TradeForm({
 
   const runBatchSubmit = async () => {
     if (!hasBatchOrders) return;
-    
+    if (externalBlockReason) {
+      setError(externalBlockReason);
+      return;
+    }
+
     // Ensure credentials are available
     if (!credentials) {
       try {
@@ -866,8 +976,10 @@ export function TradeForm({
       // Submit each order in the batch using SDK
       const results = await Promise.allSettled(
         batchOrders.map((entry) => {
-          const isLimitOrder = entry.orderParams.orderType === OrderType.GTC || entry.orderParams.orderType === OrderType.GTD;
-          
+          const isLimitOrder =
+            entry.orderParams.orderType === OrderType.GTC ||
+            entry.orderParams.orderType === OrderType.GTD;
+
           if (isLimitOrder) {
             const limitOrder: UserOrder = {
               tokenID: entry.orderParams.tokenId,
@@ -881,16 +993,20 @@ export function TradeForm({
             return currentClient.createAndPostOrder(
               limitOrder,
               { negRisk: entry.orderParams.isNegRisk },
-              entry.orderParams.orderType as OrderType.GTC | OrderType.GTD
+              entry.orderParams.orderType as OrderType.GTC | OrderType.GTD,
             );
           } else {
             // For market orders: BUY uses $$$ amount, SELL uses shares
             const marketOrder: UserMarketOrder = {
               tokenID: entry.orderParams.tokenId,
-              price: entry.orderParams.price > 0 ? entry.orderParams.price : undefined,
-              amount: entry.orderParams.side === Side.BUY 
-                ? entry.orderParams.price * entry.orderParams.size 
-                : entry.orderParams.size,
+              price:
+                entry.orderParams.price > 0
+                  ? entry.orderParams.price
+                  : undefined,
+              amount:
+                entry.orderParams.side === Side.BUY
+                  ? entry.orderParams.price * entry.orderParams.size
+                  : entry.orderParams.size,
               side: entry.orderParams.side,
               feeRateBps: 0,
               taker: "0x0000000000000000000000000000000000000000",
@@ -898,10 +1014,10 @@ export function TradeForm({
             return currentClient.createAndPostMarketOrder(
               marketOrder,
               { negRisk: entry.orderParams.isNegRisk },
-              entry.orderParams.orderType as OrderType.FOK | OrderType.FAK
+              entry.orderParams.orderType as OrderType.FOK | OrderType.FAK,
             );
           }
-        })
+        }),
       );
 
       const successful = results.filter((r) => r.status === "fulfilled").length;
@@ -948,7 +1064,7 @@ export function TradeForm({
 
       if (successful > 0) {
         setSuccessMsg(
-          `Submitted ${successful} order${successful > 1 ? "s" : ""}${failed > 0 ? ` (${failed} failed)` : ""}.`
+          `Submitted ${successful} order${successful > 1 ? "s" : ""}${failed > 0 ? ` (${failed} failed)` : ""}.`,
         );
         setBatchOrders([]);
         await queryClient.invalidateQueries({ queryKey: ["orders"] });
@@ -961,8 +1077,8 @@ export function TradeForm({
       console.error("Batch submit failed:", err);
       setError(
         err?.response?.data?.error ||
-        err.message ||
-        "Failed to submit batched orders"
+          err.message ||
+          "Failed to submit batched orders",
       );
     } finally {
       setIsSubmittingBatch(false);
@@ -971,6 +1087,10 @@ export function TradeForm({
 
   const handleSubmitBatch = () => {
     if (!hasBatchOrders) return;
+    if (externalBlockReason) {
+      setError(externalBlockReason);
+      return;
+    }
     if (tradeConfirmationEnabled) {
       setConfirmMode("batch");
       setConfirmOpen(true);
@@ -990,7 +1110,7 @@ export function TradeForm({
       "flex-1 font-mono font-bold tracking-wider",
       side === "BUY"
         ? "bg-constructive text-black hover:bg-constructive/90"
-        : "bg-destructive text-white hover:bg-destructive/90"
+        : "bg-destructive text-white hover:bg-destructive/90",
     );
 
     if (!isAuthenticated) {
@@ -1020,11 +1140,7 @@ export function TradeForm({
     const submitting = isPlacingOrder || !canSubmit;
 
     return (
-      <Button
-        type="submit"
-        className={baseClasses}
-        disabled={submitting}
-      >
+      <Button type="submit" className={baseClasses} disabled={submitting}>
         {isPlacingOrder ? (
           <Loader2 className="h-4 w-4 animate-spin" />
         ) : !selectedOutcome?.tokenId ? (
@@ -1056,16 +1172,26 @@ export function TradeForm({
           <span>Execution</span>
           <div className="flex items-center gap-2">
             <div className="flex gap-2">
-              <span className={cn(
-                "px-2 py-0.5 rounded-sm text-[10px] cursor-pointer transition-colors",
-                side === "BUY" ? "bg-constructive text-black font-bold" : "bg-muted text-muted-foreground hover:text-foreground"
-              )} onClick={() => setSide("BUY")}>
+              <span
+                className={cn(
+                  "px-2 py-0.5 rounded-sm text-[10px] cursor-pointer transition-colors",
+                  side === "BUY"
+                    ? "bg-constructive text-black font-bold"
+                    : "bg-muted text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setSide("BUY")}
+              >
                 BUY
               </span>
-              <span className={cn(
-                "px-2 py-0.5 rounded-sm text-[10px] cursor-pointer transition-colors",
-                side === "SELL" ? "bg-destructive text-white font-bold" : "bg-muted text-muted-foreground hover:text-foreground"
-              )} onClick={() => setSide("SELL")}>
+              <span
+                className={cn(
+                  "px-2 py-0.5 rounded-sm text-[10px] cursor-pointer transition-colors",
+                  side === "SELL"
+                    ? "bg-destructive text-white font-bold"
+                    : "bg-muted text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setSide("SELL")}
+              >
                 SELL
               </span>
             </div>
@@ -1115,7 +1241,7 @@ export function TradeForm({
                       isSelected
                         ? "border-primary bg-primary/10 text-foreground"
                         : "border-border bg-background/40 text-muted-foreground hover:border-primary/40 hover:text-foreground",
-                      disabled && "cursor-not-allowed opacity-50"
+                      disabled && "cursor-not-allowed opacity-50",
                     )}
                   >
                     <span className="text-[11px] font-mono uppercase tracking-wide block">
@@ -1145,7 +1271,7 @@ export function TradeForm({
                   "flex-1 rounded-sm px-3 py-2 transition-colors",
                   executionType === "LIMIT"
                     ? "bg-primary/20 text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
                 )}
               >
                 Limit
@@ -1160,7 +1286,7 @@ export function TradeForm({
                   "flex-1 rounded-sm px-3 py-2 transition-colors",
                   executionType === "MARKET"
                     ? "bg-primary/20 text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
                 )}
               >
                 Market
@@ -1183,7 +1309,7 @@ export function TradeForm({
                     "flex-1 rounded-sm px-3 py-2 transition-colors",
                     marketFillBehavior === "FAK"
                       ? "bg-primary/20 text-foreground"
-                      : "text-muted-foreground hover:text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
                   )}
                 >
                   FAK
@@ -1198,7 +1324,7 @@ export function TradeForm({
                     "flex-1 rounded-sm px-3 py-2 transition-colors",
                     marketFillBehavior === "FOK"
                       ? "bg-primary/20 text-foreground"
-                      : "text-muted-foreground hover:text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
                   )}
                 >
                   FOK
@@ -1211,7 +1337,8 @@ export function TradeForm({
             <div className="space-y-2 rounded border border-border/50 bg-background/60 p-3">
               <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wide">
                 <span>
-                  {isLimitOrderType ? "Limit Price" : "Market Price"} ({selectedOutcomeLabel})
+                  {isLimitOrderType ? "Limit Price" : "Market Price"} (
+                  {selectedOutcomeLabel})
                 </span>
                 {isLimitOrderType && (
                   <label className="flex items-center gap-2 text-muted-foreground">
@@ -1237,7 +1364,7 @@ export function TradeForm({
                 readOnly={isMarketOrderType}
                 className={cn(
                   "font-mono text-right border-border bg-background/60",
-                  isMarketOrderType && "text-muted-foreground"
+                  isMarketOrderType && "text-muted-foreground",
                 )}
                 value={
                   isMarketOrderType
@@ -1257,7 +1384,7 @@ export function TradeForm({
                   <Input
                     type="datetime-local"
                     min={toDateTimeLocalValue(
-                      new Date(Date.now() + MIN_GTD_BUFFER_SECONDS * 1000)
+                      new Date(Date.now() + MIN_GTD_BUFFER_SECONDS * 1000),
                     )}
                     value={gtdExpiration}
                     onChange={(e) => setGtdExpiration(e.target.value)}
@@ -1306,7 +1433,7 @@ export function TradeForm({
                           "h-1.5 rounded",
                           depthEstimate.insufficientLiquidity
                             ? "bg-amber-500"
-                            : "bg-primary"
+                            : "bg-primary",
                         )}
                         style={{ width: `${depthFillPercent}%` }}
                       />
@@ -1340,7 +1467,7 @@ export function TradeForm({
                   <p
                     className={cn(
                       "text-[10px] font-mono",
-                      slippageOk ? "text-muted-foreground" : "text-amber-400"
+                      slippageOk ? "text-muted-foreground" : "text-amber-400",
                     )}
                   >
                     Est. slippage {estimatedSlippageBps} bps (limit{" "}
@@ -1366,7 +1493,7 @@ export function TradeForm({
                       "rounded-sm px-2.5 py-1 transition-colors",
                       amountMode === "shares"
                         ? "bg-primary/20 text-foreground"
-                        : "text-muted-foreground hover:text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
                     )}
                   >
                     Shares
@@ -1378,7 +1505,7 @@ export function TradeForm({
                       "rounded-sm px-2.5 py-1 transition-colors",
                       amountMode === "dollars"
                         ? "bg-primary/20 text-foreground"
-                        : "text-muted-foreground hover:text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
                     )}
                   >
                     USD
@@ -1422,7 +1549,10 @@ export function TradeForm({
                 <div className="flex justify-between text-xs font-mono">
                   <span className="text-muted-foreground">Potential ROI</span>
                   <span className="text-constructive">
-                    {roiPrice > 0 ? (((1 - roiPrice) / roiPrice) * 100).toFixed(0) : 0}%
+                    {roiPrice > 0
+                      ? (((1 - roiPrice) / roiPrice) * 100).toFixed(0)
+                      : 0}
+                    %
                   </span>
                 </div>
               )}
@@ -1433,7 +1563,16 @@ export function TradeForm({
           {error && (
             <div className="p-2 rounded bg-destructive/10 border border-destructive/20 flex items-start gap-2">
               <AlertCircle className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
-              <p className="text-[10px] text-destructive font-mono leading-tight">{error}</p>
+              <p className="text-[10px] text-destructive font-mono leading-tight">
+                {error}
+              </p>
+            </div>
+          )}
+          {externalBlockReason && (
+            <div className="p-2 rounded bg-amber-100/10 border border-amber-500/30">
+              <p className="text-[10px] text-amber-300 font-mono leading-tight">
+                {externalBlockReason}
+              </p>
             </div>
           )}
           {insufficientBalance && (
@@ -1446,7 +1585,9 @@ export function TradeForm({
 
           {successMsg && (
             <div className="p-2 rounded bg-constructive/10 border border-constructive/20">
-              <p className="text-[10px] text-constructive font-mono text-center">{successMsg}</p>
+              <p className="text-[10px] text-constructive font-mono text-center">
+                {successMsg}
+              </p>
             </div>
           )}
 
@@ -1456,7 +1597,9 @@ export function TradeForm({
               type="button"
               variant="secondary"
               className="flex-1 font-mono font-bold tracking-wider"
-              disabled={!isAuthenticated || !eoaAddress || !vaultAddress || !canSubmit}
+              disabled={
+                !isAuthenticated || !eoaAddress || !vaultAddress || !canSubmit
+              }
               onClick={handleAddToBatch}
             >
               {isAddingToBatch ? (
@@ -1481,7 +1624,9 @@ export function TradeForm({
                 type="button"
                 variant="ghost"
                 size="sm"
-                disabled={!hasBatchOrders || isSubmittingBatch}
+                disabled={
+                  !hasBatchOrders || isSubmittingBatch || !!externalBlockReason
+                }
                 onClick={handleSubmitBatch}
                 className="text-[11px] font-mono"
               >
@@ -1505,7 +1650,8 @@ export function TradeForm({
           </div>
           {batchOrders.length === 0 ? (
             <p className="text-[11px] font-mono text-muted-foreground">
-              Queue multiple signed orders, then submit them together for faster placement.
+              Queue multiple signed orders, then submit them together for faster
+              placement.
             </p>
           ) : (
             <div className="space-y-2">
@@ -1561,7 +1707,9 @@ export function TradeForm({
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {confirmMode === "batch" ? "Confirm batch submission" : "Confirm trade"}
+              {confirmMode === "batch"
+                ? "Confirm batch submission"
+                : "Confirm trade"}
             </DialogTitle>
             <DialogDescription>
               {confirmMode === "batch"
@@ -1580,11 +1728,15 @@ export function TradeForm({
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Price</span>
-                <span className="text-foreground">${numericPrice.toFixed(3)}</span>
+                <span className="text-foreground">
+                  ${numericPrice.toFixed(3)}
+                </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Shares</span>
-                <span className="text-foreground">{numericShares.toFixed(2)}</span>
+                <span className="text-foreground">
+                  {numericShares.toFixed(2)}
+                </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">
@@ -1595,7 +1747,12 @@ export function TradeForm({
               {isMarketOrderType && estimatedSlippageBps !== null && (
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Est. slippage</span>
-                  <span className={cn("text-foreground", !slippageOk && "text-amber-400")}>
+                  <span
+                    className={cn(
+                      "text-foreground",
+                      !slippageOk && "text-amber-400",
+                    )}
+                  >
                     {estimatedSlippageBps} bps (limit {slippageToleranceBps})
                   </span>
                 </div>
@@ -1626,16 +1783,32 @@ export function TradeForm({
             </Button>
             <Button
               type="button"
-              disabled={isPlacingOrder || isSubmittingBatch || isAddingToBatch}
+              disabled={
+                isPlacingOrder ||
+                isSubmittingBatch ||
+                isAddingToBatch ||
+                (confirmMode === "single" && !canSubmit) ||
+                (confirmMode === "batch" && !!externalBlockReason)
+              }
               onClick={() => {
                 const mode = confirmMode;
                 setConfirmOpen(false);
                 setConfirmMode(null);
                 if (mode === "batch") {
+                  if (externalBlockReason) {
+                    setError(externalBlockReason);
+                    return;
+                  }
                   void runBatchSubmit();
                   return;
                 }
                 if (mode === "single") {
+                  if (!canSubmit) {
+                    if (externalBlockReason) {
+                      setError(externalBlockReason);
+                    }
+                    return;
+                  }
                   void runSingleOrder();
                 }
               }}

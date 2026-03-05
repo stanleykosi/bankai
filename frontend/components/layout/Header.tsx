@@ -10,7 +10,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import dynamic from "next/dynamic";
-import { Activity, BarChart2, LayoutDashboard, Shield, Wallet } from "lucide-react";
+import { Activity, BarChart2, LayoutDashboard, Shield, TrendingUp, Wallet } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -24,6 +24,7 @@ const WalletActions = dynamic(() => import("./WalletActions"), {
 const navLinks = [
   { href: "/dashboard", label: "Radar", Icon: LayoutDashboard },
   { href: "/portfolio", label: "Portfolio", Icon: Wallet },
+  { href: "/updown", label: "Up/Down", Icon: TrendingUp },
   { href: "/analysis", label: "Analysis", Icon: BarChart2 },
   { href: "/admin", label: "Admin", Icon: Shield },
 ];

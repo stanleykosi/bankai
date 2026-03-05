@@ -100,7 +100,7 @@ export interface User {
   email: string;
   eoa_address: string;
   vault_address: string | null;
-  wallet_type: 'PROXY' | 'SAFE' | null;
+  wallet_type: "PROXY" | "SAFE" | null;
   created_at: string;
 }
 
@@ -450,4 +450,147 @@ export interface BookmarkActionResponse {
   success: boolean;
   bookmarked: boolean;
   market_id: string;
+}
+
+// Up/Down Pro Trading
+export interface RiskFlags {
+  read_only: boolean;
+  kill_switch: boolean;
+  synth_missing: boolean;
+  synth_stale: boolean;
+  market_stale: boolean;
+  depth_missing: boolean;
+  wide_spread: boolean;
+  status_boundary: boolean;
+  source_mismatch: boolean;
+  clock_drift: boolean;
+  low_liquidity: boolean;
+  high_volatility: boolean;
+  data_integrity_failed: boolean;
+}
+
+export interface RecommendationPrefill {
+  side: "BUY" | "SELL";
+  outcome_index: number;
+  limit_price: number;
+  size_shares: number;
+  disabled: boolean;
+  disabled_why?: string;
+}
+
+export interface Recommendation {
+  id: string;
+  slug: string;
+  condition_id: string;
+  asset: string;
+  window_type: "5m" | "15m" | "1h" | "4h" | "unknown";
+  profile: string;
+  decision: "BUY_UP" | "BUY_DOWN" | "NO_TRADE";
+  recommended_side: "UP" | "DOWN" | "NONE";
+  order_side: "BUY" | "SELL";
+  expected_value: number;
+  confidence: number;
+  suggested_limit_price: number;
+  suggested_size_shares: number;
+  suggested_notional: number;
+  kelly_raw: number;
+  kelly_capped: number;
+  reason_codes: string[];
+  invalidation_conditions: string[];
+  risk_flags: RiskFlags;
+  prefill: RecommendationPrefill;
+  generated_at: string;
+}
+
+export interface UpDownSignal {
+  slug: string;
+  condition_id: string;
+  asset: string;
+  window_type: "5m" | "15m" | "1h" | "4h" | "unknown";
+  resolution_source_type: "chainlink" | "binance" | "unknown";
+  timestamp: string;
+  p_market_up?: number;
+  p_synth_up?: number;
+  p_model_up?: number;
+  p_lp_up?: number;
+  p_final_up: number;
+  executable_ask_up: number;
+  executable_ask_down: number;
+  executable_bid_up: number;
+  executable_bid_down: number;
+  spread_up: number;
+  spread_down: number;
+  depth_imbalance: number;
+  expected_slippage: number;
+  ev_up: number;
+  ev_down: number;
+  ev_min_threshold: number;
+  fees_bps: number;
+  time_to_expiry_ms: number;
+  regime: string;
+  confidence: number;
+  risk_flags: RiskFlags;
+  reason_codes: string[];
+  recommendation: Recommendation;
+}
+
+export interface UpDownMarket {
+  market_type: "updown_crypto";
+  slug: string;
+  condition_id: string;
+  asset: "BTC" | "ETH" | "SOL" | "XRP" | string;
+  window_type: "5m" | "15m" | "1h" | "4h" | "unknown";
+  resolution_source_type: "chainlink" | "binance" | "unknown";
+  tradable: boolean;
+  is_active_window: boolean;
+  time_to_start_seconds: number;
+  time_to_end_seconds: number;
+  created_at?: string;
+  event_start_time: string;
+  event_end_time: string;
+  resolution_rule_summary: string;
+  market: Market;
+  outcome_index_up: number;
+  outcome_index_down: number;
+  outcome_label_up: string;
+  outcome_label_down: string;
+}
+
+export interface DecisionLog {
+  id: string;
+  user_id: string;
+  slug: string;
+  recommendation_id: string;
+  action: "accepted" | "rejected" | "manual_override" | "placed";
+  chosen_side?: string;
+  override_price?: number;
+  override_size?: number;
+  notes?: string;
+  created_at: string;
+}
+
+export interface PerformanceSlice {
+  key: string;
+  trades: number;
+  hit_rate: number;
+  brier_score: number;
+  realized_ev: number;
+  max_drawdown: number;
+}
+
+export interface PerformanceSummary {
+  from: string;
+  to: string;
+  decisions: number;
+  accepted: number;
+  rejected: number;
+  manual_overrides: number;
+  trades: number;
+  hit_rate: number;
+  brier_score: number;
+  realized_ev: number;
+  max_drawdown: number;
+  by_asset: PerformanceSlice[];
+  by_window: PerformanceSlice[];
+  updated_at: string;
 }

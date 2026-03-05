@@ -22,6 +22,7 @@ import (
 	"github.com/bankai-project/backend/internal/api/middleware"
 	"github.com/bankai-project/backend/internal/config"
 	"github.com/bankai-project/backend/internal/integrations/openai"
+	"github.com/bankai-project/backend/internal/integrations/synthdata"
 	"github.com/bankai-project/backend/internal/integrations/tavily"
 	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/polymarket"
@@ -64,6 +65,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	clobClient := clob.NewClient(cfg)
 	tavilyClient := tavily.NewClient(cfg)
 	openaiClient := openai.NewClient(cfg)
+	synthClient := synthdata.NewClient(cfg)
 	dataAPIClient := data_api.NewClient(cfg)
 	subgraphClient := polymarket.NewSubgraphClient(cfg)
 
@@ -83,6 +85,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	jobQueue := services.NewJobQueue(rdb, "jobs:default")
 	alphaHubService := services.NewAlphaHubService(marketService, profileService, clobClient, tavilyClient, openaiClient, dataAPIClient, subgraphClient, cfg.Services.AIPicksMarketLimit, rdb)
 	tpslService := services.NewTPSLService(rdb, clobClient, notificationService)
+	upDownService := services.NewUpDownService(db, rdb, cfg, marketService, synthClient)
 
 	// Initialize Blockchain Service
 	blockchainService, err := services.NewBlockchainService(cfg)
@@ -109,6 +112,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	settingsHandler := handlers.NewSettingsHandler(db, settingsService)
 	tpslHandler := handlers.NewTPSLHandler(tpslService)
 	adminHandler := handlers.NewAdminHandler(adminService, jobQueue)
+	upDownHandler := handlers.NewUpDownHandler(upDownService)
 
 	// 5. Define Routes
 	// Root route for easy health checks
@@ -171,6 +175,16 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	analysis.Get("/whales/stream", analysisHandler.StreamWhaleUpdates)
 	analysis.Post("/ai-picks/cancel", analysisHandler.CancelAIPicks)
 	analysis.Post("/ai-picks/resume", analysisHandler.ResumeAIPicks)
+
+	// Up/Down Pro Trading Routes
+	updown := v1.Group("/updown")
+	updown.Get("/markets", upDownHandler.GetMarkets)
+	updown.Get("/market/:slug", upDownHandler.GetMarket)
+	updown.Get("/signal/:slug", upDownHandler.GetSignal)
+	updown.Get("/recommendations", upDownHandler.GetRecommendations)
+	updown.Get("/stream", upDownHandler.Stream)
+	updown.Get("/performance", upDownHandler.GetPerformance)
+	updown.Post("/decisions", middleware.Protected(), middleware.AccountGuard(rdb, db), upDownHandler.LogDecision)
 
 	// Profile Routes (Public - trader profiles are public)
 	profile := v1.Group("/profile")
