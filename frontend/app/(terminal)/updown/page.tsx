@@ -51,6 +51,14 @@ const money = (value?: number) => {
     : `-$${Math.abs(value).toFixed(4)}`;
 };
 
+const price = (value?: number) => {
+  if (typeof value !== "number" || Number.isNaN(value) || value <= 0) return "--";
+  return `$${value.toLocaleString(undefined, {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 2,
+  })}`;
+};
+
 const fmtCountdown = (seconds: number) => {
   if (!Number.isFinite(seconds)) return "--";
   if (seconds <= 0) return "00:00";
@@ -169,6 +177,13 @@ const pickNextMarket = (
   const upcoming = markets.find((market) => toMillis(market.event_start_time) > nowMs);
   return upcoming?.slug ?? markets[0]?.slug ?? null;
 };
+
+const hasSynthProbabilities = (signal: UpDownSignal | null) =>
+  !!signal &&
+  (typeof signal.p_market_up === "number" ||
+    typeof signal.p_synth_up === "number" ||
+    typeof signal.p_model_up === "number" ||
+    typeof signal.p_lp_up === "number");
 
 export default function UpDownPage() {
   const [asset, setAsset] = useState<(typeof ASSETS)[number]>("ALL");
@@ -371,6 +386,7 @@ export default function UpDownPage() {
   const liveMarket = selectedMarket
     ? augmentMarket(selectedMarket.market)
     : null;
+  const signalHasSynth = hasSynthProbabilities(selectedSignal);
   const integrityFailure =
     staleSignal ||
     !!selectedSignal?.risk_flags?.data_integrity_failed ||
@@ -608,16 +624,19 @@ export default function UpDownPage() {
                     <Metric label="P_LP" value={pct(selectedSignal.p_lp_up)} />
                     <Metric
                       label="P_Final"
-                      value={pct(selectedSignal.p_final_up)}
+                      value={signalHasSynth ? pct(selectedSignal.p_final_up) : "--"}
                       accent
                     />
                   </div>
 
                   <div className="grid gap-3 sm:grid-cols-5">
-                    <Metric label="EV Up" value={money(selectedSignal.ev_up)} />
+                    <Metric
+                      label="EV Up"
+                      value={signalHasSynth ? money(selectedSignal.ev_up) : "--"}
+                    />
                     <Metric
                       label="EV Down"
-                      value={money(selectedSignal.ev_down)}
+                      value={signalHasSynth ? money(selectedSignal.ev_down) : "--"}
                     />
                     <Metric
                       label="EV Gate"
@@ -628,6 +647,64 @@ export default function UpDownPage() {
                       value={pct(selectedSignal.confidence)}
                     />
                     <Metric label="Regime" value={selectedSignal.regime} />
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-4">
+                    <Metric
+                      label="Up Ask"
+                      value={pct(selectedSignal.executable_ask_up)}
+                    />
+                    <Metric
+                      label="Up Bid"
+                      value={pct(selectedSignal.executable_bid_up)}
+                    />
+                    <Metric
+                      label="Down Ask"
+                      value={pct(selectedSignal.executable_ask_down)}
+                    />
+                    <Metric
+                      label="Down Bid"
+                      value={pct(selectedSignal.executable_bid_down)}
+                    />
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-6">
+                    <Metric
+                      label="Feed"
+                      value={(selectedMarket.resolution_source_type || "unknown").toUpperCase()}
+                    />
+                    <Metric
+                      label="Oracle Start"
+                      value={price(selectedSignal.reference_start_price)}
+                    />
+                    <Metric
+                      label="Oracle Now"
+                      value={price(selectedSignal.reference_current_price)}
+                    />
+                    <Metric
+                      label="End Price"
+                      value={
+                        typeof selectedSignal.reference_end_price === "number"
+                          ? price(selectedSignal.reference_end_price)
+                          : isMarketActiveAt(selectedMarket, nowMs)
+                            ? "Pending"
+                            : "--"
+                      }
+                    />
+                    <Metric
+                      label="Window Start"
+                      value={new Date(selectedMarket.event_start_time).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    />
+                    <Metric
+                      label="Window End"
+                      value={new Date(selectedMarket.event_end_time).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    />
                   </div>
 
                   <div className="rounded-md border border-border/60 bg-background/40 p-3 text-xs">
@@ -643,6 +720,18 @@ export default function UpDownPage() {
                       {selectedRecommendation?.reason_codes?.join(" · ") ||
                         "No reason codes available."}
                     </p>
+                    <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
+                      <span>Resolution source: {selectedMarket.resolution_source_type}</span>
+                      <span>
+                        {selectedSignal.reference_updated_at
+                          ? `Ref updated ${new Date(selectedSignal.reference_updated_at).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                              second: "2-digit",
+                            })}`
+                          : "Ref update --"}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="grid gap-3 sm:grid-cols-2">

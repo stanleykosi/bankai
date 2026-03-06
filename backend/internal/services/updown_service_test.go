@@ -206,6 +206,290 @@ func TestExpectedValueBuyBinary(t *testing.T) {
 	}
 }
 
+func TestBuildSignalUsesLiveMarketQuotesForPMarket(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&models.Market{}); err != nil {
+		t.Fatalf("automigrate market: %v", err)
+	}
+
+	mini := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mini.Addr()})
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	start := now.Add(-2 * time.Minute)
+	end := now.Add(3 * time.Minute)
+
+	live := models.Market{
+		ConditionID:     "0xlive-pmarket",
+		Slug:            "btc-updown-5m-live",
+		Title:           "Bitcoin Up or Down - Live",
+		Outcomes:        `["Up","Down"]`,
+		ResolutionRules: "Resolved by Chainlink reference feed https://data.chain.link",
+		TokenIDYes:      "yes-live",
+		TokenIDNo:       "no-live",
+		AcceptingOrders: true,
+		Active:          true,
+		Closed:          false,
+		EventStartTime:  &start,
+		EndDate:         &end,
+		Liquidity:       25_000,
+	}
+	if err := db.Create(&live).Error; err != nil {
+		t.Fatalf("create market: %v", err)
+	}
+
+	updated := now.Format(time.RFC3339Nano)
+	if err := rdb.HSet(ctx, priceRedisKey(live.ConditionID, live.TokenIDYes), map[string]any{
+		"best_bid": "0.53",
+		"best_ask": "0.54",
+		"updated":  updated,
+	}).Err(); err != nil {
+		t.Fatalf("seed yes price: %v", err)
+	}
+	if err := rdb.HSet(ctx, priceRedisKey(live.ConditionID, live.TokenIDNo), map[string]any{
+		"best_bid": "0.45",
+		"best_ask": "0.46",
+		"updated":  updated,
+	}).Err(); err != nil {
+		t.Fatalf("seed no price: %v", err)
+	}
+
+	svc := &UpDownService{
+		cfg: &config.Config{
+			Services: config.ServicesConfig{
+				UpDownEnabled:             true,
+				UpDownFeeBps:              10,
+				UpDownDepthProbeShares:    10,
+				UpDownMaxSpreadToTrade:    0.10,
+				UpDownEVMinThreshold:      0.01,
+				UpDownKellyFraction:       0.25,
+				UpDownMaxFractionPerTrade: 0.05,
+				UpDownAssetExposureCap:    0.20,
+				UpDownNotionalBankroll:    1000,
+			},
+		},
+		market: NewMarketService(db, rdb, nil, nil),
+	}
+
+	signal, err := svc.buildSignal(ctx, UpDownMarket{
+		Slug:                 live.Slug,
+		ConditionID:          live.ConditionID,
+		Asset:                "BTC",
+		WindowType:           Window5m,
+		ResolutionSourceType: ResolutionSourceChainlink,
+		EventStartTime:       start,
+		EventEndTime:         end,
+		TimeToEndSeconds:     int64(end.Sub(now).Seconds()),
+		OutcomeIndexUp:       0,
+		OutcomeIndexDown:     1,
+		Market:               live,
+	}, map[string]*synthdata.PolymarketUpDownResponse{}, map[string]*synthdata.PredictionPercentilesResponse{}, map[string]*synthdata.VolatilityResponse{}, map[string]*synthdata.LPProbabilitiesResponse{})
+	if err != nil {
+		t.Fatalf("build signal: %v", err)
+	}
+	if signal.PMarketUp == nil {
+		t.Fatalf("expected live market probability to be populated")
+	}
+	if got := *signal.PMarketUp; got < 0.539 || got > 0.541 {
+		t.Fatalf("expected p_market from live quotes to be ~0.54, got %.6f", got)
+	}
+}
+
+func TestBuildSignalUsesChainlinkOracleSnapshotForReferencePrices(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&models.Market{}); err != nil {
+		t.Fatalf("automigrate market: %v", err)
+	}
+
+	mini := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mini.Addr()})
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	start := now.Add(-90 * time.Second)
+	end := now.Add(210 * time.Second)
+
+	live := models.Market{
+		ConditionID:     "0xoracle-ref",
+		Slug:            "btc-updown-5m-oracle",
+		Title:           "Bitcoin Up or Down - Oracle",
+		Outcomes:        `["Up","Down"]`,
+		ResolutionRules: "Resolved by Chainlink reference feed https://data.chain.link",
+		TokenIDYes:      "yes-oracle",
+		TokenIDNo:       "no-oracle",
+		AcceptingOrders: true,
+		Active:          true,
+		Closed:          false,
+		EventStartTime:  &start,
+		EndDate:         &end,
+		Liquidity:       25_000,
+	}
+	if err := db.Create(&live).Error; err != nil {
+		t.Fatalf("create market: %v", err)
+	}
+
+	updated := now.Format(time.RFC3339Nano)
+	if err := rdb.HSet(ctx, priceRedisKey(live.ConditionID, live.TokenIDYes), map[string]any{
+		"best_bid": "0.50",
+		"best_ask": "0.51",
+		"updated":  updated,
+	}).Err(); err != nil {
+		t.Fatalf("seed yes price: %v", err)
+	}
+	if err := rdb.HSet(ctx, priceRedisKey(live.ConditionID, live.TokenIDNo), map[string]any{
+		"best_bid": "0.49",
+		"best_ask": "0.50",
+		"updated":  updated,
+	}).Err(); err != nil {
+		t.Fatalf("seed no price: %v", err)
+	}
+	if err := StoreChainlinkLatest(ctx, rdb, "BTC", 67234.5, now); err != nil {
+		t.Fatalf("store chainlink latest: %v", err)
+	}
+
+	svc := &UpDownService{
+		cfg: &config.Config{
+			Services: config.ServicesConfig{
+				UpDownEnabled:             true,
+				UpDownFeeBps:              10,
+				UpDownDepthProbeShares:    10,
+				UpDownMaxSpreadToTrade:    0.10,
+				UpDownEVMinThreshold:      0.01,
+				UpDownKellyFraction:       0.25,
+				UpDownMaxFractionPerTrade: 0.05,
+				UpDownAssetExposureCap:    0.20,
+				UpDownNotionalBankroll:    1000,
+			},
+		},
+		redis:  rdb,
+		market: NewMarketService(db, rdb, nil, nil),
+	}
+
+	signal, err := svc.buildSignal(ctx, UpDownMarket{
+		Slug:                 live.Slug,
+		ConditionID:          live.ConditionID,
+		Asset:                "BTC",
+		WindowType:           Window5m,
+		ResolutionSourceType: ResolutionSourceChainlink,
+		EventStartTime:       start,
+		EventEndTime:         end,
+		TimeToEndSeconds:     int64(end.Sub(now).Seconds()),
+		OutcomeIndexUp:       0,
+		OutcomeIndexDown:     1,
+		Market:               live,
+	}, map[string]*synthdata.PolymarketUpDownResponse{}, map[string]*synthdata.PredictionPercentilesResponse{}, map[string]*synthdata.VolatilityResponse{}, map[string]*synthdata.LPProbabilitiesResponse{})
+	if err != nil {
+		t.Fatalf("build signal: %v", err)
+	}
+	if signal.ReferenceCurrentPrice == nil || *signal.ReferenceCurrentPrice != 67234.5 {
+		t.Fatalf("expected current oracle price from chainlink, got %+v", signal.ReferenceCurrentPrice)
+	}
+	if signal.ReferenceStartPrice == nil || *signal.ReferenceStartPrice != 67234.5 {
+		t.Fatalf("expected start oracle snapshot to be captured from chainlink, got %+v", signal.ReferenceStartPrice)
+	}
+}
+
+func TestBuildSignalDoesNotApplyChainlinkSnapshotsToBinanceMarkets(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&models.Market{}); err != nil {
+		t.Fatalf("automigrate market: %v", err)
+	}
+
+	mini := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mini.Addr()})
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	start := now.Add(-90 * time.Second)
+	end := now.Add(30 * time.Minute)
+
+	live := models.Market{
+		ConditionID:     "0xbinance-ref",
+		Slug:            "eth-updown-1h-binance",
+		Title:           "Ethereum Up or Down - Binance",
+		Outcomes:        `["Up","Down"]`,
+		ResolutionRules: "Resolution source: Binance 1h candle open and close.",
+		TokenIDYes:      "yes-binance",
+		TokenIDNo:       "no-binance",
+		AcceptingOrders: true,
+		Active:          true,
+		Closed:          false,
+		EventStartTime:  &start,
+		EndDate:         &end,
+		Liquidity:       25_000,
+	}
+	if err := db.Create(&live).Error; err != nil {
+		t.Fatalf("create market: %v", err)
+	}
+
+	updated := now.Format(time.RFC3339Nano)
+	if err := rdb.HSet(ctx, priceRedisKey(live.ConditionID, live.TokenIDYes), map[string]any{
+		"best_bid": "0.50",
+		"best_ask": "0.51",
+		"updated":  updated,
+	}).Err(); err != nil {
+		t.Fatalf("seed yes price: %v", err)
+	}
+	if err := rdb.HSet(ctx, priceRedisKey(live.ConditionID, live.TokenIDNo), map[string]any{
+		"best_bid": "0.49",
+		"best_ask": "0.50",
+		"updated":  updated,
+	}).Err(); err != nil {
+		t.Fatalf("seed no price: %v", err)
+	}
+	if err := StoreChainlinkLatest(ctx, rdb, "ETH", 3911.44, now); err != nil {
+		t.Fatalf("store chainlink latest: %v", err)
+	}
+
+	svc := &UpDownService{
+		cfg: &config.Config{
+			Services: config.ServicesConfig{
+				UpDownEnabled:             true,
+				UpDownFeeBps:              10,
+				UpDownDepthProbeShares:    10,
+				UpDownMaxSpreadToTrade:    0.10,
+				UpDownEVMinThreshold:      0.01,
+				UpDownKellyFraction:       0.25,
+				UpDownMaxFractionPerTrade: 0.05,
+				UpDownAssetExposureCap:    0.20,
+				UpDownNotionalBankroll:    1000,
+			},
+		},
+		redis:  rdb,
+		market: NewMarketService(db, rdb, nil, nil),
+	}
+
+	signal, err := svc.buildSignal(ctx, UpDownMarket{
+		Slug:                 live.Slug,
+		ConditionID:          live.ConditionID,
+		Asset:                "ETH",
+		WindowType:           Window1h,
+		ResolutionSourceType: ResolutionSourceBinance,
+		EventStartTime:       start,
+		EventEndTime:         end,
+		TimeToEndSeconds:     int64(end.Sub(now).Seconds()),
+		OutcomeIndexUp:       0,
+		OutcomeIndexDown:     1,
+		Market:               live,
+	}, map[string]*synthdata.PolymarketUpDownResponse{}, map[string]*synthdata.PredictionPercentilesResponse{}, map[string]*synthdata.VolatilityResponse{}, map[string]*synthdata.LPProbabilitiesResponse{})
+	if err != nil {
+		t.Fatalf("build signal: %v", err)
+	}
+	if signal.ReferenceCurrentPrice != nil {
+		t.Fatalf("expected binance market to ignore chainlink current price, got %+v", signal.ReferenceCurrentPrice)
+	}
+	if signal.ReferenceStartPrice != nil {
+		t.Fatalf("expected binance market to ignore chainlink start snapshot, got %+v", signal.ReferenceStartPrice)
+	}
+}
+
 func TestBuildRecommendationNoTradeWhenEdgeTooLow(t *testing.T) {
 	now := time.Date(2026, 3, 4, 10, 0, 0, 0, time.UTC)
 	cfg := &config.Config{
@@ -501,6 +785,49 @@ func TestSynthUpDownCacheKeyUsesRequestDimensions(t *testing.T) {
 	}
 	if key1 == key3 {
 		t.Fatalf("expected different cache keys for different request dimensions: %s vs %s", key1, key3)
+	}
+}
+
+func TestSupportsDirectSynthUpDownWindow(t *testing.T) {
+	if !supportsDirectSynthUpDownWindow(Window5m) {
+		t.Fatalf("expected 5m synth up/down support")
+	}
+	if !supportsDirectSynthUpDownWindow(Window15m) {
+		t.Fatalf("expected 15m synth up/down support")
+	}
+	if !supportsDirectSynthUpDownWindow(Window1h) {
+		t.Fatalf("expected 1h synth up/down support")
+	}
+	if supportsDirectSynthUpDownWindow(Window4h) {
+		t.Fatalf("expected 4h synth up/down to remain unsupported")
+	}
+}
+
+func TestSynthSamplingIntervalUsesDocumentedCadence(t *testing.T) {
+	if got := synthSamplingInterval("1h"); got != time.Minute {
+		t.Fatalf("expected 1h synth cadence to be 1m, got %s", got)
+	}
+	if got := synthSamplingInterval("24h"); got != 5*time.Minute {
+		t.Fatalf("expected 24h synth cadence to be 5m, got %s", got)
+	}
+}
+
+func TestSynthUpDownResponseMatchesMarketByWindowTimes(t *testing.T) {
+	start := time.Date(2026, 3, 6, 8, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	market := UpDownMarket{
+		Slug:           "btc-updown-1h-1772860800",
+		EventStartTime: start,
+		EventEndTime:   end,
+	}
+	resp := &synthdata.PolymarketUpDownResponse{
+		Slug:           "bitcoin-up-or-down-march-6-8am-et",
+		EventStartTime: start.Format(time.RFC3339),
+		EventEndTime:   end.Format(time.RFC3339),
+	}
+
+	if !synthUpDownResponseMatchesMarket(market, resp) {
+		t.Fatalf("expected synth response to match market by event window")
 	}
 }
 

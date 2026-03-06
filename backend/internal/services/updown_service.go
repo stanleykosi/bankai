@@ -38,6 +38,7 @@ var (
 type marketPriceUpdate struct {
 	ConditionID        string   `json:"condition_id"`
 	AssetID            string   `json:"asset_id"`
+	AssetSymbol        string   `json:"asset_symbol,omitempty"`
 	Price              *float64 `json:"price,omitempty"`
 	BestBid            *float64 `json:"best_bid,omitempty"`
 	BestAsk            *float64 `json:"best_ask,omitempty"`
@@ -142,12 +143,16 @@ type UpDownRecommendation struct {
 }
 
 type UpDownSignal struct {
-	Slug                 string                 `json:"slug"`
-	ConditionID          string                 `json:"condition_id"`
-	Asset                string                 `json:"asset"`
-	WindowType           UpDownWindowType       `json:"window_type"`
-	ResolutionSourceType UpDownResolutionSource `json:"resolution_source_type"`
-	Timestamp            time.Time              `json:"timestamp"`
+	Slug                  string                 `json:"slug"`
+	ConditionID           string                 `json:"condition_id"`
+	Asset                 string                 `json:"asset"`
+	WindowType            UpDownWindowType       `json:"window_type"`
+	ResolutionSourceType  UpDownResolutionSource `json:"resolution_source_type"`
+	Timestamp             time.Time              `json:"timestamp"`
+	ReferenceStartPrice   *float64               `json:"reference_start_price,omitempty"`
+	ReferenceCurrentPrice *float64               `json:"reference_current_price,omitempty"`
+	ReferenceEndPrice     *float64               `json:"reference_end_price,omitempty"`
+	ReferenceUpdatedAt    *time.Time             `json:"reference_updated_at,omitempty"`
 
 	PMarketUp *float64 `json:"p_market_up,omitempty"`
 	PSynthUp  *float64 `json:"p_synth_up,omitempty"`
@@ -254,6 +259,7 @@ type UpDownService struct {
 
 	tokenToSlugs     map[string][]string
 	conditionToSlugs map[string][]string
+	assetToSlugs     map[string][]string
 
 	recomputeMu   sync.Mutex
 	recomputeJobs map[string]*time.Timer
@@ -275,6 +281,7 @@ func NewUpDownService(db *gorm.DB, rdb *redis.Client, cfg *config.Config, market
 		recs:               make([]UpDownRecommendation, 0),
 		tokenToSlugs:       make(map[string][]string),
 		conditionToSlugs:   make(map[string][]string),
+		assetToSlugs:       make(map[string][]string),
 		recomputeJobs:      make(map[string]*time.Timer),
 		calibrationByAsset: make(map[string]assetCalibration),
 	}
@@ -471,6 +478,7 @@ func (s *UpDownService) refreshSignalsOnly(ctx context.Context) error {
 	if len(markets) == 0 {
 		return nil
 	}
+	s.requestSignalMarketStreams(ctx, markets)
 
 	now := time.Now().UTC()
 	signals := make(map[string]UpDownSignal)
@@ -519,10 +527,31 @@ func (s *UpDownService) refreshSignalsOnly(ctx context.Context) error {
 	return nil
 }
 
+func (s *UpDownService) requestSignalMarketStreams(ctx context.Context, markets []UpDownMarket) {
+	if s == nil || s.market == nil || len(markets) == 0 {
+		return
+	}
+
+	tokens := make([]string, 0, len(markets)*2)
+	for _, market := range markets {
+		if token := strings.TrimSpace(market.Market.TokenIDYes); token != "" {
+			tokens = append(tokens, token)
+		}
+		if token := strings.TrimSpace(market.Market.TokenIDNo); token != "" {
+			tokens = append(tokens, token)
+		}
+	}
+	if len(tokens) == 0 {
+		return
+	}
+
+	s.market.publishStreamRequest(ctx, dedupeStrings(tokens))
+}
+
 func (s *UpDownService) listenPriceUpdates() {
 	ctx := context.Background()
 	for {
-		pubsub := s.redis.Subscribe(ctx, PriceUpdateChannel)
+		pubsub := s.redis.Subscribe(ctx, PriceUpdateChannel, ChainlinkPriceUpdateChannel)
 		ch := pubsub.Channel(redis.WithChannelSize(8192))
 		for msg := range ch {
 			var update marketPriceUpdate
@@ -538,8 +567,9 @@ func (s *UpDownService) listenPriceUpdates() {
 
 func (s *UpDownService) scheduleSignalRecompute(update marketPriceUpdate) {
 	assetID := strings.TrimSpace(update.AssetID)
+	assetSymbol := CanonicalOracleAsset(update.AssetSymbol)
 	conditionID := strings.TrimSpace(update.ConditionID)
-	if assetID == "" && conditionID == "" {
+	if assetID == "" && assetSymbol == "" && conditionID == "" {
 		return
 	}
 
@@ -547,6 +577,9 @@ func (s *UpDownService) scheduleSignalRecompute(update marketPriceUpdate) {
 	s.mu.RLock()
 	if assetID != "" {
 		slugs = append(slugs, s.tokenToSlugs[assetID]...)
+	}
+	if assetSymbol != "" {
+		slugs = append(slugs, s.assetToSlugs[assetSymbol]...)
 	}
 	if conditionID != "" {
 		slugs = append(slugs, s.conditionToSlugs[conditionID]...)
@@ -645,6 +678,7 @@ func (s *UpDownService) Refresh(ctx context.Context) error {
 	lpCache := make(map[string]*synthdata.LPProbabilitiesResponse)
 
 	candidateSignals := s.pickSignalCandidates(markets)
+	s.requestSignalMarketStreams(ctx, candidateSignals)
 	for _, market := range candidateSignals {
 		signal, buildErr := s.buildSignal(ctx, market, synthCache, percentileCache, volCache, lpCache)
 		if buildErr != nil {
@@ -669,9 +703,14 @@ func (s *UpDownService) Refresh(ctx context.Context) error {
 	s.marketsBySlug = make(map[string]UpDownMarket, len(markets))
 	tokenToSlugs := make(map[string][]string, len(markets)*2)
 	conditionToSlugs := make(map[string][]string, len(markets))
+	assetToSlugs := make(map[string][]string, len(markets))
 	for _, m := range markets {
 		s.marketsBySlug[m.Slug] = m
 		conditionToSlugs[m.ConditionID] = append(conditionToSlugs[m.ConditionID], m.Slug)
+		asset := CanonicalOracleAsset(m.Asset)
+		if asset != "" {
+			assetToSlugs[asset] = append(assetToSlugs[asset], m.Slug)
+		}
 		if token := strings.TrimSpace(m.Market.TokenIDYes); token != "" {
 			tokenToSlugs[token] = append(tokenToSlugs[token], m.Slug)
 		}
@@ -685,8 +724,12 @@ func (s *UpDownService) Refresh(ctx context.Context) error {
 	for cond, slugs := range conditionToSlugs {
 		conditionToSlugs[cond] = dedupeStrings(slugs)
 	}
+	for asset, slugs := range assetToSlugs {
+		assetToSlugs[asset] = dedupeStrings(slugs)
+	}
 	s.tokenToSlugs = tokenToSlugs
 	s.conditionToSlugs = conditionToSlugs
+	s.assetToSlugs = assetToSlugs
 	s.signalsBySlug = signals
 	s.recs = recs
 	s.lastRefresh = time.Now().UTC()
@@ -1381,6 +1424,10 @@ func detectResolutionSource(rules string) UpDownResolutionSource {
 	}
 }
 
+func usesChainlinkReference(market UpDownMarket) bool {
+	return market.ResolutionSourceType != ResolutionSourceBinance
+}
+
 func inferWindowType(start, end time.Time) UpDownWindowType {
 	delta := end.Sub(start)
 	switch {
@@ -1428,70 +1475,110 @@ func (s *UpDownService) buildSignal(
 	upAsk, upBid, upSlippage, upMissingDepth := s.executablePrices(ctx, market.Market, upToken, probeSize)
 	downAsk, downBid, downSlippage, downMissingDepth := s.executablePrices(ctx, market.Market, downToken, probeSize)
 
-	pMarketUp := marketProbability(upAsk, downAsk)
-	var pMarketPtr *float64
-	if pMarketUp > 0 {
-		v := pMarketUp
-		pMarketPtr = &v
-	}
-
 	feesFrac := upDownClamp(s.cfg.Services.UpDownFeeBps/10_000.0, 0, 0.02)
-	clockDriftSecs := s.cfg.Services.UpDownClockDriftMaxSeconds
-	if clockDriftSecs <= 0 {
-		clockDriftSecs = 5
-	}
-	staleSecs := s.cfg.Services.UpDownStaleThresholdSeconds
-	if staleSecs <= 0 {
-		staleSecs = 8
-	}
-	clockDriftMax := time.Duration(clockDriftSecs) * time.Second
-	staleThreshold := time.Duration(staleSecs) * time.Second
+	horizon := horizonForWindow(market.WindowType)
+	synthStaleThreshold := synthStaleThresholdForMarket(s.cfg, market.WindowType)
+	synthClockDriftMax := synthClockDriftThresholdForMarket(s.cfg, market.WindowType)
+	marketStaleThreshold := marketQuoteStaleThresholdForMarket(s.cfg, market.WindowType)
 
+	var pMarketPtr *float64
 	var pSynthPtr *float64
 	var pModelPtr *float64
 	var pLPPtr *float64
+	var referenceStartPrice *float64
+	var referenceCurrentPrice *float64
+	var referenceEndPrice *float64
+	var referenceUpdatedAt *time.Time
 	flags := UpDownRiskFlags{
 		ReadOnly:   s.cfg.Services.UpDownReadOnly,
 		KillSwitch: s.cfg.Services.UpDownKillSwitch,
 	}
 	reasons := make([]string, 0, 12)
 
-	synthResp := s.getSynthUpDownCached(ctx, market, synthCache)
-	var synthClock time.Time
-	if synthResp == nil {
-		flags.SynthMissing = true
-		reasons = append(reasons, "synth_missing")
-	} else {
-		if synthResp.Slug != "" && !strings.EqualFold(strings.TrimSpace(synthResp.Slug), strings.TrimSpace(market.Slug)) {
-			flags.SourceMismatch = true
-			flags.SynthMissing = true
-			reasons = append(reasons, "synth_slug_mismatch")
-			// Prevent blending a payload that belongs to a different market window.
-			synthResp = nil
+	if marketProb := marketProbability(upAsk, downAsk); marketProb > 0 {
+		v := marketProb
+		pMarketPtr = &v
+	}
+
+	if usesChainlinkReference(market) {
+		oracleLatest := GetChainlinkLatest(ctx, s.redis, market.Asset)
+		if oracleLatest != nil {
+			if oracleLatest.Price > 0 {
+				v := oracleLatest.Price
+				referenceCurrentPrice = &v
+			}
+			if !oracleLatest.UpdatedAt.IsZero() {
+				refTime := oracleLatest.UpdatedAt
+				referenceUpdatedAt = &refTime
+			}
+			if !oracleLatest.UpdatedAt.Before(market.EventStartTime) {
+				_ = CaptureChainlinkStart(ctx, s.redis, market.Asset, market.EventStartTime, *oracleLatest)
+			}
+			if !oracleLatest.UpdatedAt.Before(market.EventEndTime) {
+				_ = CaptureChainlinkEnd(ctx, s.redis, market.Asset, market.EventEndTime, *oracleLatest)
+			}
+		}
+		if startPoint := GetChainlinkStart(ctx, s.redis, market.Asset, market.EventStartTime); startPoint != nil && startPoint.Price > 0 {
+			v := startPoint.Price
+			referenceStartPrice = &v
+			if referenceUpdatedAt == nil || startPoint.UpdatedAt.After(*referenceUpdatedAt) {
+				refTime := startPoint.UpdatedAt
+				referenceUpdatedAt = &refTime
+			}
+		}
+		if endPoint := GetChainlinkEnd(ctx, s.redis, market.Asset, market.EventEndTime); endPoint != nil && endPoint.Price > 0 {
+			v := endPoint.Price
+			referenceEndPrice = &v
+			if referenceUpdatedAt == nil || endPoint.UpdatedAt.After(*referenceUpdatedAt) {
+				refTime := endPoint.UpdatedAt
+				referenceUpdatedAt = &refTime
+			}
 		}
 	}
+
+	synthResp := s.getSynthUpDownCached(ctx, market, synthCache)
+	var synthClock time.Time
+	if synthResp != nil && !synthUpDownResponseMatchesMarket(market, synthResp) {
+		flags.SourceMismatch = true
+		reasons = append(reasons, "synth_market_window_mismatch")
+		synthResp = nil
+	}
 	if synthResp != nil {
+		if synthResp.StartPrice > 0 {
+			v := synthResp.StartPrice
+			if referenceStartPrice == nil {
+				referenceStartPrice = &v
+			}
+		}
+		if synthResp.CurrentPrice > 0 {
+			v := synthResp.CurrentPrice
+			if referenceCurrentPrice == nil {
+				referenceCurrentPrice = &v
+			}
+		}
 		if synthResp.SynthProbabilityUp >= 0 && synthResp.SynthProbabilityUp <= 1 {
 			v := synthResp.SynthProbabilityUp
 			pSynthPtr = &v
 		}
-		if synthResp.CurrentTime != "" {
-			if t, err := time.Parse(time.RFC3339, synthResp.CurrentTime); err == nil {
-				synthClock = t.UTC()
+		if t, ok := parseSynthTimestamp(synthResp.CurrentTime); ok {
+			synthClock = t
+			if referenceUpdatedAt == nil {
+				refTime := t
+				referenceUpdatedAt = &refTime
 			}
 		}
-		if !synthClock.IsZero() && now.Sub(synthClock) > staleThreshold {
+		if !synthClock.IsZero() && now.Sub(synthClock) > synthStaleThreshold {
 			flags.SynthStale = true
 			reasons = append(reasons, "synth_stale")
 		}
-		if !synthClock.IsZero() && absDuration(now.Sub(synthClock)) > clockDriftMax {
+		if !synthClock.IsZero() && absDuration(now.Sub(synthClock)) > synthClockDriftMax {
 			flags.ClockDrift = true
 			reasons = append(reasons, "clock_drift")
 		}
 	}
 
 	var volSummary *synthdata.VolatilityResponse
-	if s.synth != nil && s.synth.Enabled() {
+	if supportsSynthAnalyticsForWindow(market.WindowType) && s.synth != nil && s.synth.Enabled() {
 		volSummary = s.getSynthVolatilityCached(ctx, market, volCache)
 	}
 	if volSummary != nil && volSummary.ForecastFuture.AverageVolatility >= 80 {
@@ -1499,23 +1586,26 @@ func (s *UpDownService) buildSignal(
 		reasons = append(reasons, "high_volatility_regime")
 	}
 
-	pp := s.getSynthPercentilesCached(ctx, market, percentileCache)
-	thresholdPrice := resolveUpThresholdPrice(synthResp, pp)
-	if thresholdPrice > 0 && s.synth != nil && s.synth.Enabled() {
+	thresholdPrice := resolveUpThresholdPrice(referenceStartPrice, synthResp)
+	if thresholdPrice > 0 && supportsSynthAnalyticsForWindow(market.WindowType) && s.synth != nil && s.synth.Enabled() {
 		lp := s.getSynthLPProbabilitiesCached(ctx, market, lpCache)
-		if p, ok := lpProbabilityAtThreshold(lp, horizonForWindow(market.WindowType), thresholdPrice); ok {
+		if p, ok := lpProbabilityAtThreshold(lp, horizon, thresholdPrice); ok {
 			v := upDownClamp(p, 0.01, 0.99)
 			pLPPtr = &v
 			reasons = append(reasons, "lp_probability_anchor")
 		}
 	}
 
-	if s.cfg.Services.UpDownEnterpriseEnabled && s.synth != nil && s.synth.Enabled() {
-		pModel := s.computeModelProbability(ctx, market, synthResp, percentileCache)
+	if thresholdPrice > 0 && supportsSynthAnalyticsForWindow(market.WindowType) && s.cfg.Services.UpDownEnterpriseEnabled && s.synth != nil && s.synth.Enabled() {
+		pModel := s.computeModelProbability(ctx, market, thresholdPrice, percentileCache)
 		if pModel > 0 {
 			v := upDownClamp(pModel, 0.01, 0.99)
 			pModelPtr = &v
 		}
+	}
+	if supportsDirectSynthUpDownWindow(market.WindowType) && pSynthPtr == nil {
+		flags.SynthMissing = true
+		reasons = append(reasons, "synth_missing")
 	}
 
 	calibration, hasCalibration := s.getAssetCalibration(market.Asset)
@@ -1553,7 +1643,7 @@ func (s *UpDownService) buildSignal(
 	pFinalUp = upDownClamp(pFinalUp, 0.01, 0.99)
 
 	marketUpdated := latestMarketTimestamp(market.Market)
-	if !marketUpdated.IsZero() && now.Sub(marketUpdated) > staleThreshold {
+	if !marketUpdated.IsZero() && now.Sub(marketUpdated) > marketStaleThreshold {
 		flags.MarketStale = true
 		reasons = append(reasons, "market_stale")
 	}
@@ -1612,35 +1702,39 @@ func (s *UpDownService) buildSignal(
 
 	rec := buildRecommendation(now, market, pFinalUp, evUp, evDown, upAsk, downAsk, confidence, dynamicEVMin, flags, reasons, s.cfg)
 	signal := UpDownSignal{
-		Slug:                 market.Slug,
-		ConditionID:          market.ConditionID,
-		Asset:                market.Asset,
-		WindowType:           market.WindowType,
-		ResolutionSourceType: market.ResolutionSourceType,
-		Timestamp:            now,
-		PMarketUp:            pMarketPtr,
-		PSynthUp:             pSynthPtr,
-		PModelUp:             pModelPtr,
-		PLPUp:                pLPPtr,
-		PFinalUp:             pFinalUp,
-		ExecutableAskUp:      upAsk,
-		ExecutableAskDown:    downAsk,
-		ExecutableBidUp:      upBid,
-		ExecutableBidDown:    downBid,
-		SpreadUp:             spreadUp,
-		SpreadDown:           spreadDown,
-		DepthImbalance:       depthImb,
-		ExpectedSlippage:     expectedSlippage,
-		EVUp:                 evUp,
-		EVDown:               evDown,
-		EVMinThreshold:       dynamicEVMin,
-		FeesBps:              s.cfg.Services.UpDownFeeBps,
-		TimeToExpiryMs:       timeToExpiryMs,
-		Regime:               regime,
-		Confidence:           confidence,
-		RiskFlags:            flags,
-		ReasonCodes:          dedupeStrings(reasons),
-		Recommendation:       rec,
+		Slug:                  market.Slug,
+		ConditionID:           market.ConditionID,
+		Asset:                 market.Asset,
+		WindowType:            market.WindowType,
+		ResolutionSourceType:  market.ResolutionSourceType,
+		Timestamp:             now,
+		ReferenceStartPrice:   referenceStartPrice,
+		ReferenceCurrentPrice: referenceCurrentPrice,
+		ReferenceEndPrice:     referenceEndPrice,
+		ReferenceUpdatedAt:    referenceUpdatedAt,
+		PMarketUp:             pMarketPtr,
+		PSynthUp:              pSynthPtr,
+		PModelUp:              pModelPtr,
+		PLPUp:                 pLPPtr,
+		PFinalUp:              pFinalUp,
+		ExecutableAskUp:       upAsk,
+		ExecutableAskDown:     downAsk,
+		ExecutableBidUp:       upBid,
+		ExecutableBidDown:     downBid,
+		SpreadUp:              spreadUp,
+		SpreadDown:            spreadDown,
+		DepthImbalance:        depthImb,
+		ExpectedSlippage:      expectedSlippage,
+		EVUp:                  evUp,
+		EVDown:                evDown,
+		EVMinThreshold:        dynamicEVMin,
+		FeesBps:               s.cfg.Services.UpDownFeeBps,
+		TimeToExpiryMs:        timeToExpiryMs,
+		Regime:                regime,
+		Confidence:            confidence,
+		RiskFlags:             flags,
+		ReasonCodes:           dedupeStrings(reasons),
+		Recommendation:        rec,
 	}
 	return signal, nil
 }
@@ -2212,15 +2306,12 @@ func (s *UpDownService) getSynthLPProbabilitiesCached(ctx context.Context, marke
 	return resp
 }
 
-func resolveUpThresholdPrice(synthResp *synthdata.PolymarketUpDownResponse, percentiles *synthdata.PredictionPercentilesResponse) float64 {
+func resolveUpThresholdPrice(referenceStartPrice *float64, synthResp *synthdata.PolymarketUpDownResponse) float64 {
+	if referenceStartPrice != nil && *referenceStartPrice > 0 {
+		return *referenceStartPrice
+	}
 	if synthResp != nil && synthResp.StartPrice > 0 {
 		return synthResp.StartPrice
-	}
-	if synthResp != nil && synthResp.CurrentPrice > 0 {
-		return synthResp.CurrentPrice
-	}
-	if percentiles != nil && percentiles.CurrentPrice > 0 {
-		return percentiles.CurrentPrice
 	}
 	return 0
 }
@@ -2296,7 +2387,7 @@ func nearestLPProbability(levels map[string]float64, thresholdPrice float64) (fl
 	return upDownClamp(bestProb, 0, 1), true
 }
 
-func (s *UpDownService) computeModelProbability(ctx context.Context, market UpDownMarket, synthResp *synthdata.PolymarketUpDownResponse, percentileCache map[string]*synthdata.PredictionPercentilesResponse) float64 {
+func (s *UpDownService) computeModelProbability(ctx context.Context, market UpDownMarket, threshold float64, percentileCache map[string]*synthdata.PredictionPercentilesResponse) float64 {
 	if s.synth == nil || !s.synth.Enabled() {
 		return 0
 	}
@@ -2305,29 +2396,34 @@ func (s *UpDownService) computeModelProbability(ctx context.Context, market UpDo
 		return 0
 	}
 
-	pp := s.getSynthPercentilesCached(ctx, market, percentileCache)
-	threshold := resolveUpThresholdPrice(synthResp, pp)
 	if threshold <= 0 {
 		return 0
 	}
 
-	targetStep := int(math.Ceil(timeToExpiry.Seconds() / 300))
+	pp := s.getSynthPercentilesCached(ctx, market, percentileCache)
+	if pp == nil || len(pp.ForecastFuture.Percentiles) == 0 {
+		return 0
+	}
+
+	stepSeconds := synthSamplingInterval(horizonForWindow(market.WindowType))
+	targetStep := int(math.Ceil(timeToExpiry.Seconds() / stepSeconds.Seconds()))
 	if targetStep < 1 {
 		targetStep = 1
 	}
-	timeLength := targetStep * 300
-	prob, err := s.synth.GetEnterpriseProbabilityUp(ctx, market.Asset, 300, timeLength, targetStep, threshold)
+	timeIncrement := int(stepSeconds.Seconds())
+	if timeIncrement <= 0 {
+		timeIncrement = 300
+	}
+	timeLength := targetStep * timeIncrement
+	prob, err := s.synth.GetEnterpriseProbabilityUp(ctx, market.Asset, timeIncrement, timeLength, targetStep, threshold)
 	if err == nil && prob != nil && prob.ProbabilityUp >= 0 && prob.ProbabilityUp <= 1 {
 		return prob.ProbabilityUp
 	}
-	latestProb, latestErr := s.synth.GetLatestProbabilityUp(ctx, market.Asset, 300, timeLength, targetStep, threshold)
+	latestProb, latestErr := s.synth.GetLatestProbabilityUp(ctx, market.Asset, timeIncrement, timeLength, targetStep, threshold)
 	if latestErr == nil && latestProb != nil && latestProb.ProbabilityUp >= 0 && latestProb.ProbabilityUp <= 1 {
 		return latestProb.ProbabilityUp
 	}
 
-	if pp == nil || len(pp.ForecastFuture.Percentiles) == 0 {
-		return 0
-	}
 	p, e := synthdata.EstimateProbabilityUpFromPercentiles(pp.ForecastFuture.Percentiles, targetStep, threshold)
 	if e != nil {
 		return 0
@@ -2343,8 +2439,6 @@ func synthWindowForMarket(window UpDownWindowType) synthdata.UpDownWindow {
 		return synthdata.UpDownWindow15m
 	case Window1h:
 		return synthdata.UpDownWindow1h
-	case Window4h:
-		return synthdata.UpDownWindow1d
 	default:
 		return ""
 	}
@@ -2357,6 +2451,104 @@ func horizonForWindow(window UpDownWindowType) string {
 	default:
 		return "24h"
 	}
+}
+
+func supportsDirectSynthUpDownWindow(window UpDownWindowType) bool {
+	switch window {
+	case Window5m, Window15m, Window1h:
+		return true
+	default:
+		return false
+	}
+}
+
+func supportsSynthAnalyticsForWindow(window UpDownWindowType) bool {
+	return supportsDirectSynthUpDownWindow(window)
+}
+
+func synthSamplingInterval(horizon string) time.Duration {
+	switch strings.ToLower(strings.TrimSpace(horizon)) {
+	case "1h":
+		return time.Minute
+	default:
+		return 5 * time.Minute
+	}
+}
+
+func synthStaleThresholdForMarket(cfg *config.Config, window UpDownWindowType) time.Duration {
+	base := 8 * time.Second
+	if cfg != nil && cfg.Services.UpDownStaleThresholdSeconds > 0 {
+		base = time.Duration(cfg.Services.UpDownStaleThresholdSeconds) * time.Second
+	}
+	minimum := synthSamplingInterval(horizonForWindow(window)) * 2
+	if minimum > base {
+		return minimum
+	}
+	return base
+}
+
+func synthClockDriftThresholdForMarket(cfg *config.Config, window UpDownWindowType) time.Duration {
+	base := 5 * time.Second
+	if cfg != nil && cfg.Services.UpDownClockDriftMaxSeconds > 0 {
+		base = time.Duration(cfg.Services.UpDownClockDriftMaxSeconds) * time.Second
+	}
+	minimum := synthSamplingInterval(horizonForWindow(window)) * 2
+	if minimum > base {
+		return minimum
+	}
+	return base
+}
+
+func marketQuoteStaleThresholdForMarket(cfg *config.Config, window UpDownWindowType) time.Duration {
+	base := 30 * time.Second
+	if cfg != nil && cfg.Services.UpDownStaleThresholdSeconds > 0 {
+		configured := time.Duration(cfg.Services.UpDownStaleThresholdSeconds) * time.Second
+		if configured > base {
+			base = configured
+		}
+	}
+	switch window {
+	case Window1h:
+		if base < time.Minute {
+			return time.Minute
+		}
+	case Window4h:
+		if base < 2*time.Minute {
+			return 2 * time.Minute
+		}
+	}
+	return base
+}
+
+func synthUpDownResponseMatchesMarket(market UpDownMarket, resp *synthdata.PolymarketUpDownResponse) bool {
+	if resp == nil {
+		return false
+	}
+	if slug := strings.TrimSpace(resp.Slug); slug != "" && strings.EqualFold(slug, strings.TrimSpace(market.Slug)) {
+		return true
+	}
+
+	start, startOK := parseSynthTimestamp(resp.EventStartTime)
+	end, endOK := parseSynthTimestamp(resp.EventEndTime)
+	if !startOK || !endOK {
+		return false
+	}
+
+	startDelta := absDuration(market.EventStartTime.Sub(start))
+	endDelta := absDuration(market.EventEndTime.Sub(end))
+	return startDelta <= 2*time.Minute && endDelta <= 2*time.Minute
+}
+
+func parseSynthTimestamp(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	ts, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return ts.UTC(), true
 }
 
 func latestMarketTimestamp(m models.Market) time.Time {

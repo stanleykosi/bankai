@@ -58,6 +58,12 @@ const (
 	orderBookFetchLockTTL = 4 * time.Second
 	orderBookLockWaitTTL  = 1200 * time.Millisecond
 	orderBookLockPoll     = 60 * time.Millisecond
+
+	activeMarketsCacheReadTimeout  = 1500 * time.Millisecond
+	activeMarketsCacheWriteTimeout = 2 * time.Second
+	activeMarketsCacheRetryTimeout = 10 * time.Second
+	activeMarketsMemoryTTL         = 3 * time.Minute
+	activeMarketsLogThrottle       = 30 * time.Second
 )
 
 var (
@@ -71,6 +77,11 @@ type MarketService struct {
 	GammaClient *gamma.Client
 	ClobClient  *clob.Client
 	streamHub   *PriceStreamHub
+
+	activeSnapshotMu   sync.RWMutex
+	activeSnapshot     []models.Market
+	activeSnapshotAt   time.Time
+	activeCacheLastLog time.Time
 }
 
 type StreamRequestPayload struct {
@@ -157,6 +168,115 @@ func NewMarketService(db *gorm.DB, redis *redis.Client, gammaClient *gamma.Clien
 
 func (s *MarketService) StreamHub() *PriceStreamHub {
 	return s.streamHub
+}
+
+func (s *MarketService) storeActiveSnapshot(markets []models.Market) {
+	if s == nil {
+		return
+	}
+	copyMarkets := make([]models.Market, len(markets))
+	copy(copyMarkets, markets)
+
+	s.activeSnapshotMu.Lock()
+	s.activeSnapshot = copyMarkets
+	s.activeSnapshotAt = time.Now().UTC()
+	s.activeSnapshotMu.Unlock()
+}
+
+func (s *MarketService) loadActiveSnapshot(now time.Time) ([]models.Market, bool) {
+	if s == nil {
+		return nil, false
+	}
+
+	s.activeSnapshotMu.RLock()
+	snapshotAt := s.activeSnapshotAt
+	snapshot := s.activeSnapshot
+	if len(snapshot) == 0 || snapshotAt.IsZero() || now.Sub(snapshotAt) > activeMarketsMemoryTTL {
+		s.activeSnapshotMu.RUnlock()
+		return nil, false
+	}
+	copyMarkets := make([]models.Market, len(snapshot))
+	copy(copyMarkets, snapshot)
+	s.activeSnapshotMu.RUnlock()
+
+	return filterActiveMarkets(copyMarkets, now), true
+}
+
+func (s *MarketService) logActiveCacheError(prefix string, err error) {
+	if s == nil || err == nil {
+		return
+	}
+
+	now := time.Now().UTC()
+	s.activeSnapshotMu.Lock()
+	if !s.activeCacheLastLog.IsZero() && now.Sub(s.activeCacheLastLog) < activeMarketsLogThrottle {
+		s.activeSnapshotMu.Unlock()
+		return
+	}
+	s.activeCacheLastLog = now
+	s.activeSnapshotMu.Unlock()
+
+	log.Printf("%s: %v", prefix, err)
+}
+
+func withCacheTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		return context.WithTimeout(context.Background(), d)
+	}
+	return context.WithTimeout(ctx, d)
+}
+
+func (s *MarketService) activeSnapshotTimestamp() time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+
+	s.activeSnapshotMu.RLock()
+	snapshotAt := s.activeSnapshotAt
+	s.activeSnapshotMu.RUnlock()
+	return snapshotAt
+}
+
+func (s *MarketService) shouldRetryActiveMarketsCacheWrite(expected time.Time) bool {
+	if s == nil {
+		return false
+	}
+	if expected.IsZero() {
+		return false
+	}
+
+	s.activeSnapshotMu.RLock()
+	current := s.activeSnapshotAt
+	s.activeSnapshotMu.RUnlock()
+	return !current.IsZero() && !current.After(expected)
+}
+
+func (s *MarketService) setActiveMarketsCache(ctx context.Context, data []byte) {
+	if s == nil || s.Redis == nil || len(data) == 0 {
+		return
+	}
+
+	expectedSnapshotAt := s.activeSnapshotTimestamp()
+	cacheCtx, cancel := withCacheTimeout(ctx, activeMarketsCacheWriteTimeout)
+	err := s.Redis.Set(cacheCtx, CacheKeyActiveMarkets, data, CacheTTL).Err()
+	cancel()
+	if err == nil {
+		return
+	}
+
+	go func(payload []byte, expected time.Time) {
+		if !s.shouldRetryActiveMarketsCacheWrite(expected) {
+			return
+		}
+		retryCtx, retryCancel := context.WithTimeout(context.Background(), activeMarketsCacheRetryTimeout)
+		defer retryCancel()
+		if !s.shouldRetryActiveMarketsCacheWrite(expected) {
+			return
+		}
+		if retryErr := s.Redis.Set(retryCtx, CacheKeyActiveMarkets, payload, CacheTTL).Err(); retryErr != nil {
+			s.logActiveCacheError("Failed to set active markets cache", retryErr)
+		}
+	}(append([]byte(nil), data...), expectedSnapshotAt)
 }
 
 // GetPriceHistory proxies history requests to the Polymarket CLOB API and caches the result in Redis.
@@ -350,9 +470,8 @@ func (s *MarketService) syncActiveMarketsCache(ctx context.Context) error {
 	if err != nil {
 		log.Printf("Failed to marshal markets for cache: %v", err)
 	} else {
-		if err := s.Redis.Set(ctx, CacheKeyActiveMarkets, data, CacheTTL).Err(); err != nil {
-			log.Printf("Failed to set active markets cache: %v", err)
-		}
+		s.storeActiveSnapshot(allMarkets)
+		s.setActiveMarketsCache(ctx, data)
 		s.cacheDerivedSnapshots(ctx, allMarkets)
 	}
 
@@ -362,16 +481,25 @@ func (s *MarketService) syncActiveMarketsCache(ctx context.Context) error {
 const activeWhereClause = "active = ? AND closed = ? AND accepting_orders = ?"
 
 func (s *MarketService) loadActiveMarketsFromCache(ctx context.Context) ([]models.Market, error) {
-	val, err := s.Redis.Get(ctx, CacheKeyActiveMarkets).Result()
+	cacheCtx, cancel := withCacheTimeout(ctx, activeMarketsCacheReadTimeout)
+	val, err := s.Redis.Get(cacheCtx, CacheKeyActiveMarkets).Result()
+	cancel()
 	if err != nil {
+		if snapshot, ok := s.loadActiveSnapshot(time.Now().UTC()); ok {
+			return snapshot, nil
+		}
 		return nil, err
 	}
 
 	var markets []models.Market
 	if err := json.Unmarshal([]byte(val), &markets); err != nil {
+		if snapshot, ok := s.loadActiveSnapshot(time.Now().UTC()); ok {
+			return snapshot, nil
+		}
 		return nil, err
 	}
 
+	s.storeActiveSnapshot(markets)
 	return filterActiveMarkets(markets, time.Now().UTC()), nil
 }
 
@@ -379,7 +507,7 @@ func (s *MarketService) loadAllActiveMarkets(ctx context.Context) ([]models.Mark
 	if markets, err := s.loadActiveMarketsFromCache(ctx); err == nil {
 		return markets, nil
 	} else if !errors.Is(err, redis.Nil) {
-		log.Printf("Active markets cache unavailable: %v", err)
+		s.logActiveCacheError("Active markets cache unavailable", err)
 	} else if s.GammaClient != nil {
 		if err := s.syncActiveMarketsCache(ctx); err == nil {
 			if markets, err := s.loadActiveMarketsFromCache(ctx); err == nil {
@@ -401,9 +529,10 @@ func (s *MarketService) loadAllActiveMarkets(ctx context.Context) ([]models.Mark
 	}
 
 	markets = filterActiveMarkets(markets, now)
+	s.storeActiveSnapshot(markets)
 
 	if data, err := json.Marshal(markets); err == nil {
-		_ = s.Redis.Set(ctx, CacheKeyActiveMarkets, data, CacheTTL).Err()
+		s.setActiveMarketsCache(ctx, data)
 		s.cacheDerivedSnapshots(ctx, markets)
 	}
 

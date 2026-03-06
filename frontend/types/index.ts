@@ -509,6 +509,10 @@ export interface UpDownSignal {
   window_type: "5m" | "15m" | "1h" | "4h" | "unknown";
   resolution_source_type: "chainlink" | "binance" | "unknown";
   timestamp: string;
+  reference_start_price?: number;
+  reference_current_price?: number;
+  reference_end_price?: number;
+  reference_updated_at?: string;
   p_market_up?: number;
   p_synth_up?: number;
   p_model_up?: number;

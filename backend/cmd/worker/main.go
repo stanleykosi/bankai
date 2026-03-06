@@ -84,6 +84,8 @@ func main() {
 	msgHandler.SetCacheTTLs(10*time.Minute, 0)
 	wsClient := rtds.NewClient(cfg, msgHandler)
 	var activityClient *rtds.ActivityClient
+	chainlinkHandler := rtds.NewChainlinkHandler(redisClient)
+	chainlinkClient := rtds.NewChainlinkClient(chainlinkHandler)
 
 	// 4. Context with Cancellation
 	ctx, cancel := context.WithCancel(context.Background())
@@ -108,6 +110,11 @@ func main() {
 			}
 		}()
 	}
+	go func() {
+		if err := chainlinkClient.Connect(ctx); err != nil {
+			logger.Error("❌ Chainlink RTDS Client failed: %v", err)
+		}
+	}()
 
 	go watchStreamRequests(ctx, marketService, wsClient, cacheAllowlist)
 	go alphaHubDailyLoop(ctx, alphaHubService, cfg.Services.AlphaSnapshotHour)
@@ -153,6 +160,9 @@ func main() {
 		if err := activityClient.Close(); err != nil {
 			logger.Error("Error closing RTDS Activity WebSocket: %v", err)
 		}
+	}
+	if err := chainlinkClient.Close(); err != nil {
+		logger.Error("Error closing Chainlink RTDS WebSocket: %v", err)
 	}
 
 	time.Sleep(1 * time.Second) // Give connections time to close
