@@ -35,7 +35,7 @@ func (h *PriceStreamHub) run() {
 
 	for {
 		pubsub := h.redis.Subscribe(ctx, h.channelName)
-		ch := pubsub.Channel(redis.WithChannelSize(16384))
+		ch := pubsub.Channel(redis.WithChannelSize(1024))
 
 		for msg := range ch {
 			h.broadcast([]byte(msg.Payload))
@@ -71,7 +71,7 @@ func (h *PriceStreamHub) broadcast(payload []byte) {
 
 // Subscribe registers a new listener and returns a channel plus cleanup function.
 func (h *PriceStreamHub) Subscribe() (<-chan []byte, func()) {
-	ch := make(chan []byte, 512)
+	ch := make(chan []byte, 128)
 
 	h.mu.Lock()
 	h.subscribers[ch] = struct{}{}

@@ -61,9 +61,9 @@ const (
 
 	activeMarketsCacheReadTimeout  = 1500 * time.Millisecond
 	activeMarketsCacheWriteTimeout = 2 * time.Second
-	activeMarketsCacheRetryTimeout = 10 * time.Second
 	activeMarketsMemoryTTL         = 3 * time.Minute
 	activeMarketsLogThrottle       = 30 * time.Second
+	activeMarketsSnapshotCap       = 800
 
 	realtimePricePipelineTimeout    = 200 * time.Millisecond
 	realtimePriceFallbackTimeout    = 400 * time.Millisecond
@@ -255,57 +255,24 @@ func (s *MarketService) logRealtimePriceError(key, format string, args ...interf
 	logger.Warn(format, args...)
 }
 
-func (s *MarketService) activeSnapshotTimestamp() time.Time {
-	if s == nil {
-		return time.Time{}
-	}
-
-	s.activeSnapshotMu.RLock()
-	snapshotAt := s.activeSnapshotAt
-	s.activeSnapshotMu.RUnlock()
-	return snapshotAt
-}
-
-func (s *MarketService) shouldRetryActiveMarketsCacheWrite(expected time.Time) bool {
-	if s == nil {
-		return false
-	}
-	if expected.IsZero() {
-		return false
-	}
-
-	s.activeSnapshotMu.RLock()
-	current := s.activeSnapshotAt
-	s.activeSnapshotMu.RUnlock()
-	return !current.IsZero() && !current.After(expected)
-}
-
 func (s *MarketService) setActiveMarketsCache(ctx context.Context, data []byte) {
 	if s == nil || s.Redis == nil || len(data) == 0 {
 		return
 	}
 
-	expectedSnapshotAt := s.activeSnapshotTimestamp()
 	cacheCtx, cancel := withCacheTimeout(ctx, activeMarketsCacheWriteTimeout)
 	err := s.Redis.Set(cacheCtx, CacheKeyActiveMarkets, data, CacheTTL).Err()
 	cancel()
-	if err == nil {
-		return
+	if err != nil {
+		s.logActiveCacheError("Failed to set active markets cache", err)
 	}
+}
 
-	go func(payload []byte, expected time.Time) {
-		if !s.shouldRetryActiveMarketsCacheWrite(expected) {
-			return
-		}
-		retryCtx, retryCancel := context.WithTimeout(context.Background(), activeMarketsCacheRetryTimeout)
-		defer retryCancel()
-		if !s.shouldRetryActiveMarketsCacheWrite(expected) {
-			return
-		}
-		if retryErr := s.Redis.Set(retryCtx, CacheKeyActiveMarkets, payload, CacheTTL).Err(); retryErr != nil {
-			s.logActiveCacheError("Failed to set active markets cache", retryErr)
-		}
-	}(append([]byte(nil), data...), expectedSnapshotAt)
+func trimActiveMarketSnapshot(markets []models.Market) []models.Market {
+	if len(markets) <= activeMarketsSnapshotCap {
+		return markets
+	}
+	return selectTopMarkets(markets, activeMarketsSnapshotCap)
 }
 
 // GetPriceHistory proxies history requests to the Polymarket CLOB API and caches the result in Redis.
@@ -494,6 +461,7 @@ func (s *MarketService) syncActiveMarketsCache(ctx context.Context) error {
 	for _, market := range dedup {
 		allMarkets = append(allMarkets, market)
 	}
+	allMarkets = trimActiveMarketSnapshot(allMarkets)
 
 	data, err := json.Marshal(allMarkets)
 	if err != nil {
@@ -537,15 +505,11 @@ func (s *MarketService) loadAllActiveMarkets(ctx context.Context) ([]models.Mark
 		return markets, nil
 	} else if !errors.Is(err, redis.Nil) {
 		s.logActiveCacheError("Active markets cache unavailable", err)
-	} else if s.GammaClient != nil {
-		if err := s.syncActiveMarketsCache(ctx); err == nil {
-			if markets, err := s.loadActiveMarketsFromCache(ctx); err == nil {
-				return markets, nil
-			}
-		}
 	}
 
 	// Fall back to DB if cache is missing or unavailable.
+	// Do not trigger a full Gamma sync from API read paths; that is worker-side work
+	// and can exceed memory limits on small API pods.
 
 	now := time.Now().UTC()
 
@@ -553,11 +517,16 @@ func (s *MarketService) loadAllActiveMarkets(ctx context.Context) ([]models.Mark
 	if err := s.DB.WithContext(ctx).
 		Where(activeWhereClause, true, false, true).
 		Where("end_date IS NULL OR end_date > ?", now).
-		Order("created_at DESC").Find(&markets).Error; err != nil {
+		Order("liquidity DESC").
+		Order("volume_24h DESC").
+		Order("created_at DESC").
+		Limit(activeMarketsSnapshotCap).
+		Find(&markets).Error; err != nil {
 		return nil, err
 	}
 
 	markets = filterActiveMarkets(markets, now)
+	markets = trimActiveMarketSnapshot(markets)
 	s.storeActiveSnapshot(markets)
 
 	if data, err := json.Marshal(markets); err == nil {
@@ -570,11 +539,6 @@ func (s *MarketService) loadAllActiveMarkets(ctx context.Context) ([]models.Mark
 
 func (s *MarketService) getCachedActiveMarket(ctx context.Context, match func(models.Market) bool) *models.Market {
 	markets, err := s.loadActiveMarketsFromCache(ctx)
-	if errors.Is(err, redis.Nil) && s.GammaClient != nil {
-		if syncErr := s.syncActiveMarketsCache(ctx); syncErr == nil {
-			markets, err = s.loadActiveMarketsFromCache(ctx)
-		}
-	}
 	if err != nil {
 		return nil
 	}
@@ -792,15 +756,6 @@ func (s *MarketService) GetMarketsByConditionIDs(ctx context.Context, conditionI
 
 	// Load all active markets from Redis cache
 	cachedMarkets, cacheErr := s.loadActiveMarketsFromCache(ctx)
-	if cacheErr != nil {
-		// If cache unavailable, try to sync it
-		if s.GammaClient != nil {
-			if syncErr := s.syncActiveMarketsCache(ctx); syncErr == nil {
-				cachedMarkets, cacheErr = s.loadActiveMarketsFromCache(ctx)
-			}
-		}
-	}
-
 	if cacheErr != nil || len(cachedMarkets) == 0 {
 		return result, nil // Return empty if cache unavailable
 	}
@@ -842,8 +797,9 @@ func (s *MarketService) GetMarketsByConditionIDs(ctx context.Context, conditionI
 	return result, nil
 }
 
-// GetMarketsByConditionIDsWithGammaFallback first tries the active cache, then triggers a Gamma sync for missing IDs.
-// This avoids DB dependence when the active cache excludes recently resolved/filtered markets.
+// GetMarketsByConditionIDsWithGammaFallback first tries the active cache, then
+// falls back to the database for missing IDs. Do not trigger a full Gamma sync
+// from API read paths.
 func (s *MarketService) GetMarketsByConditionIDsWithGammaFallback(ctx context.Context, conditionIDs []string) (map[string]*models.Market, error) {
 	result, err := s.GetMarketsByConditionIDs(ctx, conditionIDs)
 	if err != nil {
@@ -861,18 +817,22 @@ func (s *MarketService) GetMarketsByConditionIDsWithGammaFallback(ctx context.Co
 		}
 	}
 
-	if len(missing) == 0 || s.GammaClient == nil {
+	if len(missing) == 0 {
 		return result, nil
 	}
 
-	// Sync active markets from Gamma and refresh cache
-	if err := s.syncActiveMarketsCache(ctx); err != nil {
+	var dbMarkets []models.Market
+	if err := s.DB.WithContext(ctx).Where("condition_id IN ?", missing).Find(&dbMarkets).Error; err != nil {
 		return result, err
 	}
-	if refreshed, err := s.GetMarketsByConditionIDs(ctx, missing); err == nil {
-		for k, v := range refreshed {
-			result[k] = v
-		}
+	if len(dbMarkets) == 0 {
+		return result, nil
+	}
+
+	s.attachRealtimePrices(ctx, dbMarkets)
+	for i := range dbMarkets {
+		market := dbMarkets[i]
+		result[market.ConditionID] = &market
 	}
 
 	return result, nil

@@ -47,20 +47,22 @@ func TestLoadActiveMarketsFromCacheFallsBackToInMemorySnapshot(t *testing.T) {
 	}
 }
 
-func TestShouldRetryActiveMarketsCacheWriteSkipsOlderSnapshot(t *testing.T) {
+func TestTrimActiveMarketSnapshotCapsLargeSnapshots(t *testing.T) {
 	t.Parallel()
 
-	now := time.Now().UTC()
-	svc := &MarketService{}
-
-	svc.activeSnapshotMu.Lock()
-	svc.activeSnapshotAt = now.Add(2 * time.Second)
-	svc.activeSnapshotMu.Unlock()
-
-	if svc.shouldRetryActiveMarketsCacheWrite(now) {
-		t.Fatalf("expected retry guard to reject an older snapshot write")
+	markets := make([]models.Market, 0, activeMarketsSnapshotCap+25)
+	for i := 0; i < activeMarketsSnapshotCap+25; i++ {
+		markets = append(markets, models.Market{
+			ConditionID:     "cond-" + time.Unix(int64(i), 0).UTC().Format("150405"),
+			Active:          true,
+			AcceptingOrders: true,
+			Liquidity:       float64(activeMarketsSnapshotCap + 25 - i),
+			Volume24h:       float64(i),
+		})
 	}
-	if !svc.shouldRetryActiveMarketsCacheWrite(now.Add(2 * time.Second)) {
-		t.Fatalf("expected retry guard to allow the current snapshot write")
+
+	trimmed := trimActiveMarketSnapshot(markets)
+	if len(trimmed) != activeMarketsSnapshotCap {
+		t.Fatalf("expected %d markets after trim, got %d", activeMarketsSnapshotCap, len(trimmed))
 	}
 }

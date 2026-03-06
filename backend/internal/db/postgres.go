@@ -51,6 +51,6 @@ func ConnectPostgres(cfg *config.Config) (*gorm.DB, error) {
 	sqlDB.SetMaxOpenConns(10)
 	sqlDB.SetConnMaxLifetime(30 * time.Minute)
 
-	logger.Info("✅ Connected to PostgreSQL")
+	logger.Info("connected to postgresql")
 	return db, nil
 }

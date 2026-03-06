@@ -56,18 +56,23 @@ func main() {
 
 	// 3. Initialize Fiber App
 	app := fiber.New(fiber.Config{
-		AppName:       "Bankai Trading Terminal",
-		StrictRouting: true,
-		CaseSensitive: true,
-		ReadTimeout:   15 * time.Second,
-		WriteTimeout:  30 * time.Second,
-		IdleTimeout:   60 * time.Second,
-		BodyLimit:     2 * 1024 * 1024,
+		AppName:               "Bankai Trading Terminal",
+		StrictRouting:         true,
+		CaseSensitive:         true,
+		ReadTimeout:           15 * time.Second,
+		WriteTimeout:          30 * time.Second,
+		IdleTimeout:           60 * time.Second,
+		BodyLimit:             2 * 1024 * 1024,
+		DisableStartupMessage: true,
 	})
 
 	// 4. Global Middleware
-	app.Use(recover.New())     // Panic recovery
-	app.Use(fiberLogger.New()) // Request logging
+	app.Use(recover.New()) // Panic recovery
+	app.Use(fiberLogger.New(fiberLogger.Config{
+		Next: func(c *fiber.Ctx) bool {
+			return c.Method() == fiber.MethodOptions || strings.HasSuffix(c.Path(), "/stream")
+		},
+	}))
 
 	// CORS Configuration
 	// Set FRONTEND_URL in production to restrict to specific origins (comma-separated).
@@ -103,7 +108,7 @@ func main() {
 	api.SetupRoutes(app, pgDB, redisClient, cfg)
 
 	// 6. Start Server
-	logger.Info("🚀 Starting Bankai Backend on port %s", cfg.Server.Port)
+	logger.Info("starting bankai backend on port %s", cfg.Server.Port)
 	if err := app.Listen(":" + cfg.Server.Port); err != nil {
 		logger.Fatal("Failed to start server: %v", err)
 	}
