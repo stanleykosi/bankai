@@ -143,10 +143,16 @@ export default function UpDownPage() {
     staleTime: 15_000,
   });
 
+  const hasSelectedSlug =
+    typeof selectedSlug === "string" &&
+    selectedSlug.trim() !== "" &&
+    selectedSlug !== "null" &&
+    selectedSlug !== "undefined";
+
   const signalQuery = useQuery({
     queryKey: ["updown-signal", selectedSlug],
     queryFn: () => fetchUpDownSignal(selectedSlug as string),
-    enabled: Boolean(selectedSlug),
+    enabled: hasSelectedSlug,
     refetchInterval: 5_000,
     staleTime: 2_000,
   });

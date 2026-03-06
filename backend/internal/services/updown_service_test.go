@@ -55,9 +55,9 @@ func TestClassifyUpDownCryptoMarketBinance(t *testing.T) {
 	start := now.Add(5 * time.Minute)
 	end := start.Add(1 * time.Hour)
 	m := models.Market{
-		Slug:            "eth-up-or-down-hourly",
+		Slug:            "eth-updown-1h-1772816400",
 		ConditionID:     "0xdef",
-		Title:           "ETH up/down this hour",
+		Title:           "Ethereum Up or Down - March 6, 12:00PM-1:00PM ET",
 		Outcomes:        `["Down","Up"]`,
 		ResolutionRules: "Resolution source: Binance 1h candle open and close.",
 		AcceptingOrders: true,
@@ -81,6 +81,114 @@ func TestClassifyUpDownCryptoMarketBinance(t *testing.T) {
 	}
 	if out.OutcomeIndexUp != 1 || out.OutcomeIndexDown != 0 {
 		t.Fatalf("unexpected up/down indexes: up=%d down=%d", out.OutcomeIndexUp, out.OutcomeIndexDown)
+	}
+}
+
+func TestClassifyUpDownCryptoMarketUpDownUnknownSourceCanonicalSlug(t *testing.T) {
+	now := time.Date(2026, 3, 4, 10, 0, 0, 0, time.UTC)
+	start := now.Add(2 * time.Minute)
+	end := start.Add(1 * time.Hour)
+	m := models.Market{
+		Slug:            "btc-updown-1h-1772816400",
+		ConditionID:     "0xupdownunknownsource",
+		Title:           "Bitcoin Up or Down - March 6, 12:00PM-1:00PM ET",
+		Description:     "Resolves to Up if end price is greater than or equal to start price.",
+		Outcomes:        `["Up","Down"]`,
+		ResolutionRules: "Primary resolution source is market consensus reporting.",
+		AcceptingOrders: true,
+		Closed:          false,
+		EventStartTime:  &start,
+		EndDate:         &end,
+		TokenIDYes:      "yes-token",
+		TokenIDNo:       "no-token",
+	}
+
+	out, ok := classifyUpDownCryptoMarket(m, now)
+	if !ok {
+		t.Fatalf("expected canonical up/down market with unknown source to be classified")
+	}
+	if out.WindowType != Window1h {
+		t.Fatalf("expected 1h window, got %s", out.WindowType)
+	}
+	if out.ResolutionSourceType != ResolutionSourceUnknown {
+		t.Fatalf("expected unknown resolution source fallback, got %s", out.ResolutionSourceType)
+	}
+}
+
+func TestClassifyUpDownCryptoMarketRejectsNonCanonicalUpDownSlug(t *testing.T) {
+	now := time.Date(2026, 3, 4, 10, 0, 0, 0, time.UTC)
+	start := now.Add(2 * time.Minute)
+	end := start.Add(15 * time.Minute)
+	m := models.Market{
+		Slug:            "btc-open-interest-up-or-down-15m-123",
+		ConditionID:     "0xupdownnoncanonical",
+		Title:           "BTC Open Interest Up or Down in 15 minutes?",
+		Description:     "Resolves to Up if open interest is higher at end.",
+		Outcomes:        `["Up","Down"]`,
+		ResolutionRules: "Primary resolution source is market consensus reporting.",
+		AcceptingOrders: true,
+		Closed:          false,
+		EventStartTime:  &start,
+		EndDate:         &end,
+		TokenIDYes:      "yes-token",
+		TokenIDNo:       "no-token",
+	}
+
+	if _, ok := classifyUpDownCryptoMarket(m, now); ok {
+		t.Fatalf("expected non-canonical up/down market slug to be rejected")
+	}
+}
+
+func TestClassifyUpDownCryptoMarketRejectsYesNoMarkets(t *testing.T) {
+	now := time.Date(2026, 3, 4, 10, 0, 0, 0, time.UTC)
+	start := now.Add(2 * time.Minute)
+	end := start.Add(15 * time.Minute)
+	m := models.Market{
+		Slug:            "btc-updown-15m-1772442000",
+		ConditionID:     "0xyesno",
+		Title:           "Bitcoin Up or Down - March 2, 4:00AM-4:15AM ET",
+		Description:     "This market resolves Yes if BTC closes above the start price and No otherwise.",
+		Outcomes:        `["Yes","No"]`,
+		ResolutionRules: "Primary resolution source is market consensus reporting.",
+		AcceptingOrders: true,
+		Closed:          false,
+		EventStartTime:  &start,
+		EndDate:         &end,
+		TokenIDYes:      "yes-token",
+		TokenIDNo:       "no-token",
+	}
+
+	if _, ok := classifyUpDownCryptoMarket(m, now); ok {
+		t.Fatalf("expected yes/no market to be rejected")
+	}
+}
+
+func TestClassifyUpDownCryptoMarketAcceptsLegacyUpOrDownSlug(t *testing.T) {
+	now := time.Date(2026, 3, 4, 10, 0, 0, 0, time.UTC)
+	start := now.Add(2 * time.Minute)
+	end := start.Add(15 * time.Minute)
+	m := models.Market{
+		Slug:            "bitcoin-up-or-down-january-10-1pm-et",
+		ConditionID:     "0xlegacyslug",
+		Title:           "Bitcoin Up or Down - March 2, 4:00AM-4:15AM ET",
+		Description:     "This market will resolve to Up if the Bitcoin price at the end of the time range is greater than or equal to the price at the beginning.",
+		Outcomes:        `["Up","Down"]`,
+		ResolutionRules: "Resolution source is Chainlink BTC/USD.",
+		AcceptingOrders: true,
+		Closed:          false,
+		EventStartTime:  &start,
+		EndDate:         &end,
+	}
+
+	out, ok := classifyUpDownCryptoMarket(m, now)
+	if !ok {
+		t.Fatalf("expected legacy up-or-down slug to be classified")
+	}
+	if out.Asset != "BTC" {
+		t.Fatalf("expected BTC asset, got %s", out.Asset)
+	}
+	if out.WindowType != Window15m {
+		t.Fatalf("expected 15m window, got %s", out.WindowType)
 	}
 }
 
@@ -320,6 +428,24 @@ func TestSynthUpDownCacheKeyUsesRequestDimensions(t *testing.T) {
 	}
 	if key1 == key3 {
 		t.Fatalf("expected different cache keys for different request dimensions: %s vs %s", key1, key3)
+	}
+}
+
+func TestTokenIDsByOutcomeUsesStoredUpDownIndexes(t *testing.T) {
+	market := UpDownMarket{
+		OutcomeIndexUp:   1,
+		OutcomeIndexDown: 0,
+		Market: models.Market{
+			TokenIDYes: "yes-token",
+			TokenIDNo:  "no-token",
+		},
+	}
+	upToken, downToken, err := tokenIDsByOutcome(market)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if upToken != "no-token" || downToken != "yes-token" {
+		t.Fatalf("expected up/down tokens to respect stored indexes, got up=%s down=%s", upToken, downToken)
 	}
 }
 

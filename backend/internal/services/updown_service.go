@@ -1125,12 +1125,11 @@ func classifyUpDownCryptoMarket(m models.Market, now time.Time) (UpDownMarket, b
 	}
 
 	source := detectResolutionSource(m.ResolutionRules)
-	if source == ResolutionSourceUnknown {
-		return UpDownMarket{}, false
-	}
-
 	window := inferWindowType(*m.EventStartTime, *m.EndDate)
 	if window == WindowUnknown {
+		return UpDownMarket{}, false
+	}
+	if !isCanonicalUpDownSeriesMarket(m, asset, window) {
 		return UpDownMarket{}, false
 	}
 
@@ -1196,6 +1195,85 @@ func classifyUpDownOutcomeIndexes(outcomes []string) (int, int, bool) {
 		return 0, 0, false
 	}
 	return upIdx, downIdx, true
+}
+
+func containsAnyPhrase(haystack string, phrases []string) bool {
+	for _, phrase := range phrases {
+		if strings.Contains(haystack, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCanonicalUpDownSeriesMarket(m models.Market, asset string, window UpDownWindowType) bool {
+	slug := strings.ToLower(strings.TrimSpace(m.Slug))
+	title := strings.ToLower(strings.TrimSpace(m.Title))
+	if slug == "" || title == "" {
+		return false
+	}
+	if !containsAnyPhrase(title, []string{"up or down", "up/down"}) {
+		return false
+	}
+
+	for _, token := range assetSlugCandidates(asset) {
+		if token == "" {
+			continue
+		}
+		if slugHasCanonicalUpDownWindow(slug, token, window) || slugHasLegacyUpOrDownPrefix(slug, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func slugHasCanonicalUpDownWindow(slug, assetToken string, window UpDownWindowType) bool {
+	windowToken := ""
+	switch window {
+	case Window5m:
+		windowToken = "5m"
+	case Window15m:
+		windowToken = "15m"
+	case Window1h:
+		windowToken = "1h"
+	case Window4h:
+		windowToken = "4h"
+	default:
+		return false
+	}
+	prefix := assetToken + "-updown-" + windowToken + "-"
+	if !strings.HasPrefix(slug, prefix) {
+		return false
+	}
+	suffix := strings.TrimPrefix(slug, prefix)
+	if suffix == "" {
+		return false
+	}
+	for _, r := range suffix {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func slugHasLegacyUpOrDownPrefix(slug, assetToken string) bool {
+	return strings.HasPrefix(slug, assetToken+"-up-or-down-")
+}
+
+func assetSlugCandidates(asset string) []string {
+	switch strings.ToUpper(strings.TrimSpace(asset)) {
+	case "BTC":
+		return []string{"btc", "bitcoin"}
+	case "ETH":
+		return []string{"eth", "ethereum"}
+	case "SOL":
+		return []string{"sol", "solana"}
+	case "XRP":
+		return []string{"xrp", "ripple"}
+	default:
+		return []string{strings.ToLower(strings.TrimSpace(asset))}
+	}
 }
 
 func detectCryptoAsset(m models.Market) string {
@@ -1509,24 +1587,24 @@ func (s *UpDownService) buildSignal(
 }
 
 func tokenIDsByOutcome(market UpDownMarket) (string, string, error) {
-	outcomes, ok := parseOutcomesArray(market.Market.Outcomes)
-	if !ok || len(outcomes) < 2 {
-		return "", "", errors.New("market outcomes unavailable")
-	}
-	upIdx, downIdx, ok := classifyUpDownOutcomeIndexes(outcomes)
-	if !ok {
-		return "", "", errors.New("market outcomes are not up/down")
-	}
-	var tokens []string
-	if err := json.Unmarshal([]byte(market.Market.OutcomePrices), &tokens); err != nil {
-		// outcome prices are not token ids; ignore.
-		_ = err
-	}
-
 	yesToken := strings.TrimSpace(market.Market.TokenIDYes)
 	noToken := strings.TrimSpace(market.Market.TokenIDNo)
 	if yesToken == "" || noToken == "" {
 		return "", "", errors.New("market token ids missing")
+	}
+	upIdx := market.OutcomeIndexUp
+	downIdx := market.OutcomeIndexDown
+	if upIdx < 0 || downIdx < 0 || upIdx == downIdx {
+		outcomes, ok := parseOutcomesArray(market.Market.Outcomes)
+		if !ok || len(outcomes) < 2 {
+			return "", "", errors.New("market outcomes unavailable")
+		}
+		resolvedUp, resolvedDown, ok := classifyUpDownOutcomeIndexes(outcomes)
+		if !ok {
+			return "", "", errors.New("market outcomes are not up/down")
+		}
+		upIdx = resolvedUp
+		downIdx = resolvedDown
 	}
 	if upIdx == 0 && downIdx == 1 {
 		return yesToken, noToken, nil
