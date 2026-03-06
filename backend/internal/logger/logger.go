@@ -38,6 +38,13 @@ func Info(format string, v ...interface{}) {
 	InfoLogger.Println(message)
 }
 
+// Warn logs a warning message to stdout so operational degradation is visible
+// without being treated as an application error by the platform.
+func Warn(format string, v ...interface{}) {
+	message := fmt.Sprintf(format, v...)
+	InfoLogger.Println(message)
+}
+
 // Error logs an error message to stderr
 func Error(format string, v ...interface{}) {
 	message := fmt.Sprintf(format, v...)
@@ -54,4 +61,3 @@ func Fatal(format string, v ...interface{}) {
 func New(w io.Writer) *log.Logger {
 	return log.New(w, "", 0)
 }
-

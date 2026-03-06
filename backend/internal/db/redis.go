@@ -61,6 +61,6 @@ func ConnectRedis(cfg *config.Config) (*redis.Client, error) {
 		return nil, err
 	}
 
-	logger.Info("✅ Connected to Redis")
+	logger.Info("connected to redis")
 	return client, nil
 }

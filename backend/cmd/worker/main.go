@@ -41,7 +41,7 @@ import (
 const enableDBWrites = false
 
 func main() {
-	logger.Info("🔥 Starting Bankai Worker...")
+	logger.Info("starting bankai worker")
 
 	// 1. Load Config
 	cfg, err := config.Load()
@@ -96,7 +96,7 @@ func main() {
 	// 5. Connect WebSocket
 	go func() {
 		if err := wsClient.Connect(ctx); err != nil {
-			logger.Error("❌ WebSocket Client failed: %v", err)
+			logger.Error("market websocket client failed: %v", err)
 			// In prod, might want to restart the pod, but here we just log
 		}
 	}()
@@ -106,13 +106,13 @@ func main() {
 		activityClient = rtds.NewActivityClient(cfg, activityHandler)
 		go func() {
 			if err := activityClient.Connect(ctx); err != nil {
-				logger.Error("❌ RTDS Activity Client failed: %v", err)
+				logger.Error("activity RTDS client failed: %v", err)
 			}
 		}()
 	}
 	go func() {
 		if err := chainlinkClient.Connect(ctx); err != nil {
-			logger.Error("❌ Chainlink RTDS Client failed: %v", err)
+			logger.Error("chainlink RTDS client failed: %v", err)
 		}
 	}()
 
@@ -172,7 +172,7 @@ func main() {
 // syncSubscriptions fetches active markets and subscribes to their tokens.
 // Optionally persists markets on the first run to avoid empty DB reads after restarts.
 func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds.Client, cfg *config.Config, persist bool) {
-	logger.Info("🔄 Syncing market subscriptions...")
+	logger.Info("syncing market subscriptions")
 
 	// 1. Ensure our local DB has fresh data from Gamma
 	// Sync active markets (cache only; no DB writes)

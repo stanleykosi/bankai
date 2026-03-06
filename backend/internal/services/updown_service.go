@@ -29,6 +29,7 @@ const (
 	upDownCacheTTL        = 30 * time.Second
 	defaultRiskProfile    = "Balanced"
 	upDownEventDebounce   = 250 * time.Millisecond
+	upDownPersistTimeout  = 1500 * time.Millisecond
 )
 
 var (
@@ -2573,7 +2574,9 @@ func (s *UpDownService) persistSnapshot(ctx context.Context, market UpDownMarket
 		return
 	}
 	reasons, _ := json.Marshal(signal.ReasonCodes)
-	_ = s.db.WithContext(ctx).Exec(`
+	dbCtx, cancel := context.WithTimeout(context.Background(), upDownPersistTimeout)
+	defer cancel()
+	_ = s.db.WithContext(dbCtx).Exec(`
 		INSERT INTO updown_signal_snapshots (
 			slug, condition_id, asset, window_type, resolution_source_type,
 			p_market_up, p_synth_up, p_model_up, p_final_up,
@@ -2594,7 +2597,9 @@ func (s *UpDownService) persistRecommendation(ctx context.Context, rec UpDownRec
 	if err != nil {
 		return
 	}
-	_ = s.db.WithContext(ctx).Exec(`
+	dbCtx, cancel := context.WithTimeout(context.Background(), upDownPersistTimeout)
+	defer cancel()
+	_ = s.db.WithContext(dbCtx).Exec(`
 		INSERT INTO updown_recommendations (
 			recommendation_id, slug, condition_id, asset, window_type,
 			decision, recommended_side, expected_value, confidence,

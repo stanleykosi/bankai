@@ -19,7 +19,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -28,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"fmt"
 	"github.com/bankai-project/backend/internal/config"
 	"github.com/bankai-project/backend/internal/logger"
 )
@@ -560,7 +560,7 @@ func (c *Client) DeriveAPIKey(ctx context.Context, proof *ClobAuthProof) (*APIKe
 		return nil, err
 	}
 	creds.Address = proof.Address
-	fmt.Printf("Derived user API creds for %s (key prefix: %s...)\n", proof.Address, shortKey(creds.Key))
+	logger.Info("derived user API creds for %s (key prefix: %s...)", proof.Address, shortKey(creds.Key))
 	return creds, nil
 }
 

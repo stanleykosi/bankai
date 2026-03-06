@@ -5,12 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/bankai-project/backend/internal/config"
+	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/services"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
@@ -91,19 +91,19 @@ func (c *ActivityClient) connectWithRetry(ctx context.Context) error {
 		default:
 		}
 
-		log.Printf("Connecting to Polymarket RTDS: %s (Attempt %d)", c.url, i+1)
+		logger.Info("activity RTDS connecting: url=%s attempt=%d", c.url, i+1)
 		c.conn, _, err = websocket.DefaultDialer.Dial(c.url, nil)
 		if err == nil {
-			log.Println("✅ Connected to Polymarket RTDS")
+			logger.Info("activity RTDS connected")
 			if err := c.sendSubscribe(); err != nil {
-				log.Printf("RTDS subscribe failed: %v", err)
+				logger.Warn("activity RTDS subscribe failed: %v", err)
 			}
 			go c.readLoop(ctx)
 			go c.pingLoop(ctx)
 			return nil
 		}
 
-		log.Printf("Failed to connect to RTDS: %v. Retrying in %v...", err, backoff)
+		logger.Warn("activity RTDS connect failed: err=%v retry_in=%v", err, backoff)
 		time.Sleep(backoff)
 		backoff *= 2
 	}
@@ -166,7 +166,7 @@ func (c *ActivityClient) readLoop(ctx context.Context) {
 			if !c.reconnecting {
 				c.reconnecting = true
 				c.reconnectMu.Unlock()
-				log.Println("RTDS connection lost, reconnecting...")
+				logger.Warn("activity RTDS connection lost; reconnecting")
 				go func() {
 					defer func() {
 						c.reconnectMu.Lock()
@@ -174,7 +174,7 @@ func (c *ActivityClient) readLoop(ctx context.Context) {
 						c.reconnectMu.Unlock()
 					}()
 					if err := c.connectWithRetry(ctx); err != nil {
-						log.Printf("RTDS reconnection failed: %v", err)
+						logger.Error("activity RTDS reconnection failed: %v", err)
 					}
 				}()
 			} else {
@@ -207,14 +207,14 @@ func (c *ActivityClient) readLoop(ctx context.Context) {
 			_, message, err := conn.ReadMessage()
 			if err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					log.Printf("RTDS read error: %v", err)
+					logger.Warn("activity RTDS read error: %v", err)
 				}
 				return
 			}
 
 			go func(msg []byte) {
 				if err := c.handler.HandleMessage(ctx, msg); err != nil {
-					log.Printf("RTDS handler error: %v", err)
+					logger.Warn("activity RTDS handler error: %v", err)
 				}
 			}(message)
 		}
@@ -316,7 +316,7 @@ func (h *ActivityHandler) HandleMessage(ctx context.Context, msg []byte) error {
 		}
 		for _, raw := range batch {
 			if err := h.HandleMessage(ctx, raw); err != nil {
-				log.Printf("RTDS batch item failed: %v", err)
+				logger.Warn("activity RTDS batch item failed: %v", err)
 			}
 		}
 		return nil
@@ -458,7 +458,7 @@ func (h *ActivityHandler) publishWhale(ctx context.Context, event services.Whale
 	pipe.LTrim(ctx, services.WhaleRecentListKey, 0, int64(services.WhaleRecentListMax-1))
 	pipe.Expire(ctx, services.WhaleRecentListKey, services.WhaleRecentListTTL)
 	if _, err := pipe.Exec(ctx); err != nil {
-		log.Printf("Redis whale update error: %v", err)
+		logger.Warn("activity RTDS redis whale update error: %v", err)
 	}
 }
 

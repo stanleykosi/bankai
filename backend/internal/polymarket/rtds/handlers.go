@@ -23,11 +23,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/polymarket/clob"
 	"github.com/bankai-project/backend/internal/services"
 	"github.com/redis/go-redis/v9"
@@ -171,7 +171,7 @@ func (h *MessageHandler) HandleMessage(ctx context.Context, msg []byte) error {
 
 		for _, raw := range batch {
 			if err := h.HandleMessage(ctx, raw); err != nil {
-				log.Printf("RTDS batch item failed: %v", err)
+				logger.Warn("market RTDS batch item failed: %v", err)
 			}
 		}
 		return nil
@@ -223,7 +223,7 @@ func (h *MessageHandler) handlePriceChange(ctx context.Context, m *PriceChangeMe
 	// Score = number of updates (proxy for activity)
 	err := h.Redis.ZIncrBy(ctx, "market:velocity", 1, m.Market).Err()
 	if err != nil {
-		log.Printf("Redis error updating velocity: %v", err)
+		logger.Warn("market RTDS redis error updating velocity: %v", err)
 	}
 
 	// 2. Cache latest prices for immediate frontend retrieval
@@ -380,7 +380,7 @@ func (h *MessageHandler) publishPriceUpdates(ctx context.Context, m *PriceChange
 		}
 
 		if err := h.Redis.Publish(ctx, services.PriceUpdateChannel, data).Err(); err != nil {
-			log.Printf("Redis publish error: %v", err)
+			logger.Warn("market RTDS redis publish error: %v", err)
 		}
 	}
 }
@@ -401,7 +401,7 @@ func (h *MessageHandler) publishLastTradeUpdate(ctx context.Context, m *LastTrad
 	}
 
 	if err := h.Redis.Publish(ctx, services.PriceUpdateChannel, data).Err(); err != nil {
-		log.Printf("Redis publish error: %v", err)
+		logger.Warn("market RTDS redis publish error: %v", err)
 	}
 }
 
@@ -437,7 +437,7 @@ func (h *MessageHandler) publishWhaleUpdate(ctx context.Context, m *LastTradeMes
 	pipe.Expire(ctx, services.WhaleRecentListKey, services.WhaleRecentListTTL)
 
 	if _, err := pipe.Exec(ctx); err != nil {
-		log.Printf("Redis whale update error: %v", err)
+		logger.Warn("market RTDS redis whale update error: %v", err)
 	}
 }
 

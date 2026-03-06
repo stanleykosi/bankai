@@ -5,11 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/services"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
@@ -85,19 +85,19 @@ func (c *ChainlinkClient) connectWithRetry(ctx context.Context) error {
 		default:
 		}
 
-		log.Printf("Connecting to Polymarket Chainlink RTDS: %s (Attempt %d)", c.url, i+1)
+		logger.Info("chainlink RTDS connecting: url=%s attempt=%d", c.url, i+1)
 		c.conn, _, err = websocket.DefaultDialer.Dial(c.url, nil)
 		if err == nil {
-			log.Println("Connected to Polymarket Chainlink RTDS")
+			logger.Info("chainlink RTDS connected")
 			if err := c.sendSubscribe(); err != nil {
-				log.Printf("Chainlink RTDS subscribe failed: %v", err)
+				logger.Warn("chainlink RTDS subscribe failed: %v", err)
 			}
 			go c.readLoop(ctx)
 			go c.pingLoop(ctx)
 			return nil
 		}
 
-		log.Printf("Failed to connect to Chainlink RTDS: %v. Retrying in %v...", err, backoff)
+		logger.Warn("chainlink RTDS connect failed: err=%v retry_in=%v", err, backoff)
 		time.Sleep(backoff)
 		backoff *= 2
 	}
@@ -170,7 +170,7 @@ func (c *ChainlinkClient) readLoop(ctx context.Context) {
 			if !c.reconnecting {
 				c.reconnecting = true
 				c.reconnectMu.Unlock()
-				log.Println("Chainlink RTDS connection lost, reconnecting...")
+				logger.Warn("chainlink RTDS connection lost; reconnecting")
 				go func() {
 					defer func() {
 						c.reconnectMu.Lock()
@@ -178,7 +178,7 @@ func (c *ChainlinkClient) readLoop(ctx context.Context) {
 						c.reconnectMu.Unlock()
 					}()
 					if err := c.connectWithRetry(ctx); err != nil {
-						log.Printf("Chainlink RTDS reconnection failed: %v", err)
+						logger.Error("chainlink RTDS reconnection failed: %v", err)
 					}
 				}()
 			} else {
@@ -211,14 +211,14 @@ func (c *ChainlinkClient) readLoop(ctx context.Context) {
 			_, message, err := conn.ReadMessage()
 			if err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					log.Printf("Chainlink RTDS read error: %v", err)
+					logger.Warn("chainlink RTDS read error: %v", err)
 				}
 				return
 			}
 
 			go func(msg []byte) {
 				if err := c.handler.HandleMessage(ctx, msg); err != nil {
-					log.Printf("Chainlink RTDS handler error: %v", err)
+					logger.Warn("chainlink RTDS handler error: %v", err)
 				}
 			}(message)
 		}
@@ -277,7 +277,7 @@ func (h *ChainlinkHandler) HandleMessage(ctx context.Context, msg []byte) error 
 		}
 		for _, raw := range batch {
 			if err := h.HandleMessage(ctx, raw); err != nil {
-				log.Printf("Chainlink RTDS batch item failed: %v", err)
+				logger.Warn("chainlink RTDS batch item failed: %v", err)
 			}
 		}
 		return nil

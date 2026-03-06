@@ -19,12 +19,12 @@ package rtds
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/bankai-project/backend/internal/config"
+	"github.com/bankai-project/backend/internal/logger"
 	"github.com/gorilla/websocket"
 )
 
@@ -105,7 +105,7 @@ func (c *Client) startWorkers(ctx context.Context) {
 						return
 					case msg := <-c.messageQueue:
 						if err := c.handler.HandleMessage(ctx, msg); err != nil {
-							log.Printf("RTDS worker[%d] message handling failed: %v", workerID, err)
+							logger.Warn("market RTDS worker[%d] message handling failed: %v", workerID, err)
 						}
 					}
 				}
@@ -127,10 +127,10 @@ func (c *Client) connectWithRetry(ctx context.Context) error {
 		default:
 		}
 
-		log.Printf("Connecting to Polymarket WS: %s (Attempt %d)", c.url, i+1)
+		logger.Info("market RTDS connecting: url=%s attempt=%d", c.url, i+1)
 		c.conn, _, err = websocket.DefaultDialer.Dial(c.url, nil)
 		if err == nil {
-			log.Println("✅ Connected to Polymarket WS")
+			logger.Info("market RTDS connected")
 
 			// Resubscribe if we have existing subscriptions (reconnection scenario)
 			c.subMu.Lock()
@@ -144,7 +144,7 @@ func (c *Client) connectWithRetry(ctx context.Context) error {
 			return nil
 		}
 
-		log.Printf("Failed to connect: %v. Retrying in %v...", err, backoff)
+		logger.Warn("market RTDS connect failed: err=%v retry_in=%v", err, backoff)
 		time.Sleep(backoff)
 		backoff *= 2
 	}
@@ -249,7 +249,7 @@ func (c *Client) readLoop(ctx context.Context) {
 			if !c.reconnecting {
 				c.reconnecting = true
 				c.reconnectMu.Unlock()
-				log.Println("WS Connection lost, reconnecting...")
+				logger.Warn("market RTDS connection lost; reconnecting")
 				go func() {
 					defer func() {
 						c.reconnectMu.Lock()
@@ -257,7 +257,7 @@ func (c *Client) readLoop(ctx context.Context) {
 						c.reconnectMu.Unlock()
 					}()
 					if err := c.connectWithRetry(ctx); err != nil {
-						log.Printf("Reconnection failed: %v", err)
+						logger.Error("market RTDS reconnection failed: %v", err)
 					}
 				}()
 			} else {
@@ -291,7 +291,7 @@ func (c *Client) readLoop(ctx context.Context) {
 			_, message, err := conn.ReadMessage()
 			if err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					log.Printf("WS Read error: %v", err)
+					logger.Warn("market RTDS read error: %v", err)
 				}
 				return
 			}
@@ -301,7 +301,7 @@ func (c *Client) readLoop(ctx context.Context) {
 			select {
 			case c.messageQueue <- msgCopy:
 			default:
-				log.Printf("RTDS queue full (cap=%d), dropping message", cap(c.messageQueue))
+				logger.Warn("market RTDS queue full (cap=%d); dropping message", cap(c.messageQueue))
 			}
 		}
 	}

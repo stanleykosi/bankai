@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"log"
 
 	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/bankai-project/backend/internal/config"
 	"github.com/bankai-project/backend/internal/db"
+	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/models"
 	"github.com/bankai-project/backend/internal/polymarket/gamma"
 	"github.com/bankai-project/backend/internal/services"
@@ -14,21 +14,21 @@ import (
 )
 
 func main() {
-	log.Println("🚀 Starting manual market sync from Gamma...")
+	logger.Info("starting manual market sync from gamma")
 
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
+		logger.Fatal("failed to load config: %v", err)
 	}
 
 	pgDB, err := db.ConnectPostgres(cfg)
 	if err != nil {
-		log.Fatalf("failed to connect to postgres: %v", err)
+		logger.Fatal("failed to connect to postgres: %v", err)
 	}
 
 	mr, err := miniredis.Run()
 	if err != nil {
-		log.Fatalf("failed to start in-memory redis: %v", err)
+		logger.Fatal("failed to start in-memory redis: %v", err)
 	}
 	defer mr.Close()
 
@@ -39,19 +39,19 @@ func main() {
 	ctx := context.Background()
 
 	if err := service.SyncActiveMarkets(ctx); err != nil {
-		log.Fatalf("active market sync failed: %v", err)
+		logger.Fatal("active market sync failed: %v", err)
 	}
 
 	if err := service.SyncFreshDrops(ctx); err != nil {
-		log.Printf("fresh drops sync failed: %v", err)
+		logger.Warn("fresh drops sync failed: %v", err)
 	}
 
 	var activeCount int64
 	if err := pgDB.Model(&models.Market{}).Where("active = ?", true).Count(&activeCount).Error; err == nil {
-		log.Printf("✅ Active markets stored in Postgres: %d", activeCount)
+		logger.Info("active markets stored in postgres: %d", activeCount)
 	} else {
-		log.Printf("⚠️ Failed to count active markets: %v", err)
+		logger.Warn("failed to count active markets: %v", err)
 	}
 
-	log.Println("✅ Manual market sync completed successfully.")
+	logger.Info("manual market sync completed successfully")
 }

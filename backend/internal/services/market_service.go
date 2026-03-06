@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"math/rand"
 	"sort"
@@ -27,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/models"
 	"github.com/bankai-project/backend/internal/polymarket/clob"
 	"github.com/bankai-project/backend/internal/polymarket/gamma"
@@ -64,6 +64,12 @@ const (
 	activeMarketsCacheRetryTimeout = 10 * time.Second
 	activeMarketsMemoryTTL         = 3 * time.Minute
 	activeMarketsLogThrottle       = 30 * time.Second
+
+	realtimePricePipelineTimeout    = 200 * time.Millisecond
+	realtimePriceFallbackTimeout    = 400 * time.Millisecond
+	realtimePriceFallbackMaxMarkets = 12
+	realtimePriceFallbackMaxTokens  = 6
+	realtimePriceLogThrottle        = 20 * time.Second
 )
 
 var (
@@ -82,6 +88,9 @@ type MarketService struct {
 	activeSnapshot     []models.Market
 	activeSnapshotAt   time.Time
 	activeCacheLastLog time.Time
+
+	realtimeLogMu   sync.Mutex
+	realtimeLastLog map[string]time.Time
 }
 
 type StreamRequestPayload struct {
@@ -216,7 +225,7 @@ func (s *MarketService) logActiveCacheError(prefix string, err error) {
 	s.activeCacheLastLog = now
 	s.activeSnapshotMu.Unlock()
 
-	log.Printf("%s: %v", prefix, err)
+	logger.Warn("%s: %v", prefix, err)
 }
 
 func withCacheTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
@@ -224,6 +233,26 @@ func withCacheTimeout(ctx context.Context, d time.Duration) (context.Context, co
 		return context.WithTimeout(context.Background(), d)
 	}
 	return context.WithTimeout(ctx, d)
+}
+
+func (s *MarketService) logRealtimePriceError(key, format string, args ...interface{}) {
+	if s == nil {
+		return
+	}
+
+	now := time.Now().UTC()
+	s.realtimeLogMu.Lock()
+	if s.realtimeLastLog == nil {
+		s.realtimeLastLog = make(map[string]time.Time)
+	}
+	if last := s.realtimeLastLog[key]; !last.IsZero() && now.Sub(last) < realtimePriceLogThrottle {
+		s.realtimeLogMu.Unlock()
+		return
+	}
+	s.realtimeLastLog[key] = now
+	s.realtimeLogMu.Unlock()
+
+	logger.Warn(format, args...)
 }
 
 func (s *MarketService) activeSnapshotTimestamp() time.Time {
@@ -328,7 +357,7 @@ func (s *MarketService) GetPriceHistory(ctx context.Context, conditionID, rangeP
 
 	history, err := s.ClobClient.GetPriceHistory(ctx, params)
 	if err != nil {
-		log.Printf("price history fetch failed for %s (token %s, interval %s, fidelity %d): %v", conditionID, tokenID, interval, fidelity, err)
+		logger.Warn("price history fetch failed for %s (token %s, interval %s, fidelity %d): %v", conditionID, tokenID, interval, fidelity, err)
 		return []clob.HistoryPoint{}, nil
 	}
 
@@ -468,7 +497,7 @@ func (s *MarketService) syncActiveMarketsCache(ctx context.Context) error {
 
 	data, err := json.Marshal(allMarkets)
 	if err != nil {
-		log.Printf("Failed to marshal markets for cache: %v", err)
+		logger.Warn("failed to marshal active markets for cache: %v", err)
 	} else {
 		s.storeActiveSnapshot(allMarkets)
 		s.setActiveMarketsCache(ctx, data)
@@ -687,10 +716,10 @@ func (s *MarketService) SyncFreshDrops(ctx context.Context) error {
 		// Update Redis Cache
 		data, err := json.Marshal(dbMarkets)
 		if err != nil {
-			log.Printf("Failed to marshal fresh drops for cache: %v", err)
+			logger.Warn("failed to marshal fresh drops for cache: %v", err)
 		} else {
 			if err := s.Redis.Set(ctx, CacheKeyFreshDrops, data, CacheTTL).Err(); err != nil {
-				log.Printf("Failed to set fresh drops cache: %v", err)
+				logger.Warn("failed to set fresh drops cache: %v", err)
 			}
 		}
 	}
@@ -1009,7 +1038,7 @@ func (s *MarketService) fetchAndCacheOrderBook(ctx context.Context, marketID, to
 	lockKey := fmt.Sprintf("lock:book:%s:%s", marketID, tokenID)
 	locked, err := s.Redis.SetNX(ctx, lockKey, "1", orderBookFetchLockTTL).Result()
 	if err != nil {
-		log.Printf("fetchAndCacheOrderBook lock unavailable for %s/%s: %v", marketID, tokenID, err)
+		logger.Warn("fetchAndCacheOrderBook lock unavailable for %s/%s: %v", marketID, tokenID, err)
 	} else if !locked {
 		if cached, ok := s.waitForCachedOrderBook(ctx, cacheKey); ok {
 			return cached, nil
@@ -1207,7 +1236,10 @@ func (s *MarketService) ReconcileOrderBooks(ctx context.Context, maxAssets int) 
 }
 
 func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []models.Market) {
-	if len(markets) == 0 {
+	if len(markets) == 0 || s.Redis == nil {
+		return
+	}
+	if ctx != nil && ctx.Err() != nil {
 		return
 	}
 
@@ -1236,8 +1268,12 @@ func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []mode
 		return
 	}
 
-	if _, err := pipe.Exec(ctx); err != nil {
-		log.Printf("attachRealtimePrices pipeline error: %v", err)
+	cacheCtx, cancel := context.WithTimeout(context.Background(), realtimePricePipelineTimeout)
+	_, pipeErr := pipe.Exec(cacheCtx)
+	cancel()
+	if pipeErr != nil {
+		s.logRealtimePriceError("pipeline", "attachRealtimePrices pipeline degraded: %v", pipeErr)
+		return
 	}
 
 	for cmd, meta := range cmdMeta {
@@ -1283,13 +1319,24 @@ func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []mode
 	if len(fallbackTargets) == 0 || s.ClobClient == nil {
 		return
 	}
+	if len(markets) > realtimePriceFallbackMaxMarkets {
+		return
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return
+	}
 
+	if len(fallbackTargets) > realtimePriceFallbackMaxTokens {
+		fallbackTargets = fallbackTargets[:realtimePriceFallbackMaxTokens]
+	}
+
+	failures := 0
 	for _, target := range fallbackTargets {
-		price, timestamp, err := s.ClobClient.GetLastTradePrice(ctx, target.tokenID)
+		fallbackCtx, cancel := context.WithTimeout(context.Background(), realtimePriceFallbackTimeout)
+		price, timestamp, err := s.ClobClient.GetLastTradePrice(fallbackCtx, target.tokenID)
+		cancel()
 		if err != nil || price <= 0 {
-			if err != nil {
-				log.Printf("attachRealtimePrices last-trade fallback failed for %s: %v", target.tokenID, err)
-			}
+			failures++
 			continue
 		}
 
@@ -1304,12 +1351,22 @@ func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []mode
 			updated = time.Now().UTC().Format(time.RFC3339Nano)
 		}
 		key := priceRedisKey(markets[target.index].ConditionID, target.tokenID)
-		if err := s.Redis.HSet(ctx, key, map[string]interface{}{
+		cacheWriteCtx, cacheCancel := context.WithTimeout(context.Background(), realtimePriceFallbackTimeout)
+		if err := s.Redis.HSet(cacheWriteCtx, key, map[string]interface{}{
 			"last_trade_price":   strconv.FormatFloat(price, 'f', -1, 64),
 			"last_trade_updated": updated,
 		}).Err(); err != nil {
-			log.Printf("attachRealtimePrices failed to cache last-trade price for %s: %v", target.tokenID, err)
+			failures++
 		}
+		cacheCancel()
+	}
+	if failures > 0 {
+		s.logRealtimePriceError(
+			"fallback",
+			"attachRealtimePrices fallback degraded: %d/%d token lookups failed",
+			failures,
+			len(fallbackTargets),
+		)
 	}
 }
 
@@ -1325,7 +1382,7 @@ func (s *MarketService) acquireMarketSyncLock(ctx context.Context) (func(), erro
 		if locked {
 			return func() {
 				if err := s.DB.WithContext(ctx).Exec("SELECT pg_advisory_unlock(?)", marketSyncLockKey).Error; err != nil {
-					log.Printf("failed to release market sync lock: %v", err)
+					logger.Warn("failed to release market sync lock: %v", err)
 				}
 			}, nil
 		}
@@ -1345,7 +1402,7 @@ func (s *MarketService) acquireMarketSyncLock(ctx context.Context) (func(), erro
 
 func (s *MarketService) releaseMarketSyncLock(ctx context.Context) {
 	if err := s.DB.WithContext(ctx).Exec("SELECT pg_advisory_unlock(?)", marketSyncLockKey).Error; err != nil {
-		log.Printf("failed to release market sync lock: %v", err)
+		logger.Warn("failed to release market sync lock: %v", err)
 	}
 }
 
@@ -1901,7 +1958,7 @@ func (s *MarketService) RequestMarketStream(ctx context.Context, conditionID str
 	}
 
 	if len(tokenValues) == 0 {
-		log.Printf("RequestMarketStream: market %s has no token IDs; cannot subscribe", conditionID)
+		logger.Warn("request market stream skipped: market %s has no token IDs", conditionID)
 		return ErrMarketHasNoTokens
 	}
 
