@@ -1021,9 +1021,6 @@ func (s *UpDownService) publishSignal(ctx context.Context, market UpDownMarket, 
 }
 
 func (s *UpDownService) discoverMarkets(ctx context.Context) ([]UpDownMarket, error) {
-	if s.db == nil {
-		return nil, errors.New("database is not configured")
-	}
 	now := time.Now().UTC()
 	maxMarkets := s.cfg.Services.UpDownMaxMarkets
 	if maxMarkets <= 0 {
@@ -1032,6 +1029,36 @@ func (s *UpDownService) discoverMarkets(ctx context.Context) ([]UpDownMarket, er
 	if maxMarkets > 500 {
 		maxMarkets = 500
 	}
+
+	if markets, err := s.discoverMarketsFromActiveSnapshot(ctx, now, maxMarkets); err == nil {
+		if len(markets) > 0 || s.db == nil {
+			return markets, nil
+		}
+	} else if s.db == nil {
+		return nil, err
+	} else {
+		logger.Error("updown active snapshot discovery failed: %v", err)
+	}
+
+	if s.db == nil {
+		return nil, errors.New("database is not configured")
+	}
+
+	return s.discoverMarketsFromDB(ctx, now, maxMarkets)
+}
+
+func (s *UpDownService) discoverMarketsFromActiveSnapshot(ctx context.Context, now time.Time, maxMarkets int) ([]UpDownMarket, error) {
+	if s == nil || s.market == nil {
+		return nil, nil
+	}
+	raw, err := s.market.GetActiveMarkets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return classifyUpDownMarkets(raw, now, maxMarkets), nil
+}
+
+func (s *UpDownService) discoverMarketsFromDB(ctx context.Context, now time.Time, maxMarkets int) ([]UpDownMarket, error) {
 	batchSize := maxMarkets * 4
 	if batchSize < 200 {
 		batchSize = 200
@@ -1093,13 +1120,45 @@ func (s *UpDownService) discoverMarkets(ctx context.Context) ([]UpDownMarket, er
 		}
 	}
 
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].EventStartTime.Equal(out[j].EventStartTime) {
-			return out[i].Slug < out[j].Slug
+	return sortAndTrimUpDownMarkets(out, maxMarkets), nil
+}
+
+func classifyUpDownMarkets(raw []models.Market, now time.Time, maxMarkets int) []UpDownMarket {
+	if len(raw) == 0 || maxMarkets <= 0 {
+		return []UpDownMarket{}
+	}
+	out := make([]UpDownMarket, 0, minInt(len(raw), maxMarkets))
+	for _, m := range raw {
+		classified, ok := classifyUpDownCryptoMarket(m, now)
+		if !ok {
+			continue
 		}
-		return out[i].EventStartTime.Before(out[j].EventStartTime)
+		out = append(out, classified)
+	}
+	return sortAndTrimUpDownMarkets(out, maxMarkets)
+}
+
+func sortAndTrimUpDownMarkets(markets []UpDownMarket, maxMarkets int) []UpDownMarket {
+	if len(markets) == 0 {
+		return []UpDownMarket{}
+	}
+	sort.SliceStable(markets, func(i, j int) bool {
+		if markets[i].EventStartTime.Equal(markets[j].EventStartTime) {
+			return markets[i].Slug < markets[j].Slug
+		}
+		return markets[i].EventStartTime.Before(markets[j].EventStartTime)
 	})
-	return out, nil
+	if maxMarkets > 0 && len(markets) > maxMarkets {
+		markets = markets[:maxMarkets]
+	}
+	return markets
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func classifyUpDownCryptoMarket(m models.Market, now time.Time) (UpDownMarket, bool) {

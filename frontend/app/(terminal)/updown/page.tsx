@@ -229,6 +229,14 @@ export default function UpDownPage() {
     () => buildRailMarkets(markets, nowMs),
     [markets, nowMs],
   );
+  const activeRailMarkets = useMemo(
+    () => railMarkets.filter((market) => isMarketActiveAt(market, nowMs)),
+    [railMarkets, nowMs],
+  );
+  const queuedRailMarkets = useMemo(
+    () => railMarkets.filter((market) => !isMarketActiveAt(market, nowMs)),
+    [railMarkets, nowMs],
+  );
   const selectedMarket = useMemo(
     () => markets.find((m) => m.slug === normalizedSelectedSlug) ?? null,
     [markets, normalizedSelectedSlug],
@@ -544,53 +552,21 @@ export default function UpDownPage() {
                 No tradable up/down markets in this filter.
               </p>
             ) : (
-              <div className="max-h-[70vh] space-y-1 overflow-y-auto pr-1">
-                {railMarkets.map((m) => {
-                  const start = toMillis(m.event_start_time);
-                  const end = toMillis(m.event_end_time);
-                  const active = start <= nowMs && nowMs < end;
-                  const selected = normalizedSelectedSlug === m.slug;
-                  const countdown = active
-                    ? `T-${fmtCountdown((end - nowMs) / 1000)}`
-                    : nowMs < start
-                      ? `+${fmtCountdown((start - nowMs) / 1000)}`
-                      : "Queued";
-                  return (
-                    <button
-                      type="button"
-                      key={m.slug}
-                      onClick={() => setSelectedSlug(m.slug)}
-                      className={cn(
-                        "w-full rounded-md border px-3 py-2 text-left transition",
-                        selected
-                          ? "border-primary bg-primary/10"
-                          : "border-border/50 bg-background/40 hover:border-primary/40",
-                      )}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-mono text-[11px] font-semibold">
-                          {m.asset} {m.window_type.toUpperCase()}
-                        </span>
-                        <span
-                          className={cn(
-                            "rounded px-1.5 py-0.5 font-mono text-[10px]",
-                            active
-                              ? "bg-constructive/20 text-constructive"
-                              : "bg-muted text-muted-foreground",
-                          )}
-                        >
-                          {active ? "LIVE" : "NEXT"}
-                        </span>
-                      </div>
-                      <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
-                        <span className="truncate pr-2">
-                          {m.market?.title || m.resolution_source_type}
-                        </span>
-                        <span>{countdown}</span>
-                      </div>
-                    </button>
-                  );
-                })}
+              <div className="max-h-[70vh] space-y-3 overflow-y-auto pr-1">
+                <RailSection
+                  title="Live Now"
+                  markets={activeRailMarkets}
+                  nowMs={nowMs}
+                  selectedSlug={normalizedSelectedSlug}
+                  onSelect={setSelectedSlug}
+                />
+                <RailSection
+                  title={activeRailMarkets.length ? "Primed Next" : "Upcoming"}
+                  markets={queuedRailMarkets}
+                  nowMs={nowMs}
+                  selectedSlug={normalizedSelectedSlug}
+                  onSelect={setSelectedSlug}
+                />
               </div>
             )}
           </CardContent>
@@ -887,6 +863,85 @@ function Metric({
       >
         {value}
       </div>
+    </div>
+  );
+}
+
+function RailSection({
+  title,
+  markets,
+  nowMs,
+  selectedSlug,
+  onSelect,
+}: {
+  title: string;
+  markets: UpDownMarket[];
+  nowMs: number;
+  selectedSlug: string | null;
+  onSelect: (slug: string) => void;
+}) {
+  if (!markets.length) return null;
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between px-1">
+        <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
+          {title}
+        </span>
+        <span className="text-[10px] text-muted-foreground">
+          {markets.length} market{markets.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      {markets.map((market) => {
+        const start = toMillis(market.event_start_time);
+        const end = toMillis(market.event_end_time);
+        const active = start <= nowMs && nowMs < end;
+        const selected = selectedSlug === market.slug;
+        const countdown = active
+          ? `Ends ${fmtCountdown((end - nowMs) / 1000)}`
+          : nowMs < start
+            ? `Starts ${fmtCountdown((start - nowMs) / 1000)}`
+            : "Queued";
+
+        return (
+          <button
+            type="button"
+            key={market.slug}
+            onClick={() => onSelect(market.slug)}
+            className={cn(
+              "w-full rounded-md border px-3 py-2 text-left transition",
+              selected
+                ? "border-primary bg-primary/10"
+                : "border-border/50 bg-background/40 hover:border-primary/40",
+            )}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="font-mono text-[11px] font-semibold">
+                  {market.asset} {market.window_type.toUpperCase()}
+                </div>
+                <div className="mt-1 truncate text-[10px] text-muted-foreground">
+                  {market.market?.title || market.slug}
+                </div>
+              </div>
+              <span
+                className={cn(
+                  "shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px]",
+                  active
+                    ? "bg-constructive/20 text-constructive"
+                    : "bg-muted text-muted-foreground",
+                )}
+              >
+                {active ? "ACTIVE" : "NEXT"}
+              </span>
+            </div>
+            <div className="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
+              <span>{countdown}</span>
+              <span>{market.resolution_source_type}</span>
+            </div>
+          </button>
+        );
+      })}
     </div>
   );
 }

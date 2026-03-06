@@ -2,14 +2,17 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/bankai-project/backend/internal/config"
 	"github.com/bankai-project/backend/internal/integrations/synthdata"
 	"github.com/bankai-project/backend/internal/models"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -408,6 +411,76 @@ func TestDiscoverMarketsScansBeyondInitialNonUpDownRows(t *testing.T) {
 		if market.Asset != "BTC" {
 			t.Fatalf("expected BTC asset, got %s", market.Asset)
 		}
+	}
+}
+
+func TestDiscoverMarketsUsesSharedActiveSnapshot(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	start := now.Add(-2 * time.Minute)
+	end := start.Add(15 * time.Minute)
+
+	cacheMarkets := []models.Market{
+		{
+			Active:          true,
+			AcceptingOrders: true,
+			Closed:          false,
+			ConditionID:     "btc-current",
+			Slug:            "btc-updown-15m-1772860500",
+			Title:           "Bitcoin Up or Down - March 7, 12:15AM-12:30AM ET",
+			Description:     "Resolve Up if the ending BTC price is at least the starting price.",
+			ResolutionRules: "Resolution source: Chainlink BTC/USD.",
+			Outcomes:        `["Up","Down"]`,
+			EventStartTime:  &start,
+			EndDate:         &end,
+			TokenIDYes:      "btc-up",
+			TokenIDNo:       "btc-down",
+		},
+		{
+			Active:          true,
+			AcceptingOrders: true,
+			Closed:          false,
+			ConditionID:     "noise",
+			Slug:            "will-it-rain",
+			Title:           "Will it rain tomorrow?",
+			Outcomes:        `["Yes","No"]`,
+			EventStartTime:  &start,
+			EndDate:         &end,
+		},
+	}
+
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() {
+		_ = rdb.Close()
+	})
+
+	payload, err := json.Marshal(cacheMarkets)
+	if err != nil {
+		t.Fatalf("marshal cache markets: %v", err)
+	}
+	if err := rdb.Set(context.Background(), CacheKeyActiveMarkets, payload, time.Minute).Err(); err != nil {
+		t.Fatalf("seed active markets cache: %v", err)
+	}
+
+	svc := &UpDownService{
+		cfg:    &config.Config{Services: config.ServicesConfig{UpDownMaxMarkets: 4}},
+		market: &MarketService{Redis: rdb},
+	}
+
+	markets, err := svc.discoverMarkets(context.Background())
+	if err != nil {
+		t.Fatalf("discover markets from shared snapshot: %v", err)
+	}
+	if len(markets) != 1 {
+		t.Fatalf("expected one up/down market from shared snapshot, got %d", len(markets))
+	}
+	if markets[0].Slug != "btc-updown-15m-1772860500" {
+		t.Fatalf("unexpected market surfaced from shared snapshot: %s", markets[0].Slug)
 	}
 }
 
