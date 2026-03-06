@@ -1462,9 +1462,12 @@ func (s *UpDownService) buildSignal(
 	lpCache map[string]*synthdata.LPProbabilitiesResponse,
 ) (UpDownSignal, error) {
 	now := time.Now().UTC()
-	liveMarket, _ := s.market.GetMarketByConditionID(ctx, market.ConditionID)
-	if liveMarket != nil {
-		market.Market = *liveMarket
+	if s.market != nil {
+		live := []models.Market{market.Market}
+		s.market.attachRealtimePrices(ctx, live)
+		if len(live) == 1 {
+			market.Market = live[0]
+		}
 	}
 
 	upToken, downToken, err := tokenIDsByOutcome(market)

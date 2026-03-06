@@ -38,6 +38,7 @@ const (
 	PingPeriod            = (PongWait * 9) / 10
 	MaxConnectRetries     = 5
 	maxAssetsPerSubscribe = 400
+	queueDropLogInterval  = 2 * time.Second
 )
 
 type SubscriptionMessage struct {
@@ -63,6 +64,10 @@ type Client struct {
 	// reconnecting prevents multiple simultaneous reconnection attempts
 	reconnecting bool
 	reconnectMu  sync.Mutex
+
+	queueDropMu      sync.Mutex
+	queueDropped     int
+	queueDropWindow  time.Time
 }
 
 func NewClient(cfg *config.Config, handler *MessageHandler) *Client {
@@ -159,11 +164,27 @@ func (c *Client) Subscribe(assetIDs []string) error {
 		return nil
 	}
 
+	newIDs := make([]string, 0, len(ids))
 	c.subMu.Lock()
-	c.subscriptions = dedupeAssetIDs(append(c.subscriptions, ids...))
+	existing := make(map[string]struct{}, len(c.subscriptions)+len(ids))
+	for _, id := range c.subscriptions {
+		existing[id] = struct{}{}
+	}
+	for _, id := range ids {
+		if _, ok := existing[id]; ok {
+			continue
+		}
+		existing[id] = struct{}{}
+		c.subscriptions = append(c.subscriptions, id)
+		newIDs = append(newIDs, id)
+	}
 	c.subMu.Unlock()
 
-	return c.sendSubscribe(ids)
+	if len(newIDs) == 0 {
+		return nil
+	}
+
+	return c.sendSubscribe(newIDs)
 }
 
 func (c *Client) sendSubscribe(assets []string) error {
@@ -298,13 +319,66 @@ func (c *Client) readLoop(ctx context.Context) {
 
 			// Bounded queue to cap concurrent handlers under load.
 			msgCopy := append([]byte(nil), message...)
-			select {
-			case c.messageQueue <- msgCopy:
-			default:
-				logger.Warn("market RTDS queue full (cap=%d); dropping message", cap(c.messageQueue))
+			if dropped := c.enqueueMessage(msgCopy); dropped {
+				c.logQueueDrop(dropped)
 			}
 		}
 	}
+}
+
+// enqueueMessage tries to enqueue the newest payload and, under pressure, evicts one stale queued item.
+// It returns true when at least one message was dropped.
+func (c *Client) enqueueMessage(message []byte) bool {
+	select {
+	case c.messageQueue <- message:
+		return false
+	default:
+	}
+
+	dropped := false
+	select {
+	case <-c.messageQueue:
+		dropped = true
+	default:
+	}
+
+	select {
+	case c.messageQueue <- message:
+		return dropped
+	default:
+		return true
+	}
+}
+
+func (c *Client) logQueueDrop(dropped bool) {
+	if !dropped {
+		return
+	}
+
+	now := time.Now().UTC()
+	c.queueDropMu.Lock()
+	defer c.queueDropMu.Unlock()
+
+	c.queueDropped++
+	if c.queueDropWindow.IsZero() {
+		c.queueDropWindow = now
+		return
+	}
+
+	if now.Sub(c.queueDropWindow) < queueDropLogInterval {
+		return
+	}
+
+	window := now.Sub(c.queueDropWindow).Round(time.Millisecond)
+	logger.Warn(
+		"market RTDS queue pressure (cap=%d workers=%d): dropped=%d in %s",
+		cap(c.messageQueue),
+		c.workerPoolSize,
+		c.queueDropped,
+		window,
+	)
+	c.queueDropped = 0
+	c.queueDropWindow = now
 }
 
 func (c *Client) pingLoop(ctx context.Context) {
