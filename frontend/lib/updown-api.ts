@@ -22,6 +22,18 @@ export type DecisionPayload = {
   notes?: string;
 };
 
+const sanitizeUpDownSlug = (value: string): string => {
+  const trimmed = value.trim();
+  if (
+    trimmed === "" ||
+    trimmed === "null" ||
+    trimmed === "undefined"
+  ) {
+    throw new Error("invalid up/down slug");
+  }
+  return trimmed;
+};
+
 export const fetchUpDownMarkets = async (
   params: UpDownQuery = {}
 ): Promise<UpDownMarket[]> => {
@@ -30,15 +42,17 @@ export const fetchUpDownMarkets = async (
 };
 
 export const fetchUpDownMarket = async (slug: string): Promise<UpDownMarket> => {
+  const normalizedSlug = sanitizeUpDownSlug(slug);
   const { data } = await api.get<UpDownMarket>(
-    `/updown/market/${encodeURIComponent(slug)}`
+    `/updown/market/${encodeURIComponent(normalizedSlug)}`
   );
   return data;
 };
 
 export const fetchUpDownSignal = async (slug: string): Promise<UpDownSignal> => {
+  const normalizedSlug = sanitizeUpDownSlug(slug);
   const { data } = await api.get<UpDownSignal>(
-    `/updown/signal/${encodeURIComponent(slug)}`
+    `/updown/signal/${encodeURIComponent(normalizedSlug)}`
   );
   return data;
 };
@@ -73,4 +87,3 @@ export const fetchUpDownPerformance = async (params: {
 export const createUpDownEventSource = (): EventSource => {
   return new EventSource(`${API_BASE_URL}/api/v1/updown/stream`);
 };
-

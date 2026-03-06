@@ -70,32 +70,104 @@ const toMillis = (value?: string) => {
   return Number.isNaN(ts) ? 0 : ts;
 };
 
+const WINDOW_ORDER: Record<string, number> = {
+  "5m": 0,
+  "15m": 1,
+  "1h": 2,
+  "4h": 3,
+};
+
+const normalizeSelectedSlug = (value: string | null | undefined): string | null => {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (
+    trimmed === "" ||
+    trimmed === "null" ||
+    trimmed === "undefined"
+  ) {
+    return null;
+  }
+  return trimmed;
+};
+
+const isMarketActiveAt = (market: UpDownMarket, nowMs: number) => {
+  const start = toMillis(market.event_start_time);
+  const end = toMillis(market.event_end_time);
+  return start <= nowMs && nowMs < end;
+};
+
+const compareMarketStart = (a: UpDownMarket, b: UpDownMarket) => {
+  const startDiff = toMillis(a.event_start_time) - toMillis(b.event_start_time);
+  if (startDiff !== 0) return startDiff;
+  const endDiff = toMillis(a.event_end_time) - toMillis(b.event_end_time);
+  if (endDiff !== 0) return endDiff;
+  return a.slug.localeCompare(b.slug);
+};
+
+const buildRailMarkets = (markets: UpDownMarket[], nowMs: number): UpDownMarket[] => {
+  if (!markets.length) return [];
+
+  const grouped = new Map<string, UpDownMarket[]>();
+  for (const market of markets) {
+    const key = `${market.asset}|${market.window_type}`;
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.push(market);
+    } else {
+      grouped.set(key, [market]);
+    }
+  }
+
+  const keys = [...grouped.keys()].sort((left, right) => {
+    const [leftAsset, leftWindow] = left.split("|");
+    const [rightAsset, rightWindow] = right.split("|");
+    const assetDiff = leftAsset.localeCompare(rightAsset);
+    if (assetDiff !== 0) return assetDiff;
+    return (WINDOW_ORDER[leftWindow] ?? 99) - (WINDOW_ORDER[rightWindow] ?? 99);
+  });
+
+  const rail: UpDownMarket[] = [];
+  for (const key of keys) {
+    const lane = [...(grouped.get(key) ?? [])].sort(compareMarketStart);
+    const active = lane.find((market) => isMarketActiveAt(market, nowMs));
+    const upcoming = lane.filter((market) => toMillis(market.event_start_time) > nowMs);
+
+    if (active) {
+      rail.push(active);
+      if (upcoming[0] && upcoming[0].slug !== active.slug) {
+        rail.push(upcoming[0]);
+      }
+      continue;
+    }
+
+    if (upcoming[0]) rail.push(upcoming[0]);
+    if (upcoming[1] && upcoming[1].slug !== upcoming[0]?.slug) {
+      rail.push(upcoming[1]);
+    }
+  }
+
+  return rail;
+};
+
 const pickNextMarket = (
   markets: UpDownMarket[],
   nowMs: number,
   currentSlug: string | null,
 ): string | null => {
   if (!markets.length) return null;
-  const sorted = [...markets].sort(
-    (a, b) => toMillis(a.event_start_time) - toMillis(b.event_start_time),
-  );
-  const active = sorted.find((m) => {
-    const start = toMillis(m.event_start_time);
-    const end = toMillis(m.event_end_time);
-    return start <= nowMs && nowMs < end;
-  });
+
+  const active = markets.find((market) => isMarketActiveAt(market, nowMs));
   if (active) return active.slug;
 
   if (currentSlug) {
-    const current = sorted.find((m) => m.slug === currentSlug);
-    if (current) {
-      const end = toMillis(current.event_end_time);
-      if (nowMs < end) return currentSlug;
+    const current = markets.find((market) => market.slug === currentSlug);
+    if (current && toMillis(current.event_end_time) > nowMs) {
+      return current.slug;
     }
   }
 
-  const upcoming = sorted.find((m) => toMillis(m.event_start_time) > nowMs);
-  return upcoming?.slug ?? sorted[0]?.slug ?? null;
+  const upcoming = markets.find((market) => toMillis(market.event_start_time) > nowMs);
+  return upcoming?.slug ?? markets[0]?.slug ?? null;
 };
 
 export default function UpDownPage() {
@@ -143,23 +215,23 @@ export default function UpDownPage() {
     staleTime: 15_000,
   });
 
-  const hasSelectedSlug =
-    typeof selectedSlug === "string" &&
-    selectedSlug.trim() !== "" &&
-    selectedSlug !== "null" &&
-    selectedSlug !== "undefined";
+  const normalizedSelectedSlug = normalizeSelectedSlug(selectedSlug);
 
   const signalQuery = useQuery({
-    queryKey: ["updown-signal", selectedSlug],
-    queryFn: () => fetchUpDownSignal(selectedSlug as string),
-    enabled: hasSelectedSlug,
+    queryKey: ["updown-signal", normalizedSelectedSlug],
+    queryFn: () => fetchUpDownSignal(normalizedSelectedSlug as string),
+    enabled: normalizedSelectedSlug !== null,
     refetchInterval: 5_000,
     staleTime: 2_000,
   });
   const markets = marketsQuery.data ?? [];
+  const railMarkets = useMemo(
+    () => buildRailMarkets(markets, nowMs),
+    [markets, nowMs],
+  );
   const selectedMarket = useMemo(
-    () => markets.find((m) => m.slug === selectedSlug) ?? null,
-    [markets, selectedSlug],
+    () => markets.find((m) => m.slug === normalizedSelectedSlug) ?? null,
+    [markets, normalizedSelectedSlug],
   );
 
   useEffect(() => {
@@ -168,28 +240,25 @@ export default function UpDownPage() {
   }, []);
 
   useEffect(() => {
-    const markets = marketsQuery.data ?? [];
-    if (!markets.length) {
+    if (!railMarkets.length) {
       if (selectedSlug !== null) {
         setSelectedSlug(null);
       }
       return;
     }
 
-    // Auto-pick only when we don't have a selection yet, or it no longer
-    // exists in the current market set (filter change / market expired).
-    const hasSelection = typeof selectedSlug === "string" && selectedSlug !== "";
+    const hasSelection = normalizedSelectedSlug !== null;
     const selectionStillExists =
-      hasSelection && markets.some((m) => m.slug === selectedSlug);
+      hasSelection && railMarkets.some((m) => m.slug === normalizedSelectedSlug);
     if (selectionStillExists) {
       return;
     }
 
-    const next = pickNextMarket(markets, nowMs, null);
+    const next = pickNextMarket(railMarkets, nowMs, null);
     if (next && next !== selectedSlug) {
       setSelectedSlug(next);
     }
-  }, [marketsQuery.data, nowMs, selectedSlug]);
+  }, [normalizedSelectedSlug, nowMs, railMarkets, selectedSlug]);
 
   useEffect(() => {
     if (markets.length === 0) {
@@ -254,8 +323,8 @@ export default function UpDownPage() {
   }, [selectedMarket?.condition_id]);
 
   const selectedSignal = useMemo(() => {
-    if (!selectedSlug) return null;
-    const liveSignal = liveSignals[selectedSlug] ?? null;
+    if (!normalizedSelectedSlug) return null;
+    const liveSignal = liveSignals[normalizedSelectedSlug] ?? null;
     const polledSignal = signalQuery.data ?? null;
     if (!liveSignal) return polledSignal;
     if (!polledSignal) return liveSignal;
@@ -265,7 +334,7 @@ export default function UpDownPage() {
     if (!liveTs) return polledSignal;
     if (!polledTs) return liveSignal;
     return polledTs > liveTs ? polledSignal : liveSignal;
-  }, [liveSignals, selectedSlug, signalQuery.data]);
+  }, [liveSignals, normalizedSelectedSlug, signalQuery.data]);
 
   const selectedRecommendation = useMemo(() => {
     if (selectedSignal?.recommendation) return selectedSignal.recommendation;
@@ -368,7 +437,7 @@ export default function UpDownPage() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!markets.length) return;
+      if (!railMarkets.length) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
       if (
@@ -378,14 +447,14 @@ export default function UpDownPage() {
       }
       if (event.key === "j" || event.key === "ArrowDown") {
         event.preventDefault();
-        const idx = markets.findIndex((m) => m.slug === selectedSlug);
-        const next = markets[(idx + 1 + markets.length) % markets.length];
+        const idx = railMarkets.findIndex((m) => m.slug === normalizedSelectedSlug);
+        const next = railMarkets[(idx + 1 + railMarkets.length) % railMarkets.length];
         if (next) setSelectedSlug(next.slug);
       }
       if (event.key === "k" || event.key === "ArrowUp") {
         event.preventDefault();
-        const idx = markets.findIndex((m) => m.slug === selectedSlug);
-        const prev = markets[(idx - 1 + markets.length) % markets.length];
+        const idx = railMarkets.findIndex((m) => m.slug === normalizedSelectedSlug);
+        const prev = railMarkets[(idx - 1 + railMarkets.length) % railMarkets.length];
         if (prev) setSelectedSlug(prev.slug);
       }
       if (event.key.toLowerCase() === "p") {
@@ -397,7 +466,7 @@ export default function UpDownPage() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [markets, selectedRecommendation, selectedSlug]);
+  }, [normalizedSelectedSlug, railMarkets, selectedRecommendation]);
 
   return (
     <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-6 px-4 py-6">
@@ -466,22 +535,26 @@ export default function UpDownPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
-            {markets.length === 0 ? (
+            {marketsQuery.isError ? (
+              <p className="text-xs text-destructive">
+                Failed to load up/down markets.
+              </p>
+            ) : railMarkets.length === 0 ? (
               <p className="text-xs text-muted-foreground">
                 No tradable up/down markets in this filter.
               </p>
             ) : (
               <div className="max-h-[70vh] space-y-1 overflow-y-auto pr-1">
-                {markets.map((m) => {
+                {railMarkets.map((m) => {
                   const start = toMillis(m.event_start_time);
                   const end = toMillis(m.event_end_time);
                   const active = start <= nowMs && nowMs < end;
-                  const selected = selectedSlug === m.slug;
+                  const selected = normalizedSelectedSlug === m.slug;
                   const countdown = active
                     ? `T-${fmtCountdown((end - nowMs) / 1000)}`
                     : nowMs < start
                       ? `+${fmtCountdown((start - nowMs) / 1000)}`
-                      : "Closed";
+                      : "Queued";
                   return (
                     <button
                       type="button"
@@ -510,7 +583,9 @@ export default function UpDownPage() {
                         </span>
                       </div>
                       <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
-                        <span>{m.resolution_source_type}</span>
+                        <span className="truncate pr-2">
+                          {m.market?.title || m.resolution_source_type}
+                        </span>
                         <span>{countdown}</span>
                       </div>
                     </button>
