@@ -1936,12 +1936,48 @@ func (s *MarketService) SubscribeStreamRequests(ctx context.Context) *redis.PubS
 }
 
 func (s *MarketService) publishStreamRequest(ctx context.Context, tokens []string) {
-	if len(tokens) == 0 {
+	if s == nil || s.Redis == nil || len(tokens) == 0 {
 		return
 	}
+	seen := make(map[string]struct{}, len(tokens))
+	cleaned := make([]string, 0, len(tokens))
+	args := make([]interface{}, 0, len(tokens))
+	for _, raw := range tokens {
+		token := strings.TrimSpace(raw)
+		if token == "" {
+			continue
+		}
+		if _, ok := seen[token]; ok {
+			continue
+		}
+		seen[token] = struct{}{}
+		cleaned = append(cleaned, token)
+		args = append(args, token)
+	}
+	if len(cleaned) == 0 {
+		return
+	}
+	tokens = cleaned
+	if len(args) == 0 {
+		return
+	}
+
+	queueCtx, queueCancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	if err := s.Redis.SAdd(queueCtx, streamRequestTokenKey, args...).Err(); err != nil {
+		logger.Warn("publish stream request token queue degraded: %v", err)
+		queueCancel()
+		return
+	}
+	_ = s.Redis.Expire(queueCtx, streamRequestTokenKey, streamRequestTokenTTL).Err()
+	queueCancel()
+
 	payload := StreamRequestPayload{Tokens: tokens}
 	if data, err := json.Marshal(payload); err == nil {
-		_ = s.Redis.Publish(ctx, streamRequestPubSubChan, data).Err()
+		pubCtx, pubCancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+		if pubErr := s.Redis.Publish(pubCtx, streamRequestPubSubChan, data).Err(); pubErr != nil {
+			logger.Warn("publish stream request channel degraded: %v", pubErr)
+		}
+		pubCancel()
 	}
 }
 

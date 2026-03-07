@@ -479,8 +479,9 @@ export default function UpDownPage() {
   }, [recommendationsQuery.data, selectedSignal?.recommendation, normalizedSelectedSlug]);
 
   const staleSignal = useMemo(() => {
+    if (!selectedSignal) return false;
     const ts = toMillis(selectedSignal?.timestamp);
-    if (!ts) return true;
+    if (!ts) return false;
     return nowMs - ts > 30_000;
   }, [selectedSignal?.timestamp, nowMs]);
 
@@ -512,12 +513,23 @@ export default function UpDownPage() {
   const liveMarket = selectedMarket ? augmentMarket(selectedMarket.market) : null;
   const signalHasSynth = hasSynthProbabilities(selectedSignal);
 
-  const integrityFailure =
+  const rawIntegrityFailure =
     staleSignal ||
     !!selectedSignal?.risk_flags?.data_integrity_failed ||
     !!selectedSignal?.risk_flags?.kill_switch ||
     !!selectedRecommendation?.prefill?.disabled ||
     !!prefillBlockReason;
+
+  const [integrityFailure, setIntegrityFailure] = useState(false);
+
+  useEffect(() => {
+    if (!rawIntegrityFailure) {
+      setIntegrityFailure(false);
+      return;
+    }
+    const timer = setTimeout(() => setIntegrityFailure(true), 1200);
+    return () => clearTimeout(timer);
+  }, [rawIntegrityFailure]);
 
   const prefillDriftBps = useMemo(() => {
     if (!prefill || prefill.disabled || !selectedSignal || !selectedMarket) return 0;
