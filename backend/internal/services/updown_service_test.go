@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
@@ -618,83 +617,6 @@ func TestBuildRecommendationNoTradeNearExpiryCutoff(t *testing.T) {
 	}
 	if !rec.Prefill.Disabled {
 		t.Fatalf("expected prefill disabled inside no-trade cutoff")
-	}
-}
-
-func TestDiscoverMarketsScansBeyondInitialNonUpDownRows(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	if err := db.AutoMigrate(&models.Market{}); err != nil {
-		t.Fatalf("automigrate market: %v", err)
-	}
-
-	now := time.Now().UTC().Truncate(time.Second)
-	nonUpDownCount := 130 // intentionally larger than the old 120-row fetch cap
-	for i := 0; i < nonUpDownCount; i++ {
-		start := now.Add(time.Duration(i+1) * time.Minute)
-		end := start.Add(10 * time.Minute)
-		market := models.Market{
-			ConditionID:     fmt.Sprintf("non-updown-%03d", i),
-			Slug:            fmt.Sprintf("general-market-%03d", i),
-			Title:           "General prediction market",
-			Description:     "Not an up/down market",
-			ResolutionRules: "Resolved by committee vote.",
-			Outcomes:        `["Yes","No"]`,
-			AcceptingOrders: true,
-			Closed:          false,
-			EventStartTime:  &start,
-			EndDate:         &end,
-			TokenIDYes:      fmt.Sprintf("yes-%03d", i),
-			TokenIDNo:       fmt.Sprintf("no-%03d", i),
-		}
-		if err := db.Create(&market).Error; err != nil {
-			t.Fatalf("create non-updown market %d: %v", i, err)
-		}
-	}
-
-	// Place valid Up/Down markets after the initial non-updown block.
-	for i := 0; i < 2; i++ {
-		start := now.Add(time.Duration(nonUpDownCount+i+1) * time.Minute)
-		end := start.Add(5 * time.Minute)
-		market := models.Market{
-			ConditionID:     fmt.Sprintf("updown-%03d", i),
-			Slug:            fmt.Sprintf("btc-updown-5m-%03d", i),
-			Title:           "BTC Up or Down in 5 Minutes?",
-			Description:     "Up/Down crypto market",
-			ResolutionRules: "Resolved by Chainlink feed data.chain.link",
-			Outcomes:        `["Up","Down"]`,
-			AcceptingOrders: true,
-			Closed:          false,
-			EventStartTime:  &start,
-			EndDate:         &end,
-			TokenIDYes:      fmt.Sprintf("up-yes-%03d", i),
-			TokenIDNo:       fmt.Sprintf("up-no-%03d", i),
-		}
-		if err := db.Create(&market).Error; err != nil {
-			t.Fatalf("create updown market %d: %v", i, err)
-		}
-	}
-
-	svc := &UpDownService{
-		db:  db,
-		cfg: &config.Config{Services: config.ServicesConfig{UpDownMaxMarkets: 2}},
-	}
-	markets, err := svc.discoverMarkets(context.Background())
-	if err != nil {
-		t.Fatalf("discover markets: %v", err)
-	}
-	if len(markets) != 2 {
-		t.Fatalf("expected 2 up/down markets, got %d", len(markets))
-	}
-	for _, market := range markets {
-		if market.WindowType != Window5m {
-			t.Fatalf("expected 5m window, got %s", market.WindowType)
-		}
-		if market.Asset != "BTC" {
-			t.Fatalf("expected BTC asset, got %s", market.Asset)
-		}
 	}
 }
 

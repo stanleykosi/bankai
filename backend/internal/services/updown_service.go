@@ -23,16 +23,26 @@ import (
 )
 
 const (
-	upDownSignalChannel   = "updown:signal_updates"
-	upDownMarketsCacheKey = "updown:markets:snapshot"
-	upDownRecsCacheKey    = "updown:recommendations"
-	upDownSignalCachePref = "updown:signal:"
-	upDownCacheTTL        = 30 * time.Second
-	defaultRiskProfile    = "Balanced"
-	upDownEventDebounce   = 250 * time.Millisecond
-	upDownPersistTimeout  = 1500 * time.Millisecond
-	upDownGammaPageLimit  = 100
-	upDownGammaMaxPages   = 8
+	upDownSignalChannel    = "updown:signal_updates"
+	upDownMarketsCacheKey  = "updown:markets:snapshot"
+	upDownRecsCacheKey     = "updown:recommendations"
+	upDownSignalCachePref  = "updown:signal:"
+	upDownCacheTTL         = 30 * time.Second
+	defaultRiskProfile     = "Balanced"
+	upDownEventDebounce    = 250 * time.Millisecond
+	upDownPersistTimeout   = 1500 * time.Millisecond
+	upDownGammaPageLimit   = 100
+	upDownGammaMaxPages    = 8
+	upDownCloseFinalizeTTL = 4 * time.Minute
+
+	upDownWindowStatusScheduled = "scheduled"
+	upDownWindowStatusActive    = "active"
+	upDownWindowStatusClosed    = "closed"
+
+	upDownOutcomePending = "PENDING"
+	upDownOutcomeUp      = "UP"
+	upDownOutcomeDown    = "DOWN"
+	upDownOutcomeFlat    = "FLAT"
 )
 
 var (
@@ -497,7 +507,9 @@ func (s *UpDownService) refreshSignalsOnly(ctx context.Context) error {
 		m.TimeToStartSeconds = int64(math.Round(m.EventStartTime.Sub(now).Seconds()))
 		m.TimeToEndSeconds = int64(math.Round(m.EventEndTime.Sub(now).Seconds()))
 
-		if !m.IsActiveWindow && !(m.EventStartTime.After(now) && m.EventStartTime.Before(now.Add(20*time.Minute))) {
+		upcoming := m.EventStartTime.After(now) && m.EventStartTime.Before(now.Add(20*time.Minute))
+		recentlyClosed := !now.Before(m.EventEndTime) && now.Before(m.EventEndTime.Add(upDownCloseFinalizeTTL))
+		if !m.IsActiveWindow && !upcoming && !recentlyClosed {
 			continue
 		}
 		signal, err := s.buildSignal(ctx, m, synthCache, percentileCache, volCache, lpCache)
@@ -506,6 +518,7 @@ func (s *UpDownService) refreshSignalsOnly(ctx context.Context) error {
 		}
 		signals[m.Slug] = signal
 		recs = append(recs, signal.Recommendation)
+		s.persistMarketWindow(ctx, m, signal)
 		s.publishSignal(ctx, m, signal)
 	}
 
@@ -624,7 +637,9 @@ func (s *UpDownService) recomputeSignalBySlug(ctx context.Context, slug string) 
 	market.IsActiveWindow = !now.Before(market.EventStartTime) && now.Before(market.EventEndTime)
 	market.TimeToStartSeconds = int64(math.Round(market.EventStartTime.Sub(now).Seconds()))
 	market.TimeToEndSeconds = int64(math.Round(market.EventEndTime.Sub(now).Seconds()))
-	if !market.IsActiveWindow && market.EventStartTime.Before(now.Add(-3*time.Minute)) {
+	upcoming := market.EventStartTime.After(now) && market.EventStartTime.Before(now.Add(20*time.Minute))
+	recentlyClosed := !now.Before(market.EventEndTime) && now.Before(market.EventEndTime.Add(upDownCloseFinalizeTTL))
+	if !market.IsActiveWindow && !upcoming && !recentlyClosed {
 		return
 	}
 
@@ -656,6 +671,7 @@ func (s *UpDownService) recomputeSignalBySlug(ctx context.Context, slug string) 
 	s.lastRefresh = now
 	s.mu.Unlock()
 
+	s.persistMarketWindow(ctx, market, signal)
 	s.publishSignal(ctx, market, signal)
 }
 
@@ -671,6 +687,37 @@ func (s *UpDownService) Refresh(ctx context.Context) error {
 	if err != nil {
 		s.setLastError(err)
 		return err
+	}
+	now := time.Now().UTC()
+
+	// Keep a short tail of recently closed windows so end snapshots/outcomes can finalize.
+	s.mu.RLock()
+	prevMarkets := make([]UpDownMarket, 0, len(s.marketsBySlug))
+	for _, prev := range s.marketsBySlug {
+		prevMarkets = append(prevMarkets, prev)
+	}
+	s.mu.RUnlock()
+
+	if len(prevMarkets) > 0 {
+		seen := make(map[string]struct{}, len(markets))
+		for _, m := range markets {
+			seen[m.Slug] = struct{}{}
+		}
+		for _, prev := range prevMarkets {
+			if _, ok := seen[prev.Slug]; ok {
+				continue
+			}
+			if now.Before(prev.EventEndTime) || !now.Before(prev.EventEndTime.Add(upDownCloseFinalizeTTL)) {
+				continue
+			}
+			markets = append(markets, prev)
+			seen[prev.Slug] = struct{}{}
+		}
+	}
+	for i := range markets {
+		markets[i].IsActiveWindow = !now.Before(markets[i].EventStartTime) && now.Before(markets[i].EventEndTime)
+		markets[i].TimeToStartSeconds = int64(math.Round(markets[i].EventStartTime.Sub(now).Seconds()))
+		markets[i].TimeToEndSeconds = int64(math.Round(markets[i].EventEndTime.Sub(now).Seconds()))
 	}
 
 	signals := make(map[string]UpDownSignal, len(markets))
@@ -691,8 +738,7 @@ func (s *UpDownService) Refresh(ctx context.Context) error {
 		}
 		signals[market.Slug] = signal
 		recs = append(recs, signal.Recommendation)
-		s.persistSnapshot(ctx, market, signal)
-		s.persistRecommendation(ctx, signal.Recommendation)
+		s.persistMarketWindow(ctx, market, signal)
 		s.publishSignal(ctx, market, signal)
 	}
 
@@ -759,6 +805,10 @@ func (s *UpDownService) pickSignalCandidates(markets []UpDownMarket) []UpDownMar
 	seenGroup := make(map[string]struct{})
 	for _, m := range markets {
 		if m.IsActiveWindow {
+			out = append(out, m)
+			continue
+		}
+		if !now.Before(m.EventEndTime) && now.Before(m.EventEndTime.Add(upDownCloseFinalizeTTL)) {
 			out = append(out, m)
 			continue
 		}
@@ -1085,23 +1135,13 @@ func (s *UpDownService) discoverMarkets(ctx context.Context) ([]UpDownMarket, er
 		logger.Error("updown active snapshot discovery failed: %v", err)
 	}
 
-	// DB fallback is often empty on deployments where worker DB writes are disabled.
-	// Pulling a bounded window directly from Gamma keeps up/down rails populated.
-	if markets, err := s.discoverMarketsFromGamma(ctx, now, maxMarkets); err == nil {
-		if len(markets) > 0 || s.db == nil {
-			return markets, nil
-		}
-	} else if s.db == nil {
-		return nil, err
-	} else {
+	// Up/down market discovery is cache/Gamma-only by design.
+	markets, err := s.discoverMarketsFromGamma(ctx, now, maxMarkets)
+	if err != nil {
 		logger.Error("updown gamma discovery failed: %v", err)
+		return nil, err
 	}
-
-	if s.db == nil {
-		return nil, errors.New("database is not configured")
-	}
-
-	return s.discoverMarketsFromDB(ctx, now, maxMarkets)
+	return markets, nil
 }
 
 func (s *UpDownService) discoverMarketsFromActiveSnapshot(ctx context.Context, now time.Time, maxMarkets int) ([]UpDownMarket, error) {
@@ -1186,71 +1226,6 @@ func (s *UpDownService) discoverMarketsFromGamma(ctx context.Context, now time.T
 
 		if len(events) < upDownGammaPageLimit {
 			break
-		}
-	}
-
-	return sortAndTrimUpDownMarkets(out, maxMarkets), nil
-}
-
-func (s *UpDownService) discoverMarketsFromDB(ctx context.Context, now time.Time, maxMarkets int) ([]UpDownMarket, error) {
-	batchSize := maxMarkets * 4
-	if batchSize < 200 {
-		batchSize = 200
-	}
-	if batchSize > 1000 {
-		batchSize = 1000
-	}
-
-	out := make([]UpDownMarket, 0, maxMarkets)
-	var cursorStart *time.Time
-	cursorConditionID := ""
-	for len(out) < maxMarkets {
-		q := s.db.WithContext(ctx).
-			Where("accepting_orders = ? AND closed = ? AND event_start_time IS NOT NULL AND end_date IS NOT NULL AND end_date > ?", true, false, now)
-		if cursorStart != nil {
-			// Use keyset pagination with a deterministic tiebreaker to avoid duplicates/skips.
-			q = q.Where(
-				"(event_start_time > ?) OR (event_start_time = ? AND condition_id > ?)",
-				*cursorStart,
-				*cursorStart,
-				cursorConditionID,
-			)
-		}
-
-		var raw []models.Market
-		if err := q.
-			Order("event_start_time ASC").
-			Order("condition_id ASC").
-			Limit(batchSize).
-			Find(&raw).Error; err != nil {
-			return nil, err
-		}
-		if len(raw) == 0 {
-			break
-		}
-
-		for _, m := range raw {
-			classified, ok := classifyUpDownCryptoMarket(m, now)
-			if !ok {
-				continue
-			}
-			out = append(out, classified)
-			if len(out) >= maxMarkets {
-				break
-			}
-		}
-		if len(raw) < batchSize {
-			break
-		}
-		last := raw[len(raw)-1]
-		if last.EventStartTime == nil {
-			break
-		}
-		t := last.EventStartTime.UTC()
-		cursorStart = &t
-		cursorConditionID = last.ConditionID
-		if err := ctx.Err(); err != nil {
-			return nil, err
 		}
 	}
 
@@ -1583,6 +1558,8 @@ func (s *UpDownService) buildSignal(
 	var referenceCurrentPrice *float64
 	var referenceEndPrice *float64
 	var referenceUpdatedAt *time.Time
+	chainlinkReference := usesChainlinkReference(market)
+	referenceCurrentFromChainlink := false
 	flags := UpDownRiskFlags{
 		ReadOnly:   s.cfg.Services.UpDownReadOnly,
 		KillSwitch: s.cfg.Services.UpDownKillSwitch,
@@ -1594,12 +1571,13 @@ func (s *UpDownService) buildSignal(
 		pMarketPtr = &v
 	}
 
-	if usesChainlinkReference(market) {
+	if chainlinkReference {
 		oracleLatest := GetChainlinkLatest(ctx, s.redis, market.Asset)
 		if oracleLatest != nil {
 			if oracleLatest.Price > 0 {
 				v := oracleLatest.Price
 				referenceCurrentPrice = &v
+				referenceCurrentFromChainlink = true
 			}
 			if !oracleLatest.UpdatedAt.IsZero() {
 				refTime := oracleLatest.UpdatedAt
@@ -1640,13 +1618,13 @@ func (s *UpDownService) buildSignal(
 	if synthResp != nil {
 		if synthResp.StartPrice > 0 {
 			v := synthResp.StartPrice
-			if referenceStartPrice == nil {
+			if referenceStartPrice == nil && !chainlinkReference {
 				referenceStartPrice = &v
 			}
 		}
 		if synthResp.CurrentPrice > 0 {
 			v := synthResp.CurrentPrice
-			if referenceCurrentPrice == nil {
+			if referenceCurrentPrice == nil && !chainlinkReference {
 				referenceCurrentPrice = &v
 			}
 		}
@@ -1668,6 +1646,23 @@ func (s *UpDownService) buildSignal(
 		if !synthClock.IsZero() && absDuration(now.Sub(synthClock)) > synthClockDriftMax {
 			flags.ClockDrift = true
 			reasons = append(reasons, "clock_drift")
+		}
+	}
+
+	// Ensure window boundary prices are always present for fast-window post-trade analytics.
+	// Fallbacks use the best available reference price when strict boundary capture is missing.
+	if referenceStartPrice == nil && !now.Before(market.EventStartTime) {
+		if referenceCurrentPrice != nil && *referenceCurrentPrice > 0 && (!chainlinkReference || referenceCurrentFromChainlink) {
+			v := *referenceCurrentPrice
+			referenceStartPrice = &v
+			reasons = append(reasons, "start_snapshot_fallback_current")
+		}
+	}
+	if referenceEndPrice == nil && !now.Before(market.EventEndTime) {
+		if referenceCurrentPrice != nil && *referenceCurrentPrice > 0 && (!chainlinkReference || referenceCurrentFromChainlink) {
+			v := *referenceCurrentPrice
+			referenceEndPrice = &v
+			reasons = append(reasons, "end_snapshot_fallback_current")
 		}
 	}
 
@@ -2269,7 +2264,7 @@ func buildRecommendation(
 	}
 
 	return UpDownRecommendation{
-		ID:                     fmt.Sprintf("%s-%d", market.Slug, now.Unix()),
+		ID:                     fmt.Sprintf("%s-%d", market.Slug, now.UnixNano()),
 		Slug:                   market.Slug,
 		ConditionID:            market.ConditionID,
 		Asset:                  market.Asset,
@@ -2658,61 +2653,231 @@ func latestMarketTimestamp(m models.Market) time.Time {
 	return latest
 }
 
-func (s *UpDownService) persistSnapshot(ctx context.Context, market UpDownMarket, signal UpDownSignal) {
+func (s *UpDownService) persistMarketWindow(ctx context.Context, market UpDownMarket, signal UpDownSignal) {
 	if s.db == nil {
 		return
 	}
-	payload, err := json.Marshal(signal)
+
+	signalPayload, err := json.Marshal(signal)
 	if err != nil {
 		return
 	}
-	reasons, _ := json.Marshal(signal.ReasonCodes)
+	recPayload, err := json.Marshal(signal.Recommendation)
+	if err != nil {
+		return
+	}
+
+	now := time.Now().UTC()
+	status := resolveUpDownWindowStatus(now, market.EventStartTime, market.EventEndTime)
+	resolvedOutcome, resolvedAt := resolveUpDownOutcome(signal)
+
 	dbCtx, cancel := context.WithTimeout(context.Background(), upDownPersistTimeout)
 	defer cancel()
-	_ = s.db.WithContext(dbCtx).Exec(`
-		INSERT INTO updown_signal_snapshots (
+
+	if err := s.db.WithContext(dbCtx).Exec(`
+		INSERT INTO updown_market_windows (
 			slug, condition_id, asset, window_type, resolution_source_type,
-			p_market_up, p_synth_up, p_model_up, p_final_up,
-			ev_up, ev_down, confidence, signal_payload, reason_codes
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb)
+			event_start_time, event_end_time, status,
+			reference_start_price, reference_current_price, reference_end_price,
+			resolved_outcome, outcome_resolved_at,
+			p_final_up,
+			recommendation_id, recommendation_decision, recommendation_side, recommendation_expected_value,
+			recommendation_confidence, recommendation_limit_price, recommendation_size_shares,
+			signal_timestamp, signal_payload, recommendation_payload,
+			created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, NOW(), NOW())
+		ON CONFLICT (condition_id, event_start_time)
+		DO UPDATE SET
+			slug = EXCLUDED.slug,
+			asset = EXCLUDED.asset,
+			window_type = EXCLUDED.window_type,
+			resolution_source_type = EXCLUDED.resolution_source_type,
+			event_end_time = EXCLUDED.event_end_time,
+			status = EXCLUDED.status,
+			reference_start_price = EXCLUDED.reference_start_price,
+			reference_current_price = EXCLUDED.reference_current_price,
+			reference_end_price = EXCLUDED.reference_end_price,
+			resolved_outcome = EXCLUDED.resolved_outcome,
+			outcome_resolved_at = EXCLUDED.outcome_resolved_at,
+			p_final_up = EXCLUDED.p_final_up,
+			recommendation_id = EXCLUDED.recommendation_id,
+			recommendation_decision = EXCLUDED.recommendation_decision,
+			recommendation_side = EXCLUDED.recommendation_side,
+			recommendation_expected_value = EXCLUDED.recommendation_expected_value,
+			recommendation_confidence = EXCLUDED.recommendation_confidence,
+			recommendation_limit_price = EXCLUDED.recommendation_limit_price,
+			recommendation_size_shares = EXCLUDED.recommendation_size_shares,
+			signal_timestamp = EXCLUDED.signal_timestamp,
+			signal_payload = EXCLUDED.signal_payload,
+			recommendation_payload = EXCLUDED.recommendation_payload,
+			updated_at = NOW()
 	`,
-		market.Slug, market.ConditionID, market.Asset, string(market.WindowType), string(market.ResolutionSourceType),
-		signal.PMarketUp, signal.PSynthUp, signal.PModelUp, signal.PFinalUp,
-		signal.EVUp, signal.EVDown, signal.Confidence, string(payload), string(reasons),
-	).Error
-}
-
-func (s *UpDownService) persistRecommendation(ctx context.Context, rec UpDownRecommendation) {
-	if s.db == nil {
+		market.Slug,
+		market.ConditionID,
+		market.Asset,
+		string(market.WindowType),
+		string(market.ResolutionSourceType),
+		market.EventStartTime.UTC(),
+		market.EventEndTime.UTC(),
+		status,
+		signal.ReferenceStartPrice,
+		signal.ReferenceCurrentPrice,
+		signal.ReferenceEndPrice,
+		resolvedOutcome,
+		resolvedAt,
+		signal.PFinalUp,
+		signal.Recommendation.ID,
+		signal.Recommendation.Decision,
+		signal.Recommendation.RecommendedSide,
+		signal.Recommendation.ExpectedValue,
+		signal.Recommendation.Confidence,
+		signal.Recommendation.SuggestedLimitPrice,
+		signal.Recommendation.SuggestedSizeShares,
+		signal.Timestamp.UTC(),
+		string(signalPayload),
+		string(recPayload),
+	).Error; err != nil {
 		return
 	}
-	payload, err := json.Marshal(rec)
-	if err != nil {
+
+	if resolvedOutcome == upDownOutcomePending {
 		return
 	}
-	dbCtx, cancel := context.WithTimeout(context.Background(), upDownPersistTimeout)
-	defer cancel()
-	_ = s.db.WithContext(dbCtx).Exec(`
-		INSERT INTO updown_recommendations (
-			recommendation_id, slug, condition_id, asset, window_type,
-			decision, recommended_side, expected_value, confidence,
-			suggested_limit_price, suggested_size_shares, kelly_raw, kelly_capped,
-			risk_flags, recommendation_payload
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb)
-	`,
-		rec.ID, rec.Slug, rec.ConditionID, rec.Asset, string(rec.WindowType),
-		rec.Decision, rec.RecommendedSide, rec.ExpectedValue, rec.Confidence,
-		rec.SuggestedLimitPrice, rec.SuggestedSizeShares, rec.KellyRaw, rec.KellyCapped,
-		toJSONMap(rec.RiskFlags), string(payload),
-	).Error
+
+	day := market.EventStartTime.UTC().Truncate(24 * time.Hour)
+	dayEnd := day.Add(24 * time.Hour)
+	asset := strings.ToUpper(strings.TrimSpace(market.Asset))
+	window := string(market.WindowType)
+
+	if err := s.db.WithContext(dbCtx).Exec(`
+		UPDATE updown_decisions
+		SET eventual_outcome = ?
+		WHERE slug = ? AND (eventual_outcome IS NULL OR eventual_outcome = '')
+	`, resolvedOutcome, market.Slug).Error; err != nil {
+		// Non-critical; continue with performance sync.
+	}
+
+	_ = s.syncPerformanceDailyFromWindows(dbCtx, day, dayEnd, asset, window)
 }
 
-func toJSONMap(v interface{}) string {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return "{}"
+func resolveUpDownWindowStatus(now, start, end time.Time) string {
+	now = now.UTC()
+	start = start.UTC()
+	end = end.UTC()
+	switch {
+	case now.Before(start):
+		return upDownWindowStatusScheduled
+	case now.Before(end):
+		return upDownWindowStatusActive
+	default:
+		return upDownWindowStatusClosed
 	}
-	return string(data)
+}
+
+func resolveUpDownOutcome(signal UpDownSignal) (string, *time.Time) {
+	if signal.ReferenceStartPrice == nil || signal.ReferenceEndPrice == nil {
+		return upDownOutcomePending, nil
+	}
+	start := *signal.ReferenceStartPrice
+	end := *signal.ReferenceEndPrice
+	if start <= 0 || end <= 0 {
+		return upDownOutcomePending, nil
+	}
+
+	var resolved string
+	switch {
+	case end > start:
+		resolved = upDownOutcomeUp
+	case end < start:
+		resolved = upDownOutcomeDown
+	default:
+		resolved = upDownOutcomeFlat
+	}
+
+	ts := signal.Timestamp.UTC()
+	if signal.ReferenceUpdatedAt != nil && !signal.ReferenceUpdatedAt.IsZero() {
+		ts = signal.ReferenceUpdatedAt.UTC()
+	}
+	return resolved, &ts
+}
+
+func (s *UpDownService) syncPerformanceDailyFromWindows(ctx context.Context, dayStart, dayEnd time.Time, asset, window string) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	if dayEnd.Before(dayStart) {
+		return nil
+	}
+
+	return s.db.WithContext(ctx).Exec(`
+		WITH stats AS (
+			SELECT
+				COALESCE(COUNT(*) FILTER (
+					WHERE recommendation_decision IN ('BUY_UP', 'BUY_DOWN')
+					  AND resolved_outcome IN ('UP', 'DOWN', 'FLAT')
+				), 0) AS trades_count,
+				COALESCE(AVG(
+					CASE
+						WHEN recommendation_decision = 'BUY_UP' AND resolved_outcome = 'UP' THEN 1.0
+						WHEN recommendation_decision = 'BUY_DOWN' AND resolved_outcome = 'DOWN' THEN 1.0
+						WHEN recommendation_decision IN ('BUY_UP', 'BUY_DOWN') AND resolved_outcome IN ('UP', 'DOWN', 'FLAT') THEN 0.0
+						ELSE NULL
+					END
+				), 0) AS hit_rate,
+				COALESCE(AVG(
+					CASE
+						WHEN p_final_up IS NULL OR resolved_outcome NOT IN ('UP', 'DOWN', 'FLAT') THEN NULL
+						WHEN resolved_outcome = 'UP' THEN POWER(p_final_up - 1.0, 2)
+						WHEN resolved_outcome = 'DOWN' THEN POWER(p_final_up - 0.0, 2)
+						ELSE POWER(p_final_up - 0.5, 2)
+					END
+				), 0) AS brier_score,
+				COALESCE(SUM(
+					CASE
+						WHEN recommendation_decision IN ('BUY_UP', 'BUY_DOWN') AND resolved_outcome IN ('UP', 'DOWN', 'FLAT')
+							THEN recommendation_expected_value
+						ELSE 0
+					END
+				), 0) AS realized_ev
+			FROM updown_market_windows
+			WHERE event_start_time >= ?
+			  AND event_start_time < ?
+			  AND asset = ?
+			  AND window_type = ?
+		)
+		INSERT INTO updown_performance_daily (
+			day, asset, window_type, trades_count, hit_rate, brier_score, realized_ev, max_drawdown, metadata, created_at, updated_at
+		)
+		SELECT
+			DATE(?),
+			?,
+			?,
+			stats.trades_count,
+			stats.hit_rate,
+			stats.brier_score,
+			stats.realized_ev,
+			0,
+			jsonb_build_object('source', 'updown_market_windows'),
+			NOW(),
+			NOW()
+		FROM stats
+		ON CONFLICT (day, asset, window_type)
+		DO UPDATE SET
+			trades_count = EXCLUDED.trades_count,
+			hit_rate = EXCLUDED.hit_rate,
+			brier_score = EXCLUDED.brier_score,
+			realized_ev = EXCLUDED.realized_ev,
+			metadata = EXCLUDED.metadata,
+			updated_at = NOW()
+	`,
+		dayStart.UTC(),
+		dayEnd.UTC(),
+		asset,
+		window,
+		dayStart.UTC(),
+		asset,
+		window,
+	).Error
 }
 
 func upDownClamp(v, lo, hi float64) float64 {

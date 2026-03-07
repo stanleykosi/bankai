@@ -65,7 +65,10 @@ const (
 	activeMarketsLogThrottle       = 30 * time.Second
 	activeMarketsSnapshotCap       = 800
 
-	realtimePricePipelineTimeout    = 200 * time.Millisecond
+	realtimePricePipelineTimeout    = 500 * time.Millisecond
+	realtimePricePipelinePerToken   = 2 * time.Millisecond
+	realtimePricePipelineMaxTimeout = 2 * time.Second
+	realtimePricePipelineBatchSize  = 240
 	realtimePriceFallbackTimeout    = 400 * time.Millisecond
 	realtimePriceFallbackMaxMarkets = 12
 	realtimePriceFallbackMaxTokens  = 6
@@ -1207,72 +1210,106 @@ func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []mode
 		index   int
 		side    string
 		tokenID string
+		key     string
 	}
 
-	pipe := s.Redis.Pipeline()
-	cmdMeta := make(map[*redis.MapStringStringCmd]keyMeta)
+	lookups := make([]keyMeta, 0, len(markets)*2)
 	fallbackTargets := make([]keyMeta, 0)
 
 	for idx, market := range markets {
 		if market.TokenIDYes != "" {
-			cmd := pipe.HGetAll(ctx, priceRedisKey(market.ConditionID, market.TokenIDYes))
-			cmdMeta[cmd] = keyMeta{index: idx, side: "yes", tokenID: market.TokenIDYes}
+			lookups = append(lookups, keyMeta{
+				index:   idx,
+				side:    "yes",
+				tokenID: market.TokenIDYes,
+				key:     priceRedisKey(market.ConditionID, market.TokenIDYes),
+			})
 		}
 		if market.TokenIDNo != "" {
-			cmd := pipe.HGetAll(ctx, priceRedisKey(market.ConditionID, market.TokenIDNo))
-			cmdMeta[cmd] = keyMeta{index: idx, side: "no", tokenID: market.TokenIDNo}
+			lookups = append(lookups, keyMeta{
+				index:   idx,
+				side:    "no",
+				tokenID: market.TokenIDNo,
+				key:     priceRedisKey(market.ConditionID, market.TokenIDNo),
+			})
 		}
 	}
 
-	if len(cmdMeta) == 0 {
+	if len(lookups) == 0 {
 		return
 	}
 
-	cacheCtx, cancel := context.WithTimeout(context.Background(), realtimePricePipelineTimeout)
-	_, pipeErr := pipe.Exec(cacheCtx)
-	cancel()
-	if pipeErr != nil {
-		s.logRealtimePriceError("pipeline", "attachRealtimePrices pipeline degraded: %v", pipeErr)
-		return
-	}
+	for start := 0; start < len(lookups); start += realtimePricePipelineBatchSize {
+		end := start + realtimePricePipelineBatchSize
+		if end > len(lookups) {
+			end = len(lookups)
+		}
+		batch := lookups[start:end]
+		pipe := s.Redis.Pipeline()
+		cmdMeta := make(map[*redis.MapStringStringCmd]keyMeta, len(batch))
 
-	for cmd, meta := range cmdMeta {
-		result, err := cmd.Result()
-		if err != nil || len(result) == 0 {
-			if meta.tokenID != "" {
+		for _, meta := range batch {
+			cmd := pipe.HGetAll(context.Background(), meta.key)
+			cmdMeta[cmd] = meta
+		}
+
+		timeout := realtimePricePipelineTimeout + (time.Duration(len(batch)) * realtimePricePipelinePerToken)
+		if timeout > realtimePricePipelineMaxTimeout {
+			timeout = realtimePricePipelineMaxTimeout
+		}
+
+		cacheCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		_, pipeErr := pipe.Exec(cacheCtx)
+		cancel()
+		if pipeErr != nil {
+			s.logRealtimePriceError(
+				"pipeline",
+				"attachRealtimePrices pipeline degraded: %v (batch=%d timeout=%s)",
+				pipeErr,
+				len(batch),
+				timeout,
+			)
+			continue
+		}
+
+		for cmd, meta := range cmdMeta {
+			result, err := cmd.Result()
+			if err != nil || len(result) == 0 {
+				if meta.tokenID != "" {
+					fallbackTargets = append(fallbackTargets, meta)
+				}
+				continue
+			}
+
+			bestBid := parseStringFloat(result["best_bid"])
+			bestAsk := parseStringFloat(result["best_ask"])
+			lastTradePrice := parseStringFloat(result["last_trade_price"])
+			ts := parseUnixTimestamp(result["updated"])
+			if ts == nil {
+				ts = parseUnixTimestamp(result["last_trade_updated"])
+			}
+
+			if meta.side == "yes" {
+				markets[meta.index].YesPrice = lastTradePrice
+				markets[meta.index].YesBestBid = bestBid
+				markets[meta.index].YesBestAsk = bestAsk
+				markets[meta.index].YesPriceUpdated = ts
+			} else {
+				markets[meta.index].NoPrice = lastTradePrice
+				markets[meta.index].NoBestBid = bestBid
+				markets[meta.index].NoBestAsk = bestAsk
+				markets[meta.index].NoPriceUpdated = ts
+			}
+
+			if meta.tokenID == "" {
+				continue
+			}
+
+			midpointAvailable := bestBid > 0 && bestAsk > 0 && bestBid <= bestAsk
+			spreadTooWide := midpointAvailable && (bestAsk-bestBid > 0.10)
+			if lastTradePrice <= 0 && (!midpointAvailable || spreadTooWide) {
 				fallbackTargets = append(fallbackTargets, meta)
 			}
-			continue
-		}
-
-		bestBid := parseStringFloat(result["best_bid"])
-		bestAsk := parseStringFloat(result["best_ask"])
-		lastTradePrice := parseStringFloat(result["last_trade_price"])
-		ts := parseUnixTimestamp(result["updated"])
-		if ts == nil {
-			ts = parseUnixTimestamp(result["last_trade_updated"])
-		}
-
-		if meta.side == "yes" {
-			markets[meta.index].YesPrice = lastTradePrice
-			markets[meta.index].YesBestBid = bestBid
-			markets[meta.index].YesBestAsk = bestAsk
-			markets[meta.index].YesPriceUpdated = ts
-		} else {
-			markets[meta.index].NoPrice = lastTradePrice
-			markets[meta.index].NoBestBid = bestBid
-			markets[meta.index].NoBestAsk = bestAsk
-			markets[meta.index].NoPriceUpdated = ts
-		}
-
-		if meta.tokenID == "" {
-			continue
-		}
-
-		midpointAvailable := bestBid > 0 && bestAsk > 0 && bestBid <= bestAsk
-		spreadTooWide := midpointAvailable && (bestAsk-bestBid > 0.10)
-		if lastTradePrice <= 0 && (!midpointAvailable || spreadTooWide) {
-			fallbackTargets = append(fallbackTargets, meta)
 		}
 	}
 
@@ -1284,6 +1321,20 @@ func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []mode
 	}
 	if ctx != nil && ctx.Err() != nil {
 		return
+	}
+
+	if len(fallbackTargets) > 1 {
+		seen := make(map[string]struct{}, len(fallbackTargets))
+		deduped := make([]keyMeta, 0, len(fallbackTargets))
+		for _, target := range fallbackTargets {
+			fallbackKey := target.side + ":" + target.tokenID
+			if _, ok := seen[fallbackKey]; ok {
+				continue
+			}
+			seen[fallbackKey] = struct{}{}
+			deduped = append(deduped, target)
+		}
+		fallbackTargets = deduped
 	}
 
 	if len(fallbackTargets) > realtimePriceFallbackMaxTokens {
@@ -1904,9 +1955,8 @@ func (s *MarketService) RequestMarketStream(ctx context.Context, conditionID str
 	if cached := s.getCachedActiveMarketByConditionID(ctx, conditionID); cached != nil {
 		market = *cached
 	} else {
-		if err := s.DB.WithContext(ctx).Where("condition_id = ?", conditionID).First(&market).Error; err != nil {
-			return err
-		}
+		// Up/down streaming uses active cache as source of truth; do not hit DB here.
+		return gorm.ErrRecordNotFound
 	}
 
 	tokenValues := make([]string, 0, 2)

@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
-  AlertTriangle,
   ArrowRight,
   ChevronRight,
   Clock3,
@@ -72,6 +71,28 @@ const fmtCountdown = (seconds: number) => {
   return `${String(m).padStart(2, "0")}:${String(rem).padStart(2, "0")}`;
 };
 
+const formatClock = (value?: string) => {
+  if (!value) return "--";
+  const ts = Date.parse(value);
+  if (Number.isNaN(ts)) return "--";
+  return new Date(ts).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
+
+const formatDateClock = (value?: string) => {
+  if (!value) return "--";
+  const ts = Date.parse(value);
+  if (Number.isNaN(ts)) return "--";
+  return new Date(ts).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+};
+
 const toMillis = (value?: string) => {
   if (!value) return 0;
   const ts = Date.parse(value);
@@ -88,11 +109,7 @@ const WINDOW_ORDER: Record<string, number> = {
 const normalizeSelectedSlug = (value: string | null | undefined): string | null => {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
-  if (
-    trimmed === "" ||
-    trimmed === "null" ||
-    trimmed === "undefined"
-  ) {
+  if (trimmed === "" || trimmed === "null" || trimmed === "undefined") {
     return null;
   }
   return trimmed;
@@ -112,7 +129,18 @@ const compareMarketStart = (a: UpDownMarket, b: UpDownMarket) => {
   return a.slug.localeCompare(b.slug);
 };
 
-const buildRailMarkets = (markets: UpDownMarket[], nowMs: number): UpDownMarket[] => {
+const formatRiskFlag = (value: string) => value.replaceAll("_", " ");
+
+type RailLane = {
+  key: string;
+  asset: string;
+  windowType: string;
+  live: UpDownMarket | null;
+  next: UpDownMarket | null;
+  queue: UpDownMarket[];
+};
+
+const buildRailLanes = (markets: UpDownMarket[], nowMs: number): RailLane[] => {
   if (!markets.length) return [];
 
   const grouped = new Map<string, UpDownMarket[]>();
@@ -126,56 +154,94 @@ const buildRailMarkets = (markets: UpDownMarket[], nowMs: number): UpDownMarket[
     }
   }
 
-  const keys = [...grouped.keys()].sort((left, right) => {
-    const [leftAsset, leftWindow] = left.split("|");
-    const [rightAsset, rightWindow] = right.split("|");
-    const assetDiff = leftAsset.localeCompare(rightAsset);
-    if (assetDiff !== 0) return assetDiff;
-    return (WINDOW_ORDER[leftWindow] ?? 99) - (WINDOW_ORDER[rightWindow] ?? 99);
-  });
+  const lanes: RailLane[] = [];
+  for (const [key, groupedMarkets] of grouped) {
+    const queue = [...groupedMarkets]
+      .filter((market) => toMillis(market.event_end_time) > nowMs - 5_000)
+      .sort(compareMarketStart);
+    if (!queue.length) continue;
 
-  const rail: UpDownMarket[] = [];
-  for (const key of keys) {
-    const lane = [...(grouped.get(key) ?? [])].sort(compareMarketStart);
-    const active = lane.find((market) => isMarketActiveAt(market, nowMs));
-    const upcoming = lane.filter((market) => toMillis(market.event_start_time) > nowMs);
+    const liveCandidates = queue.filter((market) => isMarketActiveAt(market, nowMs));
+    const live =
+      liveCandidates.sort(
+        (left, right) => toMillis(left.event_end_time) - toMillis(right.event_end_time),
+      )[0] ?? null;
 
-    if (active) {
-      rail.push(active);
-      if (upcoming[0] && upcoming[0].slug !== active.slug) {
-        rail.push(upcoming[0]);
-      }
-      continue;
+    const future = queue.filter((market) => toMillis(market.event_start_time) > nowMs);
+    const next = future[0] ?? null;
+
+    if (!live && !next) continue;
+
+    const [asset, windowType] = key.split("|");
+    lanes.push({
+      key,
+      asset,
+      windowType,
+      live,
+      next,
+      queue,
+    });
+  }
+
+  lanes.sort((left, right) => {
+    if (!!left.live !== !!right.live) {
+      return left.live ? -1 : 1;
     }
 
-    if (upcoming[0]) rail.push(upcoming[0]);
-    if (upcoming[1] && upcoming[1].slug !== upcoming[0]?.slug) {
-      rail.push(upcoming[1]);
+    const leftTime = left.live
+      ? toMillis(left.live.event_end_time)
+      : toMillis(left.next?.event_start_time);
+    const rightTime = right.live
+      ? toMillis(right.live.event_end_time)
+      : toMillis(right.next?.event_start_time);
+    if (leftTime !== rightTime) {
+      return leftTime - rightTime;
+    }
+
+    const leftAsset = left.asset.localeCompare(right.asset);
+    if (leftAsset !== 0) return leftAsset;
+
+    return (WINDOW_ORDER[left.windowType] ?? 99) - (WINDOW_ORDER[right.windowType] ?? 99);
+  });
+
+  return lanes;
+};
+
+const flattenRailFocusMarkets = (lanes: RailLane[]): UpDownMarket[] => {
+  const out: UpDownMarket[] = [];
+  const seen = new Set<string>();
+
+  for (const lane of lanes) {
+    const candidates = [lane.live, lane.next];
+    for (const market of candidates) {
+      if (!market || seen.has(market.slug)) continue;
+      seen.add(market.slug);
+      out.push(market);
     }
   }
 
-  return rail;
+  return out;
 };
 
 const pickNextMarket = (
-  markets: UpDownMarket[],
+  lanes: RailLane[],
   nowMs: number,
   currentSlug: string | null,
 ): string | null => {
-  if (!markets.length) return null;
+  const focus = flattenRailFocusMarkets(lanes);
+  if (!focus.length) return null;
 
-  const active = markets.find((market) => isMarketActiveAt(market, nowMs));
+  const active = focus.find((market) => isMarketActiveAt(market, nowMs));
   if (active) return active.slug;
 
   if (currentSlug) {
-    const current = markets.find((market) => market.slug === currentSlug);
+    const current = focus.find((market) => market.slug === currentSlug);
     if (current && toMillis(current.event_end_time) > nowMs) {
       return current.slug;
     }
   }
 
-  const upcoming = markets.find((market) => toMillis(market.event_start_time) > nowMs);
-  return upcoming?.slug ?? markets[0]?.slug ?? null;
+  return focus[0]?.slug ?? null;
 };
 
 const hasSynthProbabilities = (signal: UpDownSignal | null) =>
@@ -189,15 +255,9 @@ export default function UpDownPage() {
   const [asset, setAsset] = useState<(typeof ASSETS)[number]>("ALL");
   const [windowType, setWindowType] = useState<(typeof WINDOWS)[number]>("all");
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
-  const [liveSignals, setLiveSignals] = useState<Record<string, UpDownSignal>>(
-    {},
-  );
-  const [prefill, setPrefill] = useState<TradeRecommendationPrefill | null>(
-    null,
-  );
-  const [prefillBlockReason, setPrefillBlockReason] = useState<string | null>(
-    null,
-  );
+  const [liveSignals, setLiveSignals] = useState<Record<string, UpDownSignal>>({});
+  const [prefill, setPrefill] = useState<TradeRecommendationPrefill | null>(null);
+  const [prefillBlockReason, setPrefillBlockReason] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState<number>(Date.now());
   const { augmentMarket } = usePriceStream();
 
@@ -239,22 +299,29 @@ export default function UpDownPage() {
     refetchInterval: 5_000,
     staleTime: 2_000,
   });
+
   const markets = marketsQuery.data ?? [];
-  const railMarkets = useMemo(
-    () => buildRailMarkets(markets, nowMs),
-    [markets, nowMs],
+  const railSourceMarkets = useMemo(() => {
+    const tradable = markets.filter((market) => market.tradable);
+    return tradable.length ? tradable : markets;
+  }, [markets]);
+
+  const railLanes = useMemo(
+    () => buildRailLanes(railSourceMarkets, nowMs),
+    [railSourceMarkets, nowMs],
   );
-  const activeRailMarkets = useMemo(
-    () => railMarkets.filter((market) => isMarketActiveAt(market, nowMs)),
-    [railMarkets, nowMs],
+
+  const railFocusMarkets = useMemo(
+    () => flattenRailFocusMarkets(railLanes),
+    [railLanes],
   );
-  const queuedRailMarkets = useMemo(
-    () => railMarkets.filter((market) => !isMarketActiveAt(market, nowMs)),
-    [railMarkets, nowMs],
-  );
+
   const selectedMarket = useMemo(
-    () => markets.find((m) => m.slug === normalizedSelectedSlug) ?? null,
-    [markets, normalizedSelectedSlug],
+    () =>
+      railSourceMarkets.find((market) => market.slug === normalizedSelectedSlug) ??
+      markets.find((market) => market.slug === normalizedSelectedSlug) ??
+      null,
+    [markets, normalizedSelectedSlug, railSourceMarkets],
   );
 
   useEffect(() => {
@@ -263,28 +330,28 @@ export default function UpDownPage() {
   }, []);
 
   useEffect(() => {
-    if (!railMarkets.length) {
+    if (!railFocusMarkets.length) {
       if (selectedSlug !== null) {
         setSelectedSlug(null);
       }
       return;
     }
 
-    const hasSelection = normalizedSelectedSlug !== null;
-    const selectionStillExists =
-      hasSelection && railMarkets.some((m) => m.slug === normalizedSelectedSlug);
-    if (selectionStillExists) {
+    if (
+      normalizedSelectedSlug !== null &&
+      railFocusMarkets.some((market) => market.slug === normalizedSelectedSlug)
+    ) {
       return;
     }
 
-    const next = pickNextMarket(railMarkets, nowMs, null);
-    if (next && next !== selectedSlug) {
+    const next = pickNextMarket(railLanes, nowMs, normalizedSelectedSlug);
+    if (next !== normalizedSelectedSlug) {
       setSelectedSlug(next);
     }
-  }, [normalizedSelectedSlug, nowMs, railMarkets, selectedSlug]);
+  }, [railFocusMarkets, railLanes, nowMs, normalizedSelectedSlug, selectedSlug]);
 
   useEffect(() => {
-    if (markets.length === 0) {
+    if (railSourceMarkets.length === 0) {
       setLiveSignals({});
       return;
     }
@@ -319,7 +386,9 @@ export default function UpDownPage() {
             ...prev,
             [payload.slug as string]: payload.signal as UpDownSignal,
           }));
-        } catch {}
+        } catch {
+          // ignore malformed payloads
+        }
       };
       source.onerror = () => {
         source?.close();
@@ -331,13 +400,14 @@ export default function UpDownPage() {
         retry = setTimeout(connect, STREAM_RETRY_BASE_MS * retries);
       };
     };
+
     connect();
     return () => {
       stopped = true;
       clearRetry();
       source?.close();
     };
-  }, [markets.length]);
+  }, [railSourceMarkets.length]);
 
   useEffect(() => {
     const conditionId = selectedMarket?.condition_id;
@@ -362,10 +432,11 @@ export default function UpDownPage() {
   const selectedRecommendation = useMemo(() => {
     if (selectedSignal?.recommendation) return selectedSignal.recommendation;
     return (
-      (recommendationsQuery.data ?? []).find((r) => r.slug === selectedSlug) ??
-      null
+      (recommendationsQuery.data ?? []).find(
+        (recommendation) => recommendation.slug === normalizedSelectedSlug,
+      ) ?? null
     );
-  }, [recommendationsQuery.data, selectedSignal?.recommendation, selectedSlug]);
+  }, [recommendationsQuery.data, selectedSignal?.recommendation, normalizedSelectedSlug]);
 
   const staleSignal = useMemo(() => {
     const ts = toMillis(selectedSignal?.timestamp);
@@ -373,20 +444,43 @@ export default function UpDownPage() {
     return nowMs - ts > 30_000;
   }, [selectedSignal?.timestamp, nowMs]);
 
+  const activeRiskFlags = useMemo(() => {
+    if (!selectedSignal) return [];
+    return Object.entries(selectedSignal.risk_flags)
+      .filter(([, enabled]) => Boolean(enabled))
+      .map(([flag]) => flag);
+  }, [selectedSignal]);
+
   const activeCountdown = useMemo(() => {
     if (!selectedMarket) return "--";
     const start = toMillis(selectedMarket.event_start_time);
     const end = toMillis(selectedMarket.event_end_time);
+    if (!start || !end) return "--";
     if (nowMs < start) {
       return `Starts in ${fmtCountdown((start - nowMs) / 1000)}`;
     }
-    return `Ends in ${fmtCountdown((end - nowMs) / 1000)}`;
+    if (nowMs < end) {
+      return `Ends in ${fmtCountdown((end - nowMs) / 1000)}`;
+    }
+    return "Closed";
   }, [nowMs, selectedMarket]);
 
-  const liveMarket = selectedMarket
-    ? augmentMarket(selectedMarket.market)
-    : null;
+  const referenceAgeSeconds = useMemo(() => {
+    const ts = toMillis(selectedSignal?.reference_updated_at ?? selectedSignal?.timestamp);
+    if (!ts) return null;
+    return Math.max(0, Math.floor((nowMs - ts) / 1000));
+  }, [selectedSignal?.reference_updated_at, selectedSignal?.timestamp, nowMs]);
+
+  const startSnapshotMissing = useMemo(() => {
+    if (!selectedMarket || !selectedSignal) return false;
+    const start = toMillis(selectedMarket.event_start_time);
+    if (!start || nowMs < start) return false;
+    return typeof selectedSignal.reference_start_price !== "number";
+  }, [selectedMarket, selectedSignal, nowMs]);
+
+  const liveMarket = selectedMarket ? augmentMarket(selectedMarket.market) : null;
   const signalHasSynth = hasSynthProbabilities(selectedSignal);
+
   const integrityFailure =
     staleSignal ||
     !!selectedSignal?.risk_flags?.data_integrity_failed ||
@@ -395,10 +489,8 @@ export default function UpDownPage() {
     !!prefillBlockReason;
 
   const prefillDriftBps = useMemo(() => {
-    if (!prefill || prefill.disabled || !selectedSignal || !selectedMarket)
-      return 0;
-    const isUpOutcome =
-      prefill.outcomeIndex === selectedMarket.outcome_index_up;
+    if (!prefill || prefill.disabled || !selectedSignal || !selectedMarket) return 0;
+    const isUpOutcome = prefill.outcomeIndex === selectedMarket.outcome_index_up;
     const liveAsk = isUpOutcome
       ? selectedSignal.executable_ask_up
       : selectedSignal.executable_ask_down;
@@ -461,26 +553,27 @@ export default function UpDownPage() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!railMarkets.length) return;
+      if (!railFocusMarkets.length) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
-      if (
-        target?.closest("input, textarea, select, [contenteditable='true']")
-      ) {
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) {
         return;
       }
+
       if (event.key === "j" || event.key === "ArrowDown") {
         event.preventDefault();
-        const idx = railMarkets.findIndex((m) => m.slug === normalizedSelectedSlug);
-        const next = railMarkets[(idx + 1 + railMarkets.length) % railMarkets.length];
+        const idx = railFocusMarkets.findIndex((market) => market.slug === normalizedSelectedSlug);
+        const next = railFocusMarkets[(idx + 1 + railFocusMarkets.length) % railFocusMarkets.length];
         if (next) setSelectedSlug(next.slug);
       }
+
       if (event.key === "k" || event.key === "ArrowUp") {
         event.preventDefault();
-        const idx = railMarkets.findIndex((m) => m.slug === normalizedSelectedSlug);
-        const prev = railMarkets[(idx - 1 + railMarkets.length) % railMarkets.length];
+        const idx = railFocusMarkets.findIndex((market) => market.slug === normalizedSelectedSlug);
+        const prev = railFocusMarkets[(idx - 1 + railFocusMarkets.length) % railFocusMarkets.length];
         if (prev) setSelectedSlug(prev.slug);
       }
+
       if (event.key.toLowerCase() === "p") {
         event.preventDefault();
         if (selectedRecommendation && !selectedRecommendation.prefill.disabled) {
@@ -488,9 +581,10 @@ export default function UpDownPage() {
         }
       }
     };
+
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [normalizedSelectedSlug, railMarkets, selectedRecommendation]);
+  }, [normalizedSelectedSlug, railFocusMarkets, selectedRecommendation]);
 
   return (
     <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-6 px-4 py-6">
@@ -500,9 +594,7 @@ export default function UpDownPage() {
             <Signal className="h-5 w-5 text-primary" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold text-foreground">
-              Up/Down Pro
-            </h1>
+            <h1 className="text-xl font-semibold text-foreground">Up/Down Pro</h1>
             <p className="text-xs text-muted-foreground">
               Crypto windows only. Strategy advisory + user-confirmed execution.
             </p>
@@ -550,7 +642,7 @@ export default function UpDownPage() {
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[320px,1fr,420px]">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[340px,1fr,420px]">
         <Card className="border-border/70 bg-card/70">
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 font-mono text-xs uppercase tracking-widest">
@@ -558,32 +650,31 @@ export default function UpDownPage() {
               Market Rail
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-2">
+          <CardContent className="space-y-3">
             {marketsQuery.isError ? (
-              <p className="text-xs text-destructive">
-                Failed to load up/down markets.
-              </p>
-            ) : railMarkets.length === 0 ? (
+              <p className="text-xs text-destructive">Failed to load up/down markets.</p>
+            ) : railLanes.length === 0 ? (
               <p className="text-xs text-muted-foreground">
-                No tradable up/down markets in this filter.
+                No up/down markets are available for this filter.
               </p>
             ) : (
-              <div className="max-h-[70vh] space-y-3 overflow-y-auto pr-1">
-                <RailSection
-                  title="Live Now"
-                  markets={activeRailMarkets}
-                  nowMs={nowMs}
-                  selectedSlug={normalizedSelectedSlug}
-                  onSelect={setSelectedSlug}
-                />
-                <RailSection
-                  title={activeRailMarkets.length ? "Primed Next" : "Upcoming"}
-                  markets={queuedRailMarkets}
-                  nowMs={nowMs}
-                  selectedSlug={normalizedSelectedSlug}
-                  onSelect={setSelectedSlug}
-                />
-              </div>
+              <>
+                <div className="flex items-center justify-between px-1 text-[10px] font-mono uppercase tracking-wide text-muted-foreground">
+                  <span>{railLanes.filter((lane) => lane.live).length} live lanes</span>
+                  <span>{railLanes.length} total lanes</span>
+                </div>
+                <div className="max-h-[72vh] space-y-3 overflow-y-auto pr-1">
+                  {railLanes.map((lane) => (
+                    <RailLaneCard
+                      key={lane.key}
+                      lane={lane}
+                      nowMs={nowMs}
+                      selectedSlug={normalizedSelectedSlug}
+                      onSelect={setSelectedSlug}
+                    />
+                  ))}
+                </div>
+              </>
             )}
           </CardContent>
         </Card>
@@ -596,210 +687,160 @@ export default function UpDownPage() {
                   <Gauge className="h-3.5 w-3.5" />
                   Active Signal
                 </div>
-                <span className="text-[11px] text-muted-foreground">
-                  {activeCountdown}
-                </span>
+                <span className="text-[11px] text-muted-foreground">{activeCountdown}</span>
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               {!selectedMarket || !selectedSignal ? (
                 <p className="text-sm text-muted-foreground">
                   Select a market to load signal and recommendation.
                 </p>
               ) : (
                 <>
-                  <div className="grid gap-3 sm:grid-cols-5">
-                    <Metric
-                      label="P_Market"
-                      value={pct(selectedSignal.p_market_up)}
-                    />
-                    <Metric
-                      label="P_Synth"
-                      value={pct(selectedSignal.p_synth_up)}
-                    />
-                    <Metric
-                      label="P_Model"
-                      value={pct(selectedSignal.p_model_up)}
-                    />
-                    <Metric label="P_LP" value={pct(selectedSignal.p_lp_up)} />
-                    <Metric
-                      label="P_Final"
-                      value={signalHasSynth ? pct(selectedSignal.p_final_up) : "--"}
-                      accent
-                    />
-                  </div>
-
-                  <div className="grid gap-3 sm:grid-cols-5">
-                    <Metric
-                      label="EV Up"
-                      value={signalHasSynth ? money(selectedSignal.ev_up) : "--"}
-                    />
-                    <Metric
-                      label="EV Down"
-                      value={signalHasSynth ? money(selectedSignal.ev_down) : "--"}
-                    />
-                    <Metric
-                      label="EV Gate"
-                      value={money(selectedSignal.ev_min_threshold)}
-                    />
-                    <Metric
-                      label="Confidence"
-                      value={pct(selectedSignal.confidence)}
-                    />
-                    <Metric label="Regime" value={selectedSignal.regime} />
-                  </div>
-
-                  <div className="grid gap-3 sm:grid-cols-4">
-                    <Metric
-                      label="Up Ask"
-                      value={pct(selectedSignal.executable_ask_up)}
-                    />
-                    <Metric
-                      label="Up Bid"
-                      value={pct(selectedSignal.executable_bid_up)}
-                    />
-                    <Metric
-                      label="Down Ask"
-                      value={pct(selectedSignal.executable_ask_down)}
-                    />
-                    <Metric
-                      label="Down Bid"
-                      value={pct(selectedSignal.executable_bid_down)}
-                    />
-                  </div>
-
-                  <div className="grid gap-3 sm:grid-cols-6">
-                    <Metric
-                      label="Feed"
-                      value={(selectedMarket.resolution_source_type || "unknown").toUpperCase()}
-                    />
-                    <Metric
-                      label="Oracle Start"
-                      value={price(selectedSignal.reference_start_price)}
-                    />
-                    <Metric
-                      label="Oracle Now"
-                      value={price(selectedSignal.reference_current_price)}
-                    />
-                    <Metric
-                      label="End Price"
-                      value={
-                        typeof selectedSignal.reference_end_price === "number"
-                          ? price(selectedSignal.reference_end_price)
-                          : isMarketActiveAt(selectedMarket, nowMs)
-                            ? "Pending"
-                            : "--"
-                      }
-                    />
-                    <Metric
-                      label="Window Start"
-                      value={new Date(selectedMarket.event_start_time).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    />
-                    <Metric
-                      label="Window End"
-                      value={new Date(selectedMarket.event_end_time).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    />
-                  </div>
-
-                  <div className="rounded-md border border-border/60 bg-background/40 p-3 text-xs">
-                    <div className="mb-2 flex items-center justify-between">
-                      <span className="font-mono uppercase tracking-wide text-muted-foreground">
-                        Recommendation
-                      </span>
-                      <span className="font-mono text-foreground">
+                  <div className="rounded-md border border-border/60 bg-background/40 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded bg-primary/15 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-primary">
+                          {selectedMarket.asset} {selectedMarket.window_type.toUpperCase()}
+                        </span>
+                        <span className="rounded bg-muted px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                          {(selectedMarket.resolution_source_type || "unknown").toUpperCase()}
+                        </span>
+                        <span
+                          className={cn(
+                            "rounded px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide",
+                            staleSignal
+                              ? "bg-amber-500/20 text-amber-300"
+                              : "bg-constructive/20 text-constructive",
+                          )}
+                        >
+                          {staleSignal ? "STALE" : "LIVE"}
+                        </span>
+                      </div>
+                      <span className="font-mono text-xs text-foreground">
                         {selectedRecommendation?.decision ?? "NO_TRADE"}
                       </span>
                     </div>
-                    <p className="text-muted-foreground">
-                      {selectedRecommendation?.reason_codes?.join(" · ") ||
-                        "No reason codes available."}
-                    </p>
-                    <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
-                      <span>Resolution source: {selectedMarket.resolution_source_type}</span>
-                      <span>
-                        {selectedSignal.reference_updated_at
-                          ? `Ref updated ${new Date(selectedSignal.reference_updated_at).toLocaleTimeString([], {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                              second: "2-digit",
-                            })}`
-                          : "Ref update --"}
-                      </span>
+                    <div className="mt-2 text-sm font-semibold text-foreground">
+                      {selectedMarket.market?.title || selectedMarket.slug}
+                    </div>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-5">
+                      <Metric label="P_Market" value={pct(selectedSignal.p_market_up)} />
+                      <Metric label="P_Synth" value={pct(selectedSignal.p_synth_up)} />
+                      <Metric label="P_Model" value={pct(selectedSignal.p_model_up)} />
+                      <Metric label="P_LP" value={pct(selectedSignal.p_lp_up)} />
+                      <Metric
+                        label="P_Final"
+                        value={signalHasSynth ? pct(selectedSignal.p_final_up) : "--"}
+                        accent
+                      />
                     </div>
                   </div>
 
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <Card className="border-border/60 bg-background/40">
-                      <CardHeader className="pb-1">
-                        <CardTitle className="text-[11px] font-mono uppercase tracking-wide text-muted-foreground">
-                          Microstructure
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent className="space-y-1 text-xs">
-                        <div className="flex items-center justify-between">
-                          <span>Spread (Up)</span>
-                          <span>
-                            {(selectedSignal.spread_up * 100).toFixed(2)}¢
-                          </span>
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    <div className="space-y-3">
+                      <div className="rounded-md border border-border/60 bg-background/40 p-3">
+                        <div className="mb-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Execution Quotes
                         </div>
-                        <div className="flex items-center justify-between">
-                          <span>Spread (Down)</span>
-                          <span>
-                            {(selectedSignal.spread_down * 100).toFixed(2)}¢
-                          </span>
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <Metric label="Up Ask" value={pct(selectedSignal.executable_ask_up)} />
+                          <Metric label="Down Ask" value={pct(selectedSignal.executable_ask_down)} />
+                          <Metric label="Up Bid" value={pct(selectedSignal.executable_bid_up)} />
+                          <Metric label="Down Bid" value={pct(selectedSignal.executable_bid_down)} />
                         </div>
-                        <div className="flex items-center justify-between">
-                          <span>Depth Imbalance</span>
-                          <span>
-                            {selectedSignal.depth_imbalance.toFixed(3)}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span>Expected Slippage</span>
-                          <span>
-                            {(
-                              selectedSignal.expected_slippage * 10_000
-                            ).toFixed(0)}{" "}
-                            bps
-                          </span>
-                        </div>
-                      </CardContent>
-                    </Card>
+                      </div>
 
-                    <Card className="border-border/60 bg-background/40">
-                      <CardHeader className="pb-1">
-                        <CardTitle className="text-[11px] font-mono uppercase tracking-wide text-muted-foreground">
-                          Risk Flags
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent className="space-y-1 text-xs">
-                        {Object.entries(selectedSignal.risk_flags)
-                          .filter(([, v]) => Boolean(v))
-                          .slice(0, 6)
-                          .map(([k]) => (
-                            <div
-                              key={k}
-                              className="flex items-center gap-2 text-amber-300"
-                            >
-                              <AlertTriangle className="h-3 w-3" />
-                              <span>{k.replaceAll("_", " ")}</span>
-                            </div>
-                          ))}
-                        {Object.values(selectedSignal.risk_flags).every(
-                          (v) => !v,
-                        ) ? (
-                          <div className="text-muted-foreground">
-                            No active risk flags.
-                          </div>
+                      <div className="rounded-md border border-border/60 bg-background/40 p-3">
+                        <div className="mb-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Edge + Confidence
+                        </div>
+                        <div className="grid gap-2 sm:grid-cols-5">
+                          <Metric label="EV Up" value={signalHasSynth ? money(selectedSignal.ev_up) : "--"} />
+                          <Metric
+                            label="EV Down"
+                            value={signalHasSynth ? money(selectedSignal.ev_down) : "--"}
+                          />
+                          <Metric label="EV Gate" value={money(selectedSignal.ev_min_threshold)} />
+                          <Metric label="Confidence" value={pct(selectedSignal.confidence)} />
+                          <Metric label="Regime" value={selectedSignal.regime || "--"} />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="rounded-md border border-border/60 bg-background/40 p-3">
+                        <div className="mb-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Oracle Reference
+                        </div>
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <Metric
+                            label="Start Snapshot"
+                            value={price(selectedSignal.reference_start_price)}
+                            accent={startSnapshotMissing}
+                          />
+                          <Metric label="Oracle Now" value={price(selectedSignal.reference_current_price)} />
+                          <Metric
+                            label="End Price"
+                            value={
+                              typeof selectedSignal.reference_end_price === "number"
+                                ? price(selectedSignal.reference_end_price)
+                                : isMarketActiveAt(selectedMarket, nowMs)
+                                  ? "Pending"
+                                  : "--"
+                            }
+                          />
+                          <Metric
+                            label="Ref Age"
+                            value={
+                              referenceAgeSeconds === null
+                                ? "--"
+                                : referenceAgeSeconds < 1
+                                  ? "<1s"
+                                  : `${referenceAgeSeconds}s`
+                            }
+                          />
+                          <Metric label="Window Start" value={formatClock(selectedMarket.event_start_time)} />
+                          <Metric label="Window End" value={formatClock(selectedMarket.event_end_time)} />
+                        </div>
+                        {startSnapshotMissing ? (
+                          <p className="mt-2 text-[11px] text-amber-300">
+                            Start snapshot is missing after window open. Execution should stay guarded.
+                          </p>
                         ) : null}
-                      </CardContent>
-                    </Card>
+                      </div>
+
+                      <div className="rounded-md border border-border/60 bg-background/40 p-3 text-xs">
+                        <div className="mb-2 flex items-center justify-between">
+                          <span className="font-mono uppercase tracking-wide text-muted-foreground">
+                            Recommendation
+                          </span>
+                          <span className="font-mono text-foreground">
+                            {selectedRecommendation?.decision ?? "NO_TRADE"}
+                          </span>
+                        </div>
+                        <p className="text-muted-foreground">
+                          {selectedRecommendation?.reason_codes?.join(" · ") ||
+                            "No reason codes available."}
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {activeRiskFlags.length ? (
+                            activeRiskFlags.map((flag) => (
+                              <span
+                                key={flag}
+                                className="rounded bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] text-amber-300"
+                              >
+                                {formatRiskFlag(flag)}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-[11px] text-muted-foreground">
+                              No active risk flags.
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </>
               )}
@@ -815,14 +856,8 @@ export default function UpDownPage() {
             </CardHeader>
             <CardContent>
               <div className="grid gap-3 sm:grid-cols-4">
-                <Metric
-                  label="Trades"
-                  value={String(performanceQuery.data?.trades ?? 0)}
-                />
-                <Metric
-                  label="Hit Rate"
-                  value={pct(performanceQuery.data?.hit_rate)}
-                />
+                <Metric label="Trades" value={String(performanceQuery.data?.trades ?? 0)} />
+                <Metric label="Hit Rate" value={pct(performanceQuery.data?.hit_rate)} />
                 <Metric
                   label="Brier"
                   value={(performanceQuery.data?.brier_score ?? 0).toFixed(4)}
@@ -853,9 +888,7 @@ export default function UpDownPage() {
           </CardHeader>
           <CardContent className="space-y-3">
             {!selectedMarket || !liveMarket ? (
-              <p className="text-sm text-muted-foreground">
-                No market selected.
-              </p>
+              <p className="text-sm text-muted-foreground">No market selected.</p>
             ) : (
               <>
                 <div className="rounded-md border border-border/60 bg-background/40 p-3 text-xs">
@@ -871,13 +904,8 @@ export default function UpDownPage() {
                     <Button
                       size="sm"
                       className="h-7 px-3 font-mono text-[10px]"
-                      onClick={() =>
-                        applyRecommendation(selectedRecommendation)
-                      }
-                      disabled={
-                        !selectedRecommendation ||
-                        selectedRecommendation.prefill.disabled
-                      }
+                      onClick={() => applyRecommendation(selectedRecommendation)}
+                      disabled={!selectedRecommendation || selectedRecommendation.prefill.disabled}
                     >
                       Apply Prefill
                       <ArrowRight className="ml-1 h-3 w-3" />
@@ -886,9 +914,7 @@ export default function UpDownPage() {
                       size="sm"
                       variant="outline"
                       className="h-7 px-3 font-mono text-[10px]"
-                      onClick={() =>
-                        rejectRecommendation(selectedRecommendation)
-                      }
+                      onClick={() => rejectRecommendation(selectedRecommendation)}
                       disabled={!selectedRecommendation}
                     >
                       Reject
@@ -904,9 +930,24 @@ export default function UpDownPage() {
                       </span>
                     ) : null}
                   </div>
+                  {selectedRecommendation && !selectedRecommendation.prefill.disabled ? (
+                    <div className="mt-2 grid grid-cols-3 gap-2 rounded border border-border/50 bg-background/50 p-2 text-[10px] font-mono text-muted-foreground">
+                      <span>
+                        Side: {selectedRecommendation.recommended_side}
+                      </span>
+                      <span>
+                        Limit: {selectedRecommendation.prefill.limit_price.toFixed(3)}
+                      </span>
+                      <span>
+                        Size: {selectedRecommendation.prefill.size_shares.toFixed(2)}
+                      </span>
+                    </div>
+                  ) : null}
                 </div>
+
                 <TradeForm
                   market={liveMarket}
+                  mode="compact"
                   recommendationPrefill={prefill}
                   externalBlockReason={
                     prefillBlockReason ??
@@ -947,90 +988,139 @@ function Metric({
       <div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
         {label}
       </div>
-      <div
-        className={cn("mt-1 text-sm font-semibold", accent && "text-primary")}
-      >
-        {value}
+      <div className={cn("mt-1 text-sm font-semibold", accent && "text-primary")}>{value}</div>
+    </div>
+  );
+}
+
+function RailLaneCard({
+  lane,
+  nowMs,
+  selectedSlug,
+  onSelect,
+}: {
+  lane: RailLane;
+  nowMs: number;
+  selectedSlug: string | null;
+  onSelect: (slug: string) => void;
+}) {
+  const upcomingCount = lane.queue.filter((market) => toMillis(market.event_start_time) > nowMs).length;
+  const next = lane.next && lane.next.slug !== lane.live?.slug ? lane.next : null;
+
+  return (
+    <div className="rounded-lg border border-border/60 bg-background/30 p-2.5">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="font-mono text-xs uppercase tracking-wide text-foreground">
+          {lane.asset} {lane.windowType.toUpperCase()}
+        </div>
+        <span
+          className={cn(
+            "rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide",
+            lane.live
+              ? "bg-constructive/20 text-constructive"
+              : "bg-muted text-muted-foreground",
+          )}
+        >
+          {lane.live ? "Live" : "Queued"}
+        </span>
+      </div>
+
+      <div className="space-y-2">
+        <RailMarketRow
+          label="Current"
+          market={lane.live}
+          nowMs={nowMs}
+          selectedSlug={selectedSlug}
+          onSelect={onSelect}
+          active
+        />
+        <RailMarketRow
+          label="Next"
+          market={next}
+          nowMs={nowMs}
+          selectedSlug={selectedSlug}
+          onSelect={onSelect}
+        />
+      </div>
+
+      <div className="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
+        <span>{upcomingCount} queued</span>
+        <span>{(lane.live ?? lane.next)?.resolution_source_type ?? "unknown"}</span>
       </div>
     </div>
   );
 }
 
-function RailSection({
-  title,
-  markets,
+function RailMarketRow({
+  label,
+  market,
   nowMs,
   selectedSlug,
   onSelect,
+  active,
 }: {
-  title: string;
-  markets: UpDownMarket[];
+  label: string;
+  market: UpDownMarket | null;
   nowMs: number;
   selectedSlug: string | null;
   onSelect: (slug: string) => void;
+  active?: boolean;
 }) {
-  if (!markets.length) return null;
+  if (!market) {
+    return (
+      <div className="rounded-md border border-dashed border-border/50 px-2.5 py-2 text-[11px] text-muted-foreground">
+        <span className="font-mono uppercase tracking-wide">{label}</span>
+        <span className="ml-2">No market</span>
+      </div>
+    );
+  }
+
+  const start = toMillis(market.event_start_time);
+  const end = toMillis(market.event_end_time);
+  const isLive = start <= nowMs && nowMs < end;
+  const selected = selectedSlug === market.slug;
+  const countdown = isLive
+    ? `Ends in ${fmtCountdown((end - nowMs) / 1000)}`
+    : nowMs < start
+      ? `Starts in ${fmtCountdown((start - nowMs) / 1000)}`
+      : "Closed";
 
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between px-1">
-        <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
-          {title}
+    <button
+      type="button"
+      onClick={() => onSelect(market.slug)}
+      className={cn(
+        "w-full rounded-md border px-2.5 py-2 text-left transition",
+        selected
+          ? "border-primary bg-primary/10"
+          : "border-border/50 bg-background/40 hover:border-primary/40",
+      )}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+          {label}
         </span>
-        <span className="text-[10px] text-muted-foreground">
-          {markets.length} market{markets.length === 1 ? "" : "s"}
+        <span
+          className={cn(
+            "rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide",
+            isLive || active
+              ? "bg-constructive/20 text-constructive"
+              : "bg-muted text-muted-foreground",
+          )}
+        >
+          {isLive || active ? "LIVE" : "NEXT"}
         </span>
       </div>
-      {markets.map((market) => {
-        const start = toMillis(market.event_start_time);
-        const end = toMillis(market.event_end_time);
-        const active = start <= nowMs && nowMs < end;
-        const selected = selectedSlug === market.slug;
-        const countdown = active
-          ? `Ends ${fmtCountdown((end - nowMs) / 1000)}`
-          : nowMs < start
-            ? `Starts ${fmtCountdown((start - nowMs) / 1000)}`
-            : "Queued";
-
-        return (
-          <button
-            type="button"
-            key={market.slug}
-            onClick={() => onSelect(market.slug)}
-            className={cn(
-              "w-full rounded-md border px-3 py-2 text-left transition",
-              selected
-                ? "border-primary bg-primary/10"
-                : "border-border/50 bg-background/40 hover:border-primary/40",
-            )}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0">
-                <div className="font-mono text-[11px] font-semibold">
-                  {market.asset} {market.window_type.toUpperCase()}
-                </div>
-                <div className="mt-1 truncate text-[10px] text-muted-foreground">
-                  {market.market?.title || market.slug}
-                </div>
-              </div>
-              <span
-                className={cn(
-                  "shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px]",
-                  active
-                    ? "bg-constructive/20 text-constructive"
-                    : "bg-muted text-muted-foreground",
-                )}
-              >
-                {active ? "ACTIVE" : "NEXT"}
-              </span>
-            </div>
-            <div className="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
-              <span>{countdown}</span>
-              <span>{market.resolution_source_type}</span>
-            </div>
-          </button>
-        );
-      })}
-    </div>
+      <div className="mt-1 font-mono text-[12px] font-semibold text-foreground">
+        {market.asset} {market.window_type.toUpperCase()}
+      </div>
+      <div className="mt-1 truncate text-[10px] text-muted-foreground">
+        {market.market?.title || market.slug}
+      </div>
+      <div className="mt-1.5 flex items-center justify-between text-[10px] text-muted-foreground">
+        <span>{countdown}</span>
+        <span>{formatDateClock(market.event_start_time)}</span>
+      </div>
+    </button>
   );
 }

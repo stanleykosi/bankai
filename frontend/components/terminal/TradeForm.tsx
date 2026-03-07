@@ -70,6 +70,7 @@ interface TradeFormProps {
   onOutcomeChange?: (index: number) => void;
   recommendationPrefill?: TradeRecommendationPrefill | null;
   externalBlockReason?: string | null;
+  mode?: "default" | "compact";
 }
 
 export interface TradeRecommendationPrefill {
@@ -157,6 +158,7 @@ export function TradeForm({
   onOutcomeChange,
   recommendationPrefill,
   externalBlockReason,
+  mode = "default",
 }: TradeFormProps) {
   const { user, eoaAddress, isAuthenticated, refreshUser } = useWallet();
   const { data: balanceData, isLoading: isBalanceLoading } = useBalance();
@@ -307,6 +309,7 @@ export function TradeForm({
   const selectedOutcomeLabel = selectedOutcome?.label ?? "Outcome";
   const hasBatchOrders = batchOrders.length > 0;
   const isNegativeRisk = !!(market?.neg_risk || market?.neg_risk_other);
+  const isCompact = mode === "compact";
 
   // Market rule metadata
   const tickSize = useMemo(() => {
@@ -363,6 +366,16 @@ export function TradeForm({
   useEffect(() => {
     orderPrefsTouchedRef.current = false;
   }, [market?.condition_id]);
+
+  useEffect(() => {
+    if (!isCompact) return;
+    if (limitExpires) {
+      setLimitExpires(false);
+    }
+    if (amountMode !== "shares") {
+      setAmountMode("shares");
+    }
+  }, [amountMode, isCompact, limitExpires]);
 
   useEffect(() => {
     if (orderPrefsTouchedRef.current) return;
@@ -1166,8 +1179,13 @@ export function TradeForm({
   ]);
 
   return (
-    <Card className="w-full h-full border-border bg-card/60 backdrop-blur-md shadow-xl">
-      <CardHeader className="pb-3 border-b border-border/50">
+    <Card
+      className={cn(
+        "w-full h-full border-border bg-card/60 backdrop-blur-md shadow-xl",
+        isCompact && "shadow-none",
+      )}
+    >
+      <CardHeader className={cn("pb-3 border-b border-border/50", isCompact && "pb-2")}>
         <CardTitle className="text-sm font-mono uppercase tracking-widest flex justify-between items-center">
           <span>Execution</span>
           <div className="flex items-center gap-2">
@@ -1195,7 +1213,7 @@ export function TradeForm({
                 SELL
               </span>
             </div>
-            {isNegativeRisk && (
+            {isNegativeRisk && !isCompact && (
               <Button
                 type="button"
                 variant="outline"
@@ -1210,7 +1228,7 @@ export function TradeForm({
         </CardTitle>
       </CardHeader>
 
-      <CardContent className="pt-4 space-y-4">
+      <CardContent className={cn("pt-4 space-y-4", isCompact && "space-y-3")}>
         {/* Balance Row */}
         <div className="flex justify-between text-xs font-mono text-muted-foreground">
           <span>Available</span>
@@ -1340,7 +1358,7 @@ export function TradeForm({
                   {isLimitOrderType ? "Limit Price" : "Market Price"} (
                   {selectedOutcomeLabel})
                 </span>
-                {isLimitOrderType && (
+                {isLimitOrderType && !isCompact && (
                   <label className="flex items-center gap-2 text-muted-foreground">
                     <input
                       type="checkbox"
@@ -1379,7 +1397,7 @@ export function TradeForm({
                 <span>Min $0.01</span>
                 <span>{isMarketOrderType ? "Live book" : "Max $0.99"}</span>
               </div>
-              {isLimitOrderType && limitExpires && (
+              {isLimitOrderType && !isCompact && limitExpires && (
                 <div className="space-y-1.5">
                   <Input
                     type="datetime-local"
@@ -1403,7 +1421,7 @@ export function TradeForm({
               )}
             </div>
 
-            {isMarketOrderType && (
+            {isMarketOrderType && !isCompact && (
               <div className="space-y-2 rounded border border-border/50 bg-background/60 p-3">
                 <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wide">
                   <span>Depth Snapshot</span>
@@ -1485,34 +1503,36 @@ export function TradeForm({
             <div className="space-y-2 rounded border border-border/50 bg-background/60 p-3">
               <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground font-mono">
                 <span>Size</span>
-                <div className="flex rounded-md border border-border bg-background/40 p-0.5 text-[10px]">
-                  <button
-                    type="button"
-                    onClick={() => setAmountMode("shares")}
-                    className={cn(
-                      "rounded-sm px-2.5 py-1 transition-colors",
-                      amountMode === "shares"
-                        ? "bg-primary/20 text-foreground"
-                        : "text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    Shares
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAmountMode("dollars")}
-                    className={cn(
-                      "rounded-sm px-2.5 py-1 transition-colors",
-                      amountMode === "dollars"
-                        ? "bg-primary/20 text-foreground"
-                        : "text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    USD
-                  </button>
-                </div>
+                {!isCompact ? (
+                  <div className="flex rounded-md border border-border bg-background/40 p-0.5 text-[10px]">
+                    <button
+                      type="button"
+                      onClick={() => setAmountMode("shares")}
+                      className={cn(
+                        "rounded-sm px-2.5 py-1 transition-colors",
+                        amountMode === "shares"
+                          ? "bg-primary/20 text-foreground"
+                          : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      Shares
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAmountMode("dollars")}
+                      className={cn(
+                        "rounded-sm px-2.5 py-1 transition-colors",
+                        amountMode === "dollars"
+                          ? "bg-primary/20 text-foreground"
+                          : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      USD
+                    </button>
+                  </div>
+                ) : null}
               </div>
-              {amountMode === "shares" ? (
+              {isCompact || amountMode === "shares" ? (
                 <Input
                   type="number"
                   step="1"
@@ -1533,30 +1553,34 @@ export function TradeForm({
                   onChange={(e) => setDollarAmount(e.target.value)}
                 />
               )}
-              <p className="text-[10px] text-muted-foreground font-mono">
-                {conversionHint}
-              </p>
+              {!isCompact ? (
+                <p className="text-[10px] text-muted-foreground font-mono">
+                  {conversionHint}
+                </p>
+              ) : null}
             </div>
 
-            <div className="p-3 rounded bg-muted/20 border border-border/50 space-y-2">
-              <div className="flex justify-between text-xs font-mono">
-                <span className="text-muted-foreground">Potential Win</span>
-                <span className="text-foreground font-semibold">
-                  {formatUsd(potentialWin)}
-                </span>
-              </div>
-              {side === "BUY" && (
+            {!isCompact ? (
+              <div className="p-3 rounded bg-muted/20 border border-border/50 space-y-2">
                 <div className="flex justify-between text-xs font-mono">
-                  <span className="text-muted-foreground">Potential ROI</span>
-                  <span className="text-constructive">
-                    {roiPrice > 0
-                      ? (((1 - roiPrice) / roiPrice) * 100).toFixed(0)
-                      : 0}
-                    %
+                  <span className="text-muted-foreground">Potential Win</span>
+                  <span className="text-foreground font-semibold">
+                    {formatUsd(potentialWin)}
                   </span>
                 </div>
-              )}
-            </div>
+                {side === "BUY" && (
+                  <div className="flex justify-between text-xs font-mono">
+                    <span className="text-muted-foreground">Potential ROI</span>
+                    <span className="text-constructive">
+                      {roiPrice > 0
+                        ? (((1 - roiPrice) / roiPrice) * 100).toFixed(0)
+                        : 0}
+                      %
+                    </span>
+                  </div>
+                )}
+              </div>
+            ) : null}
           </div>
 
           {/* Status Messages */}
@@ -1591,103 +1615,107 @@ export function TradeForm({
             </div>
           )}
 
-          <div className="flex flex-col gap-2 sm:flex-row">
+          <div className={cn("flex flex-col gap-2", !isCompact && "sm:flex-row")}>
             {primaryAction}
-            <Button
-              type="button"
-              variant="secondary"
-              className="flex-1 font-mono font-bold tracking-wider"
-              disabled={
-                !isAuthenticated || !eoaAddress || !vaultAddress || !canSubmit
-              }
-              onClick={handleAddToBatch}
-            >
-              {isAddingToBatch ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <>
-                  <ListPlus className="mr-2 h-4 w-4" />
-                  Add To Batch
-                </>
-              )}
-            </Button>
+            {!isCompact ? (
+              <Button
+                type="button"
+                variant="secondary"
+                className="flex-1 font-mono font-bold tracking-wider"
+                disabled={
+                  !isAuthenticated || !eoaAddress || !vaultAddress || !canSubmit
+                }
+                onClick={handleAddToBatch}
+              >
+                {isAddingToBatch ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <>
+                    <ListPlus className="mr-2 h-4 w-4" />
+                    Add To Batch
+                  </>
+                )}
+              </Button>
+            ) : null}
           </div>
         </form>
 
-        <div className="space-y-2 rounded-md border border-dashed border-border/60 bg-muted/5 p-3">
-          <div className="flex items-center justify-between">
-            <p className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground">
-              Batch Queue ({batchOrders.length}/15)
-            </p>
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={
-                  !hasBatchOrders || isSubmittingBatch || !!externalBlockReason
-                }
-                onClick={handleSubmitBatch}
-                className="text-[11px] font-mono"
-              >
-                {isSubmittingBatch ? (
-                  <Loader2 className="mr-2 h-3 w-3 animate-spin" />
-                ) : (
-                  <Send className="mr-2 h-3 w-3" />
-                )}
-                Submit Batch
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                disabled={!hasBatchOrders}
-                onClick={handleClearBatchOrders}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-          {batchOrders.length === 0 ? (
-            <p className="text-[11px] font-mono text-muted-foreground">
-              Queue multiple signed orders, then submit them together for faster
-              placement.
-            </p>
-          ) : (
-            <div className="space-y-2">
-              {batchOrders.map((entry) => (
-                <div
-                  key={entry.id}
-                  className="flex items-center justify-between rounded border border-border/50 bg-background/60 px-3 py-2 text-xs font-mono"
+        {!isCompact ? (
+          <div className="space-y-2 rounded-md border border-dashed border-border/60 bg-muted/5 p-3">
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground">
+                Batch Queue ({batchOrders.length}/15)
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={
+                    !hasBatchOrders || isSubmittingBatch || !!externalBlockReason
+                  }
+                  onClick={handleSubmitBatch}
+                  className="text-[11px] font-mono"
                 >
-                  <div className="flex flex-col">
-                    <span className="font-semibold text-foreground">
-                      {entry.summary.side} {entry.summary.outcomeLabel}
-                    </span>
-                    <span className="text-[10px] text-muted-foreground">
-                      {entry.summary.shares} @{" "}
-                      {(entry.summary.price || 0).toFixed(2)} •{" "}
-                      {entry.orderParams.orderType === OrderType.GTC ||
-                      entry.orderParams.orderType === OrderType.GTD
-                        ? "Limit"
-                        : "Market"}
-                    </span>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => handleRemoveBatchOrder(entry.id)}
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
-                </div>
-              ))}
+                  {isSubmittingBatch ? (
+                    <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                  ) : (
+                    <Send className="mr-2 h-3 w-3" />
+                  )}
+                  Submit Batch
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  disabled={!hasBatchOrders}
+                  onClick={handleClearBatchOrders}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
-          )}
-        </div>
+            {batchOrders.length === 0 ? (
+              <p className="text-[11px] font-mono text-muted-foreground">
+                Queue multiple signed orders, then submit them together for faster
+                placement.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {batchOrders.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className="flex items-center justify-between rounded border border-border/50 bg-background/60 px-3 py-2 text-xs font-mono"
+                  >
+                    <div className="flex flex-col">
+                      <span className="font-semibold text-foreground">
+                        {entry.summary.side} {entry.summary.outcomeLabel}
+                      </span>
+                      <span className="text-[10px] text-muted-foreground">
+                        {entry.summary.shares} @{" "}
+                        {(entry.summary.price || 0).toFixed(2)} •{" "}
+                        {entry.orderParams.orderType === OrderType.GTC ||
+                        entry.orderParams.orderType === OrderType.GTD
+                          ? "Limit"
+                          : "Market"}
+                      </span>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => handleRemoveBatchOrder(entry.id)}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : null}
       </CardContent>
-      {isNegativeRisk && (
+      {isNegativeRisk && !isCompact && (
         <NegativeRiskConvert
           market={market}
           open={convertOpen}
