@@ -17,6 +17,7 @@ import (
 	"github.com/bankai-project/backend/internal/integrations/synthdata"
 	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/models"
+	"github.com/bankai-project/backend/internal/polymarket/gamma"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
@@ -30,6 +31,8 @@ const (
 	defaultRiskProfile    = "Balanced"
 	upDownEventDebounce   = 250 * time.Millisecond
 	upDownPersistTimeout  = 1500 * time.Millisecond
+	upDownGammaPageLimit  = 100
+	upDownGammaMaxPages   = 8
 )
 
 var (
@@ -1075,13 +1078,23 @@ func (s *UpDownService) discoverMarkets(ctx context.Context) ([]UpDownMarket, er
 	}
 
 	if markets, err := s.discoverMarketsFromActiveSnapshot(ctx, now, maxMarkets); err == nil {
+		if len(markets) > 0 {
+			return markets, nil
+		}
+	} else {
+		logger.Error("updown active snapshot discovery failed: %v", err)
+	}
+
+	// DB fallback is often empty on deployments where worker DB writes are disabled.
+	// Pulling a bounded window directly from Gamma keeps up/down rails populated.
+	if markets, err := s.discoverMarketsFromGamma(ctx, now, maxMarkets); err == nil {
 		if len(markets) > 0 || s.db == nil {
 			return markets, nil
 		}
 	} else if s.db == nil {
 		return nil, err
 	} else {
-		logger.Error("updown active snapshot discovery failed: %v", err)
+		logger.Error("updown gamma discovery failed: %v", err)
 	}
 
 	if s.db == nil {
@@ -1100,6 +1113,83 @@ func (s *UpDownService) discoverMarketsFromActiveSnapshot(ctx context.Context, n
 		return nil, err
 	}
 	return classifyUpDownMarkets(raw, now, maxMarkets), nil
+}
+
+func (s *UpDownService) discoverMarketsFromGamma(ctx context.Context, now time.Time, maxMarkets int) ([]UpDownMarket, error) {
+	if s == nil || s.market == nil || s.market.GammaClient == nil || maxMarkets <= 0 {
+		return []UpDownMarket{}, nil
+	}
+
+	active := true
+	closed := false
+	desc := false
+	out := make([]UpDownMarket, 0, maxMarkets)
+	seen := make(map[string]struct{}, maxMarkets*2)
+
+	for page := 0; page < upDownGammaMaxPages && len(out) < maxMarkets; page++ {
+		offset := page * upDownGammaPageLimit
+		events, err := s.market.GammaClient.GetEvents(ctx, gamma.GetEventsParams{
+			Limit:     upDownGammaPageLimit,
+			Offset:    offset,
+			Active:    &active,
+			Closed:    &closed,
+			Order:     "id",
+			Ascending: &desc,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(events) == 0 {
+			break
+		}
+
+		for _, event := range events {
+			for _, gm := range event.Markets {
+				conditionID := strings.TrimSpace(gm.ConditionID)
+				if conditionID == "" {
+					continue
+				}
+				if _, ok := seen[conditionID]; ok {
+					continue
+				}
+				seen[conditionID] = struct{}{}
+
+				market := gm.ToDBModel()
+				if market == nil {
+					continue
+				}
+
+				tags := make([]string, 0, len(event.Tags))
+				for _, tag := range event.Tags {
+					if slug := strings.TrimSpace(tag.Slug); slug != "" {
+						tags = append(tags, slug)
+					}
+				}
+				market.Tags = tags
+				market.Category = "general"
+				market.Archived = event.Archived
+				market.TokenIDYes, market.TokenIDNo = gamma.ParseTokenIDs(gm.ClobTokenIds)
+
+				classified, ok := classifyUpDownCryptoMarket(*market, now)
+				if !ok {
+					continue
+				}
+				out = append(out, classified)
+				if len(out) >= maxMarkets {
+					break
+				}
+			}
+			if len(out) >= maxMarkets {
+				break
+			}
+		}
+
+		if len(events) < upDownGammaPageLimit {
+			break
+		}
+	}
+
+	return sortAndTrimUpDownMarkets(out, maxMarkets), nil
 }
 
 func (s *UpDownService) discoverMarketsFromDB(ctx context.Context, now time.Time, maxMarkets int) ([]UpDownMarket, error) {
