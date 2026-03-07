@@ -18,6 +18,18 @@ import { POLYGON_CHAIN_ID } from "@/lib/polymarket";
 import type { UserApiCredentials } from "./useUserApiCredentials";
 
 const CLOB_API_URL = "https://clob.polymarket.com";
+const MIN_SIGNER_REFRESH_MS = 10_000;
+const RETRY_BACKOFF_CAP_MS = 60_000;
+const BACKOFF_STEPS = 3;
+const BACKEND_ASSERTION_SKEW_SECONDS = 5;
+
+type SharedBackendAssertion = {
+  token: string;
+  expiresAt: number;
+};
+
+let sharedBackendAssertion: SharedBackendAssertion | null = null;
+let sharedBackendAssertionInFlight: Promise<SharedBackendAssertion> | null = null;
 
 // Builder signing SDK requires an absolute remote URL (must start with http/https)
 // Derive it from window location when available, or fall back to deployment hints during SSR.
@@ -71,6 +83,7 @@ export function useClobClient({
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let controller: AbortController | null = null;
+    let failureStreak = 0;
     const nowSeconds = () => Math.floor(Date.now() / 1000);
     const clearToken = () => {
       signerTokenRef.current = null;
@@ -85,6 +98,21 @@ export function useClobClient({
     const clearBackendAssertion = () => {
       backendAssertionRef.current = null;
       backendAssertionExpiryRef.current = 0;
+      sharedBackendAssertion = null;
+    };
+    const hydrateBackendAssertionFromShared = () => {
+      if (!sharedBackendAssertion) return;
+      if (sharedBackendAssertion.expiresAt <= nowSeconds() + BACKEND_ASSERTION_SKEW_SECONDS) {
+        sharedBackendAssertion = null;
+        return;
+      }
+      if (
+        backendAssertionRef.current !== sharedBackendAssertion.token ||
+        backendAssertionExpiryRef.current !== sharedBackendAssertion.expiresAt
+      ) {
+        backendAssertionRef.current = sharedBackendAssertion.token;
+        backendAssertionExpiryRef.current = sharedBackendAssertion.expiresAt;
+      }
     };
     const hasUsableToken = () =>
       Boolean(
@@ -94,31 +122,60 @@ export function useClobClient({
     const hasUsableBackendAssertion = () =>
       Boolean(
         backendAssertionRef.current &&
-          backendAssertionExpiryRef.current > nowSeconds() + 5
+          backendAssertionExpiryRef.current >
+            nowSeconds() + BACKEND_ASSERTION_SKEW_SECONDS
       );
+    const scheduleRetry = (baseDelayMs = MIN_SIGNER_REFRESH_MS) => {
+      const step = Math.min(failureStreak, BACKOFF_STEPS);
+      const delay = Math.min(RETRY_BACKOFF_CAP_MS, baseDelayMs * 2 ** step);
+      failureStreak += 1;
+      scheduleRefresh(delay);
+    };
 
     const fetchBackendAssertion = async () => {
-      const response = await api.get<{
-        token?: string;
-        expires_at?: number | string;
-      }>("/auth/signer-assertion");
-      const token =
-        typeof response?.data?.token === "string"
-          ? response.data.token.trim()
-          : "";
-      const expiresAtRaw =
-        typeof response?.data?.expires_at === "number"
-          ? response.data.expires_at
-          : Number(response?.data?.expires_at);
-      const expiresAt = Number.isFinite(expiresAtRaw)
-        ? Math.floor(expiresAtRaw)
-        : nowSeconds() + 60;
-      if (!token || expiresAt <= nowSeconds()) {
-        throw new Error("invalid signer assertion");
+      hydrateBackendAssertionFromShared();
+      if (hasUsableBackendAssertion()) {
+        return backendAssertionRef.current as string;
       }
-      backendAssertionRef.current = token;
-      backendAssertionExpiryRef.current = expiresAt;
-      return token;
+      if (sharedBackendAssertionInFlight) {
+        const shared = await sharedBackendAssertionInFlight;
+        backendAssertionRef.current = shared.token;
+        backendAssertionExpiryRef.current = shared.expiresAt;
+        return shared.token;
+      }
+      const request = (async (): Promise<SharedBackendAssertion> => {
+        const response = await api.get<{
+          token?: string;
+          expires_at?: number | string;
+        }>("/auth/signer-assertion");
+        const token =
+          typeof response?.data?.token === "string"
+            ? response.data.token.trim()
+            : "";
+        const expiresAtRaw =
+          typeof response?.data?.expires_at === "number"
+            ? response.data.expires_at
+            : Number(response?.data?.expires_at);
+        const expiresAt = Number.isFinite(expiresAtRaw)
+          ? Math.floor(expiresAtRaw)
+          : nowSeconds() + 60;
+        if (!token || expiresAt <= nowSeconds()) {
+          throw new Error("invalid signer assertion");
+        }
+        return { token, expiresAt };
+      })();
+      sharedBackendAssertionInFlight = request;
+      try {
+        const shared = await request;
+        sharedBackendAssertion = shared;
+        backendAssertionRef.current = shared.token;
+        backendAssertionExpiryRef.current = shared.expiresAt;
+        return shared.token;
+      } finally {
+        if (sharedBackendAssertionInFlight === request) {
+          sharedBackendAssertionInFlight = null;
+        }
+      }
     };
 
     const scheduleRefresh = (delayMs: number) => {
@@ -140,7 +197,7 @@ export function useClobClient({
           : await fetchBackendAssertion();
         if (!assertionToken) {
           clearToken();
-          scheduleRefresh(10_000);
+          scheduleRetry();
           return;
         }
 
@@ -156,11 +213,13 @@ export function useClobClient({
 
         if (!res.ok) {
           // Auth failures should immediately drop the token; transient failures should not.
-          if (res.status === 401 || res.status === 403 || !hasUsableToken()) {
+          if (res.status === 401 || res.status === 403) {
             clearToken();
             clearBackendAssertion();
+          } else if (!hasUsableToken()) {
+            clearToken();
           }
-          scheduleRefresh(res.status === 429 ? 15_000 : 10_000);
+          scheduleRetry(res.status === 429 ? 15_000 : MIN_SIGNER_REFRESH_MS);
           return;
         }
 
@@ -180,13 +239,14 @@ export function useClobClient({
           if (!hasUsableToken()) {
             clearToken();
           }
-          scheduleRefresh(10_000);
+          scheduleRetry();
           return;
         }
 
+        failureStreak = 0;
         setFreshToken(nextToken, expiresAt);
         const refreshMs = Math.max(
-          10_000,
+          MIN_SIGNER_REFRESH_MS,
           (expiresAt - nowSeconds() - 15) * 1000
         );
         scheduleRefresh(refreshMs);
@@ -195,8 +255,7 @@ export function useClobClient({
         if (!hasUsableToken()) {
           clearToken();
         }
-        clearBackendAssertion();
-        scheduleRefresh(10_000);
+        scheduleRetry();
       } finally {
         if (controller === nextController) {
           controller = null;

@@ -118,7 +118,10 @@ const normalizeSelectedSlug = (value: string | null | undefined): string | null 
 const isMarketActiveAt = (market: UpDownMarket, nowMs: number) => {
   const start = toMillis(market.event_start_time);
   const end = toMillis(market.event_end_time);
-  return start <= nowMs && nowMs < end;
+  if (start > 0 && end > 0) {
+    return start <= nowMs && nowMs < end;
+  }
+  return Boolean(market.is_active_window);
 };
 
 const compareMarketStart = (a: UpDownMarket, b: UpDownMarket) => {
@@ -157,7 +160,7 @@ const buildRailLanes = (markets: UpDownMarket[], nowMs: number): RailLane[] => {
   const lanes: RailLane[] = [];
   for (const [key, groupedMarkets] of grouped) {
     const queue = [...groupedMarkets]
-      .filter((market) => toMillis(market.event_end_time) > nowMs - 5_000)
+      .filter((market) => toMillis(market.event_end_time) > nowMs)
       .sort(compareMarketStart);
     if (!queue.length) continue;
 
@@ -207,41 +210,47 @@ const buildRailLanes = (markets: UpDownMarket[], nowMs: number): RailLane[] => {
   return lanes;
 };
 
-const flattenRailFocusMarkets = (lanes: RailLane[]): UpDownMarket[] => {
-  const out: UpDownMarket[] = [];
-  const seen = new Set<string>();
+const flattenRailActiveMarkets = (lanes: RailLane[]): UpDownMarket[] => {
+  return lanes
+    .map((lane) => lane.live)
+    .filter((market): market is UpDownMarket => Boolean(market));
+};
 
-  for (const lane of lanes) {
-    const candidates = [lane.live, lane.next];
-    for (const market of candidates) {
-      if (!market || seen.has(market.slug)) continue;
-      seen.add(market.slug);
-      out.push(market);
-    }
+const marketCountdown = (market: UpDownMarket, nowMs: number): string => {
+  const start = toMillis(market.event_start_time);
+  const end = toMillis(market.event_end_time);
+  const isActive = isMarketActiveAt(market, nowMs);
+  if (isActive) {
+    const remaining =
+      end > 0 ? (end - nowMs) / 1000 : market.time_to_end_seconds;
+    return `Ends in ${fmtCountdown(remaining)}`;
   }
+  const untilStart =
+    start > 0 ? (start - nowMs) / 1000 : market.time_to_start_seconds;
+  if (untilStart > 0) {
+    return `Starts in ${fmtCountdown(untilStart)}`;
+  }
+  return "Closed";
+};
 
-  return out;
+const findLaneForSlug = (lanes: RailLane[], slug: string | null): RailLane | null => {
+  if (!slug) return null;
+  return lanes.find((lane) => lane.queue.some((market) => market.slug === slug)) ?? null;
 };
 
 const pickNextMarket = (
   lanes: RailLane[],
-  nowMs: number,
   currentSlug: string | null,
 ): string | null => {
-  const focus = flattenRailFocusMarkets(lanes);
-  if (!focus.length) return null;
+  const activeMarkets = flattenRailActiveMarkets(lanes);
+  if (!activeMarkets.length) return null;
 
-  const active = focus.find((market) => isMarketActiveAt(market, nowMs));
-  if (active) return active.slug;
-
-  if (currentSlug) {
-    const current = focus.find((market) => market.slug === currentSlug);
-    if (current && toMillis(current.event_end_time) > nowMs) {
-      return current.slug;
-    }
+  const currentLane = findLaneForSlug(lanes, currentSlug);
+  if (currentLane?.live) {
+    return currentLane.live.slug;
   }
 
-  return focus[0]?.slug ?? null;
+  return activeMarkets[0]?.slug ?? null;
 };
 
 const hasSynthProbabilities = (signal: UpDownSignal | null) =>
@@ -296,7 +305,7 @@ export default function UpDownPage() {
     queryKey: ["updown-signal", normalizedSelectedSlug],
     queryFn: () => fetchUpDownSignal(normalizedSelectedSlug as string),
     enabled: normalizedSelectedSlug !== null,
-    refetchInterval: 5_000,
+    refetchInterval: 2_500,
     staleTime: 2_000,
   });
 
@@ -311,10 +320,7 @@ export default function UpDownPage() {
     [railSourceMarkets, nowMs],
   );
 
-  const railFocusMarkets = useMemo(
-    () => flattenRailFocusMarkets(railLanes),
-    [railLanes],
-  );
+  const railActiveMarkets = useMemo(() => flattenRailActiveMarkets(railLanes), [railLanes]);
 
   const selectedMarket = useMemo(
     () =>
@@ -323,6 +329,13 @@ export default function UpDownPage() {
       null,
     [markets, normalizedSelectedSlug, railSourceMarkets],
   );
+  const activeConditionIds = useMemo(
+    () =>
+      Array.from(
+        new Set(railActiveMarkets.map((market) => market.condition_id).filter(Boolean)),
+      ).sort(),
+    [railActiveMarkets],
+  );
 
   useEffect(() => {
     const id = setInterval(() => setNowMs(Date.now()), 1000);
@@ -330,7 +343,7 @@ export default function UpDownPage() {
   }, []);
 
   useEffect(() => {
-    if (!railFocusMarkets.length) {
+    if (!railActiveMarkets.length) {
       if (selectedSlug !== null) {
         setSelectedSlug(null);
       }
@@ -339,16 +352,16 @@ export default function UpDownPage() {
 
     if (
       normalizedSelectedSlug !== null &&
-      railFocusMarkets.some((market) => market.slug === normalizedSelectedSlug)
+      railActiveMarkets.some((market) => market.slug === normalizedSelectedSlug)
     ) {
       return;
     }
 
-    const next = pickNextMarket(railLanes, nowMs, normalizedSelectedSlug);
+    const next = pickNextMarket(railLanes, normalizedSelectedSlug);
     if (next !== normalizedSelectedSlug) {
       setSelectedSlug(next);
     }
-  }, [railFocusMarkets, railLanes, nowMs, normalizedSelectedSlug, selectedSlug]);
+  }, [railActiveMarkets, railLanes, nowMs, normalizedSelectedSlug, selectedSlug]);
 
   useEffect(() => {
     if (railSourceMarkets.length === 0) {
@@ -415,6 +428,13 @@ export default function UpDownPage() {
     requestMarketStream(conditionId).catch(() => undefined);
   }, [selectedMarket?.condition_id]);
 
+  useEffect(() => {
+    if (!activeConditionIds.length) return;
+    for (const conditionId of activeConditionIds) {
+      requestMarketStream(conditionId).catch(() => undefined);
+    }
+  }, [activeConditionIds.join("|")]);
+
   const selectedSignal = useMemo(() => {
     if (!normalizedSelectedSlug) return null;
     const liveSignal = liveSignals[normalizedSelectedSlug] ?? null;
@@ -453,16 +473,7 @@ export default function UpDownPage() {
 
   const activeCountdown = useMemo(() => {
     if (!selectedMarket) return "--";
-    const start = toMillis(selectedMarket.event_start_time);
-    const end = toMillis(selectedMarket.event_end_time);
-    if (!start || !end) return "--";
-    if (nowMs < start) {
-      return `Starts in ${fmtCountdown((start - nowMs) / 1000)}`;
-    }
-    if (nowMs < end) {
-      return `Ends in ${fmtCountdown((end - nowMs) / 1000)}`;
-    }
-    return "Closed";
+    return marketCountdown(selectedMarket, nowMs);
   }, [nowMs, selectedMarket]);
 
   const referenceAgeSeconds = useMemo(() => {
@@ -553,7 +564,7 @@ export default function UpDownPage() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!railFocusMarkets.length) return;
+      if (!railActiveMarkets.length) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
       if (target?.closest("input, textarea, select, [contenteditable='true']")) {
@@ -562,15 +573,15 @@ export default function UpDownPage() {
 
       if (event.key === "j" || event.key === "ArrowDown") {
         event.preventDefault();
-        const idx = railFocusMarkets.findIndex((market) => market.slug === normalizedSelectedSlug);
-        const next = railFocusMarkets[(idx + 1 + railFocusMarkets.length) % railFocusMarkets.length];
+        const idx = railActiveMarkets.findIndex((market) => market.slug === normalizedSelectedSlug);
+        const next = railActiveMarkets[(idx + 1 + railActiveMarkets.length) % railActiveMarkets.length];
         if (next) setSelectedSlug(next.slug);
       }
 
       if (event.key === "k" || event.key === "ArrowUp") {
         event.preventDefault();
-        const idx = railFocusMarkets.findIndex((market) => market.slug === normalizedSelectedSlug);
-        const prev = railFocusMarkets[(idx - 1 + railFocusMarkets.length) % railFocusMarkets.length];
+        const idx = railActiveMarkets.findIndex((market) => market.slug === normalizedSelectedSlug);
+        const prev = railActiveMarkets[(idx - 1 + railActiveMarkets.length) % railActiveMarkets.length];
         if (prev) setSelectedSlug(prev.slug);
       }
 
@@ -584,10 +595,10 @@ export default function UpDownPage() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [normalizedSelectedSlug, railFocusMarkets, selectedRecommendation]);
+  }, [normalizedSelectedSlug, railActiveMarkets, selectedRecommendation]);
 
   return (
-    <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-6 px-4 py-6">
+    <div className="mx-auto flex w-full max-w-[1660px] flex-col gap-5 px-4 py-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-md bg-primary/15">
@@ -642,7 +653,7 @@ export default function UpDownPage() {
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[340px,1fr,420px]">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[320px,minmax(0,1fr),360px] 2xl:grid-cols-[340px,minmax(0,1fr),380px]">
         <Card className="border-border/70 bg-card/70">
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 font-mono text-xs uppercase tracking-widest">
@@ -691,10 +702,15 @@ export default function UpDownPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              {!selectedMarket || !selectedSignal ? (
-                <p className="text-sm text-muted-foreground">
-                  Select a market to load signal and recommendation.
-                </p>
+              {!selectedMarket ? (
+                <div className="rounded-md border border-border/60 bg-background/40 p-4 text-sm text-muted-foreground">
+                  No active windows in this filter. Upcoming windows stay read-only until the
+                  start boundary, then auto-slot into the active rail.
+                </div>
+              ) : !selectedSignal ? (
+                <div className="rounded-md border border-border/60 bg-background/40 p-4 text-sm text-muted-foreground">
+                  Active market selected, waiting for a fresh signal snapshot.
+                </div>
               ) : (
                 <>
                   <div className="rounded-md border border-border/60 bg-background/40 p-3">
@@ -724,7 +740,7 @@ export default function UpDownPage() {
                     <div className="mt-2 text-sm font-semibold text-foreground">
                       {selectedMarket.market?.title || selectedMarket.slug}
                     </div>
-                    <div className="mt-3 grid gap-2 sm:grid-cols-5">
+                    <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-3 2xl:grid-cols-5">
                       <Metric label="P_Market" value={pct(selectedSignal.p_market_up)} />
                       <Metric label="P_Synth" value={pct(selectedSignal.p_synth_up)} />
                       <Metric label="P_Model" value={pct(selectedSignal.p_model_up)} />
@@ -737,13 +753,13 @@ export default function UpDownPage() {
                     </div>
                   </div>
 
-                  <div className="grid gap-3 lg:grid-cols-2">
+                  <div className="grid gap-3 2xl:grid-cols-2">
                     <div className="space-y-3">
                       <div className="rounded-md border border-border/60 bg-background/40 p-3">
                         <div className="mb-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
                           Execution Quotes
                         </div>
-                        <div className="grid gap-2 sm:grid-cols-2">
+                        <div className="grid grid-cols-2 gap-2">
                           <Metric label="Up Ask" value={pct(selectedSignal.executable_ask_up)} />
                           <Metric label="Down Ask" value={pct(selectedSignal.executable_ask_down)} />
                           <Metric label="Up Bid" value={pct(selectedSignal.executable_bid_up)} />
@@ -755,7 +771,7 @@ export default function UpDownPage() {
                         <div className="mb-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
                           Edge + Confidence
                         </div>
-                        <div className="grid gap-2 sm:grid-cols-5">
+                        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
                           <Metric label="EV Up" value={signalHasSynth ? money(selectedSignal.ev_up) : "--"} />
                           <Metric
                             label="EV Down"
@@ -763,7 +779,14 @@ export default function UpDownPage() {
                           />
                           <Metric label="EV Gate" value={money(selectedSignal.ev_min_threshold)} />
                           <Metric label="Confidence" value={pct(selectedSignal.confidence)} />
-                          <Metric label="Regime" value={selectedSignal.regime || "--"} />
+                        </div>
+                        <div className="mt-2 rounded border border-border/50 bg-background/30 px-2.5 py-2">
+                          <div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                            Regime
+                          </div>
+                          <div className="mt-1 text-sm font-semibold text-foreground">
+                            {selectedSignal.regime || "--"}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -773,7 +796,7 @@ export default function UpDownPage() {
                         <div className="mb-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
                           Oracle Reference
                         </div>
-                        <div className="grid gap-2 sm:grid-cols-2">
+                        <div className="grid grid-cols-2 gap-2">
                           <Metric
                             label="Start Snapshot"
                             value={price(selectedSignal.reference_start_price)}
@@ -981,14 +1004,16 @@ function Metric({
   return (
     <div
       className={cn(
-        "rounded border border-border/60 bg-background/40 p-2",
+        "min-h-[74px] rounded border border-border/60 bg-background/40 p-2",
         accent && "border-primary/50",
       )}
     >
       <div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
         {label}
       </div>
-      <div className={cn("mt-1 text-sm font-semibold", accent && "text-primary")}>{value}</div>
+      <div className={cn("mt-1 break-words text-base font-semibold leading-5", accent && "text-primary")}>
+        {value}
+      </div>
     </div>
   );
 }
@@ -1026,20 +1051,28 @@ function RailLaneCard({
       </div>
 
       <div className="space-y-2">
-        <RailMarketRow
-          label="Current"
-          market={lane.live}
-          nowMs={nowMs}
-          selectedSlug={selectedSlug}
-          onSelect={onSelect}
-          active
-        />
+        {lane.live ? (
+          <RailMarketRow
+            label="Current"
+            market={lane.live}
+            nowMs={nowMs}
+            selectedSlug={selectedSlug}
+            onSelect={onSelect}
+            selectable
+          />
+        ) : (
+          <div className="rounded-md border border-dashed border-border/50 px-2.5 py-2 text-[11px] text-muted-foreground">
+            <span className="font-mono uppercase tracking-wide">Current</span>
+            <span className="ml-2">Awaiting activation</span>
+          </div>
+        )}
         <RailMarketRow
           label="Next"
           market={next}
           nowMs={nowMs}
           selectedSlug={selectedSlug}
           onSelect={onSelect}
+          selectable={false}
         />
       </div>
 
@@ -1057,14 +1090,14 @@ function RailMarketRow({
   nowMs,
   selectedSlug,
   onSelect,
-  active,
+  selectable,
 }: {
   label: string;
   market: UpDownMarket | null;
   nowMs: number;
   selectedSlug: string | null;
   onSelect: (slug: string) => void;
-  active?: boolean;
+  selectable?: boolean;
 }) {
   if (!market) {
     return (
@@ -1076,24 +1109,27 @@ function RailMarketRow({
   }
 
   const start = toMillis(market.event_start_time);
-  const end = toMillis(market.event_end_time);
-  const isLive = start <= nowMs && nowMs < end;
+  const isLive = isMarketActiveAt(market, nowMs);
   const selected = selectedSlug === market.slug;
-  const countdown = isLive
-    ? `Ends in ${fmtCountdown((end - nowMs) / 1000)}`
-    : nowMs < start
-      ? `Starts in ${fmtCountdown((start - nowMs) / 1000)}`
-      : "Closed";
+  const countdown = marketCountdown(market, nowMs);
+  const canSelect = Boolean(selectable && isLive);
+  const stateLabel = isLive ? "LIVE" : start > nowMs ? "QUEUED" : "CLOSED";
 
   return (
     <button
       type="button"
-      onClick={() => onSelect(market.slug)}
+      disabled={!canSelect}
+      onClick={() => {
+        if (canSelect) onSelect(market.slug);
+      }}
       className={cn(
         "w-full rounded-md border px-2.5 py-2 text-left transition",
         selected
           ? "border-primary bg-primary/10"
-          : "border-border/50 bg-background/40 hover:border-primary/40",
+          : canSelect
+            ? "border-border/50 bg-background/40 hover:border-primary/40"
+            : "border-border/40 bg-background/20 opacity-80",
+        !canSelect && "cursor-not-allowed",
       )}
     >
       <div className="flex items-center justify-between gap-2">
@@ -1103,12 +1139,12 @@ function RailMarketRow({
         <span
           className={cn(
             "rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide",
-            isLive || active
+            isLive
               ? "bg-constructive/20 text-constructive"
               : "bg-muted text-muted-foreground",
           )}
         >
-          {isLive || active ? "LIVE" : "NEXT"}
+          {stateLabel}
         </span>
       </div>
       <div className="mt-1 font-mono text-[12px] font-semibold text-foreground">

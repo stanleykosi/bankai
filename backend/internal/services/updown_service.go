@@ -1127,21 +1127,31 @@ func (s *UpDownService) discoverMarkets(ctx context.Context) ([]UpDownMarket, er
 		maxMarkets = 500
 	}
 
-	if markets, err := s.discoverMarketsFromActiveSnapshot(ctx, now, maxMarkets); err == nil {
-		if len(markets) > 0 {
-			return markets, nil
-		}
-	} else {
-		logger.Error("updown active snapshot discovery failed: %v", err)
+	snapshotMarkets, snapshotErr := s.discoverMarketsFromActiveSnapshot(ctx, now, maxMarkets)
+	if snapshotErr != nil {
+		logger.Error("updown active snapshot discovery failed: %v", snapshotErr)
 	}
 
-	// Up/down market discovery is cache/Gamma-only by design.
-	markets, err := s.discoverMarketsFromGamma(ctx, now, maxMarkets)
-	if err != nil {
-		logger.Error("updown gamma discovery failed: %v", err)
-		return nil, err
+	// Up/down market discovery is cache/Gamma-only by design; always merge Gamma
+	// so low-liquidity fast windows aren't missed by active-snapshot pruning.
+	gammaMarkets, gammaErr := s.discoverMarketsFromGamma(ctx, now, maxMarkets)
+	if gammaErr != nil {
+		logger.Error("updown gamma discovery failed: %v", gammaErr)
+		if len(snapshotMarkets) == 0 {
+			return nil, gammaErr
+		}
 	}
-	return markets, nil
+
+	merged := mergeUpDownMarkets(snapshotMarkets, gammaMarkets)
+	if len(merged) == 0 {
+		if snapshotErr != nil {
+			return nil, snapshotErr
+		}
+		if gammaErr != nil {
+			return nil, gammaErr
+		}
+	}
+	return sortAndTrimUpDownMarkets(merged, maxMarkets), nil
 }
 
 func (s *UpDownService) discoverMarketsFromActiveSnapshot(ctx context.Context, now time.Time, maxMarkets int) ([]UpDownMarket, error) {
@@ -1162,7 +1172,7 @@ func (s *UpDownService) discoverMarketsFromGamma(ctx context.Context, now time.T
 
 	active := true
 	closed := false
-	desc := false
+	ascending := true
 	out := make([]UpDownMarket, 0, maxMarkets)
 	seen := make(map[string]struct{}, maxMarkets*2)
 
@@ -1173,8 +1183,8 @@ func (s *UpDownService) discoverMarketsFromGamma(ctx context.Context, now time.T
 			Offset:    offset,
 			Active:    &active,
 			Closed:    &closed,
-			Order:     "id",
-			Ascending: &desc,
+			Order:     "startDate",
+			Ascending: &ascending,
 		})
 		if err != nil {
 			return nil, err
@@ -1261,6 +1271,36 @@ func sortAndTrimUpDownMarkets(markets []UpDownMarket, maxMarkets int) []UpDownMa
 		markets = markets[:maxMarkets]
 	}
 	return markets
+}
+
+func mergeUpDownMarkets(groups ...[]UpDownMarket) []UpDownMarket {
+	total := 0
+	for _, g := range groups {
+		total += len(g)
+	}
+	if total == 0 {
+		return []UpDownMarket{}
+	}
+
+	merged := make([]UpDownMarket, 0, total)
+	seen := make(map[string]struct{}, total)
+	for _, g := range groups {
+		for _, m := range g {
+			key := strings.TrimSpace(m.ConditionID) + "|" + m.EventStartTime.UTC().Format(time.RFC3339Nano)
+			if key == "|" {
+				key = strings.TrimSpace(m.Slug)
+			}
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, m)
+		}
+	}
+	return merged
 }
 
 func minInt(a, b int) int {
