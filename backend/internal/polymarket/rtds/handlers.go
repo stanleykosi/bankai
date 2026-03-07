@@ -212,28 +212,23 @@ func (h *MessageHandler) HandleMessage(ctx context.Context, msg []byte) error {
 
 // handlePriceChange updates the "High Velocity" metrics and caches current prices
 func (h *MessageHandler) handlePriceChange(ctx context.Context, m *PriceChangeMessage) error {
-	// For velocity, we might want to count updates per minute per market.
-	// Use Redis HyperLogLog or simple counters.
-
-	// 1. Update Velocity Counter (Expires in 1 hour)
-	// Key: velocity:{market_id}:{minute_bucket}
-	// This allows us to calculate acceleration later
-
-	// For simplicity in MVP, just increment a score in a Sorted Set "market:velocity"
-	// Score = number of updates (proxy for activity)
-	err := h.Redis.ZIncrBy(ctx, "market:velocity", 1, m.Market).Err()
-	if err != nil {
-		logger.Warn("market RTDS redis error updating velocity: %v", err)
+	// Cache/publish only allowlisted assets to keep RTDS throughput stable.
+	// If this batch has no allowlisted assets, skip Redis work entirely.
+	allowlisted := make([]PriceChange, 0, len(m.PriceChanges))
+	for _, change := range m.PriceChanges {
+		if h.shouldCache(change.AssetID) {
+			allowlisted = append(allowlisted, change)
+		}
+	}
+	if len(allowlisted) == 0 {
+		return nil
 	}
 
-	// 2. Cache latest prices for immediate frontend retrieval
-	// We process each change in the batch
+	// Use one pipeline for velocity + latest price writes.
 	pipe := h.Redis.Pipeline()
+	pipe.ZIncrBy(ctx, "market:velocity", 1, m.Market)
 	didCache := false
-	for _, change := range m.PriceChanges {
-		if !h.shouldCache(change.AssetID) {
-			continue
-		}
+	for _, change := range allowlisted {
 		// Store latest price: market:{market_id}:{asset_id}:price
 		key := fmt.Sprintf("price:%s:%s", m.Market, change.AssetID)
 
@@ -258,7 +253,7 @@ func (h *MessageHandler) handlePriceChange(ctx context.Context, m *PriceChangeMe
 	}
 
 	if didCache {
-		if _, err = pipe.Exec(ctx); err != nil {
+		if _, err := pipe.Exec(ctx); err != nil {
 			return err
 		}
 	}
@@ -357,9 +352,21 @@ type priceUpdatePayload struct {
 }
 
 func (h *MessageHandler) publishPriceUpdates(ctx context.Context, m *PriceChangeMessage) {
+	if h.Redis == nil {
+		return
+	}
+
 	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
+	pipe := h.Redis.Pipeline()
+	published := 0
 
 	for _, change := range m.PriceChanges {
+		// Keep downstream pub/sub aligned with allowlist to avoid flooding
+		// consumers with irrelevant asset updates under high RTDS throughput.
+		if !h.shouldCache(change.AssetID) {
+			continue
+		}
+
 		price := parseFloat(change.Price)
 		bestBid := parseFloat(change.BestBid)
 		bestAsk := parseFloat(change.BestAsk)
@@ -379,9 +386,16 @@ func (h *MessageHandler) publishPriceUpdates(ctx context.Context, m *PriceChange
 			continue
 		}
 
-		if err := h.Redis.Publish(ctx, services.PriceUpdateChannel, data).Err(); err != nil {
-			logger.Warn("market RTDS redis publish error: %v", err)
-		}
+		pipe.Publish(ctx, services.PriceUpdateChannel, data)
+		published++
+	}
+
+	if published == 0 {
+		return
+	}
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		logger.Warn("market RTDS redis publish error: %v", err)
 	}
 }
 
