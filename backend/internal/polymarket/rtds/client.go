@@ -39,6 +39,7 @@ const (
 	MaxConnectRetries     = 5
 	maxAssetsPerSubscribe = 400
 	queueDropLogInterval  = 2 * time.Second
+	priceFlushInterval    = 75 * time.Millisecond
 )
 
 type SubscriptionMessage struct {
@@ -56,6 +57,10 @@ type Client struct {
 	workerPoolSize int
 	messageQueue   chan []byte
 	workersOnce    sync.Once
+	priceOnce      sync.Once
+
+	priceMu     sync.Mutex
+	priceLatest map[string][]byte
 
 	// subscriptions holds the current list of asset IDs to track
 	subscriptions []string
@@ -71,8 +76,8 @@ type Client struct {
 }
 
 func NewClient(cfg *config.Config, handler *MessageHandler) *Client {
-	workerPoolSize := 64
-	queueSize := 4096
+	workerPoolSize := 128
+	queueSize := 16384
 	if cfg != nil {
 		if cfg.Services.RTDSWorkerPoolSize > 0 {
 			workerPoolSize = cfg.Services.RTDSWorkerPoolSize
@@ -89,6 +94,7 @@ func NewClient(cfg *config.Config, handler *MessageHandler) *Client {
 		done:           make(chan struct{}),
 		workerPoolSize: workerPoolSize,
 		messageQueue:   make(chan []byte, queueSize),
+		priceLatest:    make(map[string][]byte),
 	}
 }
 
@@ -116,6 +122,10 @@ func (c *Client) startWorkers(ctx context.Context) {
 				}
 			}(i + 1)
 		}
+	})
+
+	c.priceOnce.Do(func() {
+		go c.runPriceCoalescer(ctx)
 	})
 }
 
@@ -317,14 +327,73 @@ func (c *Client) readLoop(ctx context.Context) {
 				return
 			}
 
-			if c.handler != nil && !c.handler.ShouldEnqueueMessage(message) {
-				continue
+			if c.handler != nil {
+				if key, isPrice := c.handler.PriceCoalesceKey(message); isPrice {
+					if key != "" {
+						c.enqueueCoalescedPrice(key, message)
+					}
+					continue
+				}
+				if !c.handler.ShouldEnqueueMessage(message) {
+					continue
+				}
 			}
 
 			// Bounded queue to cap concurrent handlers under load.
 			msgCopy := append([]byte(nil), message...)
 			if dropped := c.enqueueMessage(msgCopy); dropped {
 				c.logQueueDrop(dropped)
+			}
+		}
+	}
+}
+
+func (c *Client) enqueueCoalescedPrice(key string, message []byte) {
+	if strings.TrimSpace(key) == "" || len(message) == 0 {
+		return
+	}
+	copyMsg := append([]byte(nil), message...)
+	c.priceMu.Lock()
+	c.priceLatest[key] = copyMsg
+	c.priceMu.Unlock()
+}
+
+func (c *Client) drainCoalescedPrices() [][]byte {
+	c.priceMu.Lock()
+	if len(c.priceLatest) == 0 {
+		c.priceMu.Unlock()
+		return nil
+	}
+
+	out := make([][]byte, 0, len(c.priceLatest))
+	for _, msg := range c.priceLatest {
+		out = append(out, msg)
+	}
+	c.priceLatest = make(map[string][]byte, len(out))
+	c.priceMu.Unlock()
+	return out
+}
+
+func (c *Client) runPriceCoalescer(ctx context.Context) {
+	if c.handler == nil {
+		return
+	}
+
+	ticker := time.NewTicker(priceFlushInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.done:
+			return
+		case <-ticker.C:
+			batch := c.drainCoalescedPrices()
+			for _, msg := range batch {
+				if err := c.handler.HandleMessage(ctx, msg); err != nil {
+					logger.Warn("market RTDS price coalescer handling failed: %v", err)
+				}
 			}
 		}
 	}

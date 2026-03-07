@@ -59,3 +59,31 @@ func TestShouldEnqueueMessageBatch(t *testing.T) {
 		t.Fatalf("expected batch without allowlisted items to be dropped")
 	}
 }
+
+func TestPriceCoalesceKey(t *testing.T) {
+	h := NewMessageHandler(nil, nil)
+	allow := NewCacheAllowlist(0)
+	allow.Allow([]string{"a-allow"})
+	h.SetCacheAllowlist(allow)
+
+	key, isPrice := h.PriceCoalesceKey([]byte(`{"event_type":"price_change","market":"m-1","price_changes":[{"asset_id":"a-allow"}]}`))
+	if !isPrice {
+		t.Fatalf("expected price_change probe to be recognized")
+	}
+	if key != "m-1" {
+		t.Fatalf("expected market key m-1, got %q", key)
+	}
+
+	key, isPrice = h.PriceCoalesceKey([]byte(`{"event_type":"price_change","market":"m-2","price_changes":[{"asset_id":"a-block"}]}`))
+	if !isPrice {
+		t.Fatalf("expected price_change probe to be recognized")
+	}
+	if key != "" {
+		t.Fatalf("expected disallowed price_change to return empty key, got %q", key)
+	}
+
+	key, isPrice = h.PriceCoalesceKey([]byte(`{"event_type":"last_trade","asset_id":"a-allow"}`))
+	if isPrice {
+		t.Fatalf("expected non-price event to return isPrice=false, key=%q", key)
+	}
+}

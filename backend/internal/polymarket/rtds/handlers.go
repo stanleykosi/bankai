@@ -114,6 +114,7 @@ type MessageHandler struct {
 
 type messageEnqueueProbe struct {
 	EventType    string `json:"event_type"`
+	Market       string `json:"market"`
 	AssetID      string `json:"asset_id"`
 	PriceChanges []struct {
 		AssetID string `json:"asset_id"`
@@ -212,6 +213,37 @@ func (h *MessageHandler) shouldEnqueueObject(msg []byte) bool {
 	default:
 		return false
 	}
+}
+
+// PriceCoalesceKey returns a coalescing key for price_change payloads.
+// key=="" with isPrice=true means the payload is a price_change that is not
+// relevant to the allowlist and can be dropped early.
+func (h *MessageHandler) PriceCoalesceKey(msg []byte) (key string, isPrice bool) {
+	msg = bytes.TrimSpace(msg)
+	if len(msg) == 0 || msg[0] != '{' {
+		return "", false
+	}
+
+	var probe messageEnqueueProbe
+	if err := json.Unmarshal(msg, &probe); err != nil {
+		return "", false
+	}
+	if probe.EventType != EventTypePriceChange {
+		return "", false
+	}
+	if strings.TrimSpace(probe.Market) == "" {
+		return "", true
+	}
+
+	if h.cacheAllowlist == nil {
+		return probe.Market, true
+	}
+	for _, change := range probe.PriceChanges {
+		if h.shouldCache(change.AssetID) {
+			return probe.Market, true
+		}
+	}
+	return "", true
 }
 
 // HandleMessage routes the raw JSON message to the specific handler
