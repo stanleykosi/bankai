@@ -1314,7 +1314,13 @@ func classifyUpDownCryptoMarket(m models.Market, now time.Time) (UpDownMarket, b
 	if m.EventStartTime == nil || m.EndDate == nil {
 		return UpDownMarket{}, false
 	}
-	if !m.AcceptingOrders || m.Closed || m.EndDate.Before(now) {
+	if m.Closed || m.EndDate.Before(now) {
+		return UpDownMarket{}, false
+	}
+	isActiveWindow := !now.Before(*m.EventStartTime) && now.Before(*m.EndDate)
+	// Some up/down series windows stop accepting new orders exactly at/after start.
+	// Keep active windows discoverable even when accepting_orders flips false.
+	if !isActiveWindow && !m.AcceptingOrders {
 		return UpDownMarket{}, false
 	}
 
@@ -1353,8 +1359,8 @@ func classifyUpDownCryptoMarket(m models.Market, now time.Time) (UpDownMarket, b
 		Asset:                 asset,
 		WindowType:            window,
 		ResolutionSourceType:  source,
-		Tradable:              true,
-		IsActiveWindow:        !now.Before(*m.EventStartTime) && now.Before(*m.EndDate),
+		Tradable:              m.AcceptingOrders || isActiveWindow,
+		IsActiveWindow:        isActiveWindow,
 		TimeToStartSeconds:    int64(math.Round(m.EventStartTime.Sub(now).Seconds())),
 		TimeToEndSeconds:      int64(math.Round(m.EndDate.Sub(now).Seconds())),
 		CreatedAt:             m.MarketCreatedAt,

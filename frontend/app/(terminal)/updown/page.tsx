@@ -1140,7 +1140,7 @@ function RailMarketRow({
   const selected = selectedSlug === market.slug;
   const countdown = marketCountdown(market, nowMs, anchorMs);
   const canSelect = Boolean(selectable && isLive);
-  const stateLabel = isLive ? "LIVE" : start > nowMs ? "QUEUED" : "CLOSED";
+  const stateLabel = isLive ? "LIVE" : label.toUpperCase() === "NEXT" ? "NEXT" : "CLOSED";
 
   return (
     <button
