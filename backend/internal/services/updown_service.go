@@ -1172,7 +1172,7 @@ func (s *UpDownService) discoverMarketsFromGamma(ctx context.Context, now time.T
 
 	active := true
 	closed := false
-	ascending := true
+	desc := false
 	out := make([]UpDownMarket, 0, maxMarkets)
 	seen := make(map[string]struct{}, maxMarkets*2)
 
@@ -1183,8 +1183,8 @@ func (s *UpDownService) discoverMarketsFromGamma(ctx context.Context, now time.T
 			Offset:    offset,
 			Active:    &active,
 			Closed:    &closed,
-			Order:     "startDate",
-			Ascending: &ascending,
+			Order:     "id",
+			Ascending: &desc,
 		})
 		if err != nil {
 			return nil, err

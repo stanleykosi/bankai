@@ -99,6 +99,24 @@ const toMillis = (value?: string) => {
   return Number.isNaN(ts) ? 0 : ts;
 };
 
+const deriveStartMs = (market: UpDownMarket, anchorMs: number) => {
+  const parsed = toMillis(market.event_start_time);
+  if (parsed > 0) return parsed;
+  if (Number.isFinite(anchorMs) && Number.isFinite(market.time_to_start_seconds)) {
+    return anchorMs + market.time_to_start_seconds * 1000;
+  }
+  return 0;
+};
+
+const deriveEndMs = (market: UpDownMarket, anchorMs: number) => {
+  const parsed = toMillis(market.event_end_time);
+  if (parsed > 0) return parsed;
+  if (Number.isFinite(anchorMs) && Number.isFinite(market.time_to_end_seconds)) {
+    return anchorMs + market.time_to_end_seconds * 1000;
+  }
+  return 0;
+};
+
 const WINDOW_ORDER: Record<string, number> = {
   "5m": 0,
   "15m": 1,
@@ -115,21 +133,13 @@ const normalizeSelectedSlug = (value: string | null | undefined): string | null 
   return trimmed;
 };
 
-const isMarketActiveAt = (market: UpDownMarket, nowMs: number) => {
-  const start = toMillis(market.event_start_time);
-  const end = toMillis(market.event_end_time);
+const isMarketActiveAt = (market: UpDownMarket, nowMs: number, anchorMs: number) => {
+  const start = deriveStartMs(market, anchorMs);
+  const end = deriveEndMs(market, anchorMs);
   if (start > 0 && end > 0) {
     return start <= nowMs && nowMs < end;
   }
   return Boolean(market.is_active_window);
-};
-
-const compareMarketStart = (a: UpDownMarket, b: UpDownMarket) => {
-  const startDiff = toMillis(a.event_start_time) - toMillis(b.event_start_time);
-  if (startDiff !== 0) return startDiff;
-  const endDiff = toMillis(a.event_end_time) - toMillis(b.event_end_time);
-  if (endDiff !== 0) return endDiff;
-  return a.slug.localeCompare(b.slug);
 };
 
 const formatRiskFlag = (value: string) => value.replaceAll("_", " ");
@@ -143,7 +153,7 @@ type RailLane = {
   queue: UpDownMarket[];
 };
 
-const buildRailLanes = (markets: UpDownMarket[], nowMs: number): RailLane[] => {
+const buildRailLanes = (markets: UpDownMarket[], nowMs: number, anchorMs: number): RailLane[] => {
   if (!markets.length) return [];
 
   const grouped = new Map<string, UpDownMarket[]>();
@@ -160,17 +170,23 @@ const buildRailLanes = (markets: UpDownMarket[], nowMs: number): RailLane[] => {
   const lanes: RailLane[] = [];
   for (const [key, groupedMarkets] of grouped) {
     const queue = [...groupedMarkets]
-      .filter((market) => toMillis(market.event_end_time) > nowMs)
-      .sort(compareMarketStart);
+      .filter((market) => deriveEndMs(market, anchorMs) > nowMs)
+      .sort((left, right) => {
+        const startDiff = deriveStartMs(left, anchorMs) - deriveStartMs(right, anchorMs);
+        if (startDiff !== 0) return startDiff;
+        const endDiff = deriveEndMs(left, anchorMs) - deriveEndMs(right, anchorMs);
+        if (endDiff !== 0) return endDiff;
+        return left.slug.localeCompare(right.slug);
+      });
     if (!queue.length) continue;
 
-    const liveCandidates = queue.filter((market) => isMarketActiveAt(market, nowMs));
+    const liveCandidates = queue.filter((market) => isMarketActiveAt(market, nowMs, anchorMs));
     const live =
       liveCandidates.sort(
-        (left, right) => toMillis(left.event_end_time) - toMillis(right.event_end_time),
+        (left, right) => deriveEndMs(left, anchorMs) - deriveEndMs(right, anchorMs),
       )[0] ?? null;
 
-    const future = queue.filter((market) => toMillis(market.event_start_time) > nowMs);
+    const future = queue.filter((market) => deriveStartMs(market, anchorMs) > nowMs);
     const next = future[0] ?? null;
 
     if (!live && !next) continue;
@@ -192,11 +208,15 @@ const buildRailLanes = (markets: UpDownMarket[], nowMs: number): RailLane[] => {
     }
 
     const leftTime = left.live
-      ? toMillis(left.live.event_end_time)
-      : toMillis(left.next?.event_start_time);
+      ? deriveEndMs(left.live, nowMs)
+      : left.next
+        ? deriveStartMs(left.next, anchorMs)
+        : 0;
     const rightTime = right.live
-      ? toMillis(right.live.event_end_time)
-      : toMillis(right.next?.event_start_time);
+      ? deriveEndMs(right.live, anchorMs)
+      : right.next
+        ? deriveStartMs(right.next, anchorMs)
+        : 0;
     if (leftTime !== rightTime) {
       return leftTime - rightTime;
     }
@@ -216,13 +236,12 @@ const flattenRailActiveMarkets = (lanes: RailLane[]): UpDownMarket[] => {
     .filter((market): market is UpDownMarket => Boolean(market));
 };
 
-const marketCountdown = (market: UpDownMarket, nowMs: number): string => {
-  const start = toMillis(market.event_start_time);
-  const end = toMillis(market.event_end_time);
-  const isActive = isMarketActiveAt(market, nowMs);
+const marketCountdown = (market: UpDownMarket, nowMs: number, anchorMs: number): string => {
+  const start = deriveStartMs(market, anchorMs);
+  const end = deriveEndMs(market, anchorMs);
+  const isActive = isMarketActiveAt(market, nowMs, anchorMs);
   if (isActive) {
-    const remaining =
-      end > 0 ? (end - nowMs) / 1000 : market.time_to_end_seconds;
+    const remaining = end > 0 ? (end - nowMs) / 1000 : market.time_to_end_seconds;
     return `Ends in ${fmtCountdown(remaining)}`;
   }
   const untilStart =
@@ -310,14 +329,15 @@ export default function UpDownPage() {
   });
 
   const markets = marketsQuery.data ?? [];
+  const marketAnchorMs = marketsQuery.dataUpdatedAt > 0 ? marketsQuery.dataUpdatedAt : nowMs;
   const railSourceMarkets = useMemo(() => {
     const tradable = markets.filter((market) => market.tradable);
     return tradable.length ? tradable : markets;
   }, [markets]);
 
   const railLanes = useMemo(
-    () => buildRailLanes(railSourceMarkets, nowMs),
-    [railSourceMarkets, nowMs],
+    () => buildRailLanes(railSourceMarkets, nowMs, marketAnchorMs),
+    [railSourceMarkets, nowMs, marketAnchorMs],
   );
 
   const railActiveMarkets = useMemo(() => flattenRailActiveMarkets(railLanes), [railLanes]);
@@ -466,15 +486,15 @@ export default function UpDownPage() {
 
   const activeRiskFlags = useMemo(() => {
     if (!selectedSignal) return [];
-    return Object.entries(selectedSignal.risk_flags)
+    return Object.entries(selectedSignal.risk_flags ?? {})
       .filter(([, enabled]) => Boolean(enabled))
       .map(([flag]) => flag);
   }, [selectedSignal]);
 
   const activeCountdown = useMemo(() => {
     if (!selectedMarket) return "--";
-    return marketCountdown(selectedMarket, nowMs);
-  }, [nowMs, selectedMarket]);
+    return marketCountdown(selectedMarket, nowMs, marketAnchorMs);
+  }, [nowMs, selectedMarket, marketAnchorMs]);
 
   const referenceAgeSeconds = useMemo(() => {
     const ts = toMillis(selectedSignal?.reference_updated_at ?? selectedSignal?.timestamp);
@@ -484,10 +504,10 @@ export default function UpDownPage() {
 
   const startSnapshotMissing = useMemo(() => {
     if (!selectedMarket || !selectedSignal) return false;
-    const start = toMillis(selectedMarket.event_start_time);
+    const start = deriveStartMs(selectedMarket, marketAnchorMs);
     if (!start || nowMs < start) return false;
     return typeof selectedSignal.reference_start_price !== "number";
-  }, [selectedMarket, selectedSignal, nowMs]);
+  }, [selectedMarket, selectedSignal, nowMs, marketAnchorMs]);
 
   const liveMarket = selectedMarket ? augmentMarket(selectedMarket.market) : null;
   const signalHasSynth = hasSynthProbabilities(selectedSignal);
@@ -680,6 +700,7 @@ export default function UpDownPage() {
                       key={lane.key}
                       lane={lane}
                       nowMs={nowMs}
+                      anchorMs={marketAnchorMs}
                       selectedSlug={normalizedSelectedSlug}
                       onSelect={setSelectedSlug}
                     />
@@ -808,7 +829,7 @@ export default function UpDownPage() {
                             value={
                               typeof selectedSignal.reference_end_price === "number"
                                 ? price(selectedSignal.reference_end_price)
-                                : isMarketActiveAt(selectedMarket, nowMs)
+                                : isMarketActiveAt(selectedMarket, nowMs, marketAnchorMs)
                                   ? "Pending"
                                   : "--"
                             }
@@ -1021,15 +1042,17 @@ function Metric({
 function RailLaneCard({
   lane,
   nowMs,
+  anchorMs,
   selectedSlug,
   onSelect,
 }: {
   lane: RailLane;
   nowMs: number;
+  anchorMs: number;
   selectedSlug: string | null;
   onSelect: (slug: string) => void;
 }) {
-  const upcomingCount = lane.queue.filter((market) => toMillis(market.event_start_time) > nowMs).length;
+  const upcomingCount = lane.queue.filter((market) => deriveStartMs(market, anchorMs) > nowMs).length;
   const next = lane.next && lane.next.slug !== lane.live?.slug ? lane.next : null;
 
   return (
@@ -1056,6 +1079,7 @@ function RailLaneCard({
             label="Current"
             market={lane.live}
             nowMs={nowMs}
+            anchorMs={anchorMs}
             selectedSlug={selectedSlug}
             onSelect={onSelect}
             selectable
@@ -1070,6 +1094,7 @@ function RailLaneCard({
           label="Next"
           market={next}
           nowMs={nowMs}
+          anchorMs={anchorMs}
           selectedSlug={selectedSlug}
           onSelect={onSelect}
           selectable={false}
@@ -1088,6 +1113,7 @@ function RailMarketRow({
   label,
   market,
   nowMs,
+  anchorMs,
   selectedSlug,
   onSelect,
   selectable,
@@ -1095,6 +1121,7 @@ function RailMarketRow({
   label: string;
   market: UpDownMarket | null;
   nowMs: number;
+  anchorMs: number;
   selectedSlug: string | null;
   onSelect: (slug: string) => void;
   selectable?: boolean;
@@ -1108,10 +1135,10 @@ function RailMarketRow({
     );
   }
 
-  const start = toMillis(market.event_start_time);
-  const isLive = isMarketActiveAt(market, nowMs);
+  const start = deriveStartMs(market, anchorMs);
+  const isLive = isMarketActiveAt(market, nowMs, anchorMs);
   const selected = selectedSlug === market.slug;
-  const countdown = marketCountdown(market, nowMs);
+  const countdown = marketCountdown(market, nowMs, anchorMs);
   const canSelect = Boolean(selectable && isLive);
   const stateLabel = isLive ? "LIVE" : start > nowMs ? "QUEUED" : "CLOSED";
 
