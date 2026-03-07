@@ -23,17 +23,20 @@ import (
 )
 
 const (
-	upDownSignalChannel    = "updown:signal_updates"
-	upDownMarketsCacheKey  = "updown:markets:snapshot"
-	upDownRecsCacheKey     = "updown:recommendations"
-	upDownSignalCachePref  = "updown:signal:"
-	upDownCacheTTL         = 30 * time.Second
-	defaultRiskProfile     = "Balanced"
-	upDownEventDebounce    = 250 * time.Millisecond
-	upDownPersistTimeout   = 1500 * time.Millisecond
-	upDownGammaPageLimit   = 100
-	upDownGammaMaxPages    = 8
-	upDownCloseFinalizeTTL = 4 * time.Minute
+	upDownSignalChannel     = "updown:signal_updates"
+	upDownMarketsCacheKey   = "updown:markets:snapshot"
+	upDownRecsCacheKey      = "updown:recommendations"
+	upDownSignalCachePref   = "updown:signal:"
+	upDownCacheTTL          = 30 * time.Second
+	defaultRiskProfile      = "Balanced"
+	upDownEventDebounce     = 250 * time.Millisecond
+	upDownPersistTimeout    = 1500 * time.Millisecond
+	upDownGammaTagUpOrDown  = 102127
+	upDownGammaPageLimit    = 200
+	upDownGammaMaxPages     = 4
+	upDownGammaEndLookback  = 45 * time.Minute
+	upDownGammaEndLookahead = 8 * time.Hour
+	upDownCloseFinalizeTTL  = 4 * time.Minute
 
 	upDownWindowStatusScheduled = "scheduled"
 	upDownWindowStatusActive    = "active"
@@ -1170,71 +1173,60 @@ func (s *UpDownService) discoverMarketsFromGamma(ctx context.Context, now time.T
 		return []UpDownMarket{}, nil
 	}
 
-	active := true
 	closed := false
-	desc := false
-	out := make([]UpDownMarket, 0, maxMarkets)
+	asc := true
+	tagID := upDownGammaTagUpOrDown
+	endMin := now.Add(-upDownGammaEndLookback).UTC().Format(time.RFC3339)
+	endMax := now.Add(upDownGammaEndLookahead).UTC().Format(time.RFC3339)
+
+	out := make([]UpDownMarket, 0, maxMarkets*2)
 	seen := make(map[string]struct{}, maxMarkets*2)
 
-	for page := 0; page < upDownGammaMaxPages && len(out) < maxMarkets; page++ {
+	for page := 0; page < upDownGammaMaxPages; page++ {
 		offset := page * upDownGammaPageLimit
-		events, err := s.market.GammaClient.GetEvents(ctx, gamma.GetEventsParams{
-			Limit:     upDownGammaPageLimit,
-			Offset:    offset,
-			Active:    &active,
-			Closed:    &closed,
-			Order:     "id",
-			Ascending: &desc,
+		markets, err := s.market.GammaClient.GetMarkets(ctx, gamma.GetMarketsParams{
+			Limit:      upDownGammaPageLimit,
+			Offset:     offset,
+			Closed:     &closed,
+			Order:      "endDate",
+			Ascending:  &asc,
+			TagID:      &tagID,
+			EndDateMin: endMin,
+			EndDateMax: endMax,
 		})
 		if err != nil {
 			return nil, err
 		}
-		if len(events) == 0 {
+		if len(markets) == 0 {
 			break
 		}
 
-		for _, event := range events {
-			for _, gm := range event.Markets {
-				conditionID := strings.TrimSpace(gm.ConditionID)
-				if conditionID == "" {
-					continue
-				}
-				if _, ok := seen[conditionID]; ok {
-					continue
-				}
-				seen[conditionID] = struct{}{}
-
-				market := gm.ToDBModel()
-				if market == nil {
-					continue
-				}
-
-				tags := make([]string, 0, len(event.Tags))
-				for _, tag := range event.Tags {
-					if slug := strings.TrimSpace(tag.Slug); slug != "" {
-						tags = append(tags, slug)
-					}
-				}
-				market.Tags = tags
-				market.Category = "general"
-				market.Archived = event.Archived
-				market.TokenIDYes, market.TokenIDNo = gamma.ParseTokenIDs(gm.ClobTokenIds)
-
-				classified, ok := classifyUpDownCryptoMarket(*market, now)
-				if !ok {
-					continue
-				}
-				out = append(out, classified)
-				if len(out) >= maxMarkets {
-					break
-				}
+		for _, gm := range markets {
+			conditionID := strings.TrimSpace(gm.ConditionID)
+			if conditionID == "" {
+				continue
 			}
-			if len(out) >= maxMarkets {
-				break
+			if _, ok := seen[conditionID]; ok {
+				continue
 			}
+			seen[conditionID] = struct{}{}
+
+			market := gm.ToDBModel()
+			if market == nil {
+				continue
+			}
+
+			market.Category = "general"
+			market.TokenIDYes, market.TokenIDNo = gamma.ParseTokenIDs(gm.ClobTokenIds)
+
+			classified, ok := classifyUpDownCryptoMarket(*market, now)
+			if !ok {
+				continue
+			}
+			out = append(out, classified)
 		}
 
-		if len(events) < upDownGammaPageLimit {
+		if len(markets) < upDownGammaPageLimit {
 			break
 		}
 	}

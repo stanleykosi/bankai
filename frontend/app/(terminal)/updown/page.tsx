@@ -208,7 +208,7 @@ const buildRailLanes = (markets: UpDownMarket[], nowMs: number, anchorMs: number
     }
 
     const leftTime = left.live
-      ? deriveEndMs(left.live, nowMs)
+      ? deriveEndMs(left.live, anchorMs)
       : left.next
         ? deriveStartMs(left.next, anchorMs)
         : 0;
@@ -1069,7 +1069,7 @@ function RailLaneCard({
               : "bg-muted text-muted-foreground",
           )}
         >
-          {lane.live ? "Live" : "Queued"}
+          {lane.live ? "Live" : "Upcoming"}
         </span>
       </div>
 
@@ -1102,7 +1102,7 @@ function RailLaneCard({
       </div>
 
       <div className="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
-        <span>{upcomingCount} queued</span>
+        <span>{upcomingCount} upcoming</span>
         <span>{(lane.live ?? lane.next)?.resolution_source_type ?? "unknown"}</span>
       </div>
     </div>

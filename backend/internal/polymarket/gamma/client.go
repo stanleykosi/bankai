@@ -60,13 +60,16 @@ func NewClient(cfg *config.Config) *Client {
 
 // GetEventsParams holds query parameters for fetching events
 type GetEventsParams struct {
-	Limit     int
-	Offset    int
-	Active    *bool
-	Closed    *bool
-	Order     string // "volume", "liquidity", "createdAt"
-	Ascending *bool
-	Slug      string
+	Limit      int
+	Offset     int
+	Active     *bool
+	Closed     *bool
+	Order      string // "volume", "liquidity", "createdAt"
+	Ascending  *bool
+	Slug       string
+	TagID      *int
+	EndDateMin string
+	EndDateMax string
 }
 
 // GetEvents fetches a list of events from Gamma
@@ -98,6 +101,15 @@ func (c *Client) GetEvents(ctx context.Context, params GetEventsParams) ([]Gamma
 	if params.Slug != "" {
 		q.Set("slug", params.Slug)
 	}
+	if params.TagID != nil {
+		q.Set("tag_id", strconv.Itoa(*params.TagID))
+	}
+	if params.EndDateMin != "" {
+		q.Set("end_date_min", params.EndDateMin)
+	}
+	if params.EndDateMax != "" {
+		q.Set("end_date_max", params.EndDateMax)
+	}
 
 	u.RawQuery = q.Encode()
 
@@ -122,6 +134,79 @@ func (c *Client) GetEvents(ctx context.Context, params GetEventsParams) ([]Gamma
 	}
 
 	return events, nil
+}
+
+// GetMarketsParams holds query parameters for fetching markets directly.
+type GetMarketsParams struct {
+	Limit      int
+	Offset     int
+	Closed     *bool
+	Active     *bool
+	Order      string
+	Ascending  *bool
+	TagID      *int
+	EndDateMin string
+	EndDateMax string
+}
+
+// GetMarkets fetches a list of markets from Gamma.
+func (c *Client) GetMarkets(ctx context.Context, params GetMarketsParams) ([]GammaMarket, error) {
+	u, err := url.Parse(fmt.Sprintf("%s/markets", c.BaseURL))
+	if err != nil {
+		return nil, err
+	}
+
+	q := u.Query()
+	if params.Limit > 0 {
+		q.Set("limit", strconv.Itoa(params.Limit))
+	}
+	if params.Offset > 0 {
+		q.Set("offset", strconv.Itoa(params.Offset))
+	}
+	if params.Closed != nil {
+		q.Set("closed", strconv.FormatBool(*params.Closed))
+	}
+	if params.Active != nil {
+		q.Set("active", strconv.FormatBool(*params.Active))
+	}
+	if params.Order != "" {
+		q.Set("order", params.Order)
+	}
+	if params.Ascending != nil {
+		q.Set("ascending", strconv.FormatBool(*params.Ascending))
+	}
+	if params.TagID != nil {
+		q.Set("tag_id", strconv.Itoa(*params.TagID))
+	}
+	if params.EndDateMin != "" {
+		q.Set("end_date_min", params.EndDateMin)
+	}
+	if params.EndDateMax != "" {
+		q.Set("end_date_max", params.EndDateMax)
+	}
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.doRequestWithRetry(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("gamma api error: status %d", resp.StatusCode)
+	}
+
+	var markets []GammaMarket
+	if err := json.NewDecoder(resp.Body).Decode(&markets); err != nil {
+		return nil, err
+	}
+
+	return markets, nil
 }
 
 // GetMarketParams holds query parameters for fetching markets directly
