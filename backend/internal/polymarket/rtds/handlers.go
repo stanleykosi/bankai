@@ -112,6 +112,14 @@ type MessageHandler struct {
 	bookCacheTTL   time.Duration
 }
 
+type messageEnqueueProbe struct {
+	EventType    string `json:"event_type"`
+	AssetID      string `json:"asset_id"`
+	PriceChanges []struct {
+		AssetID string `json:"asset_id"`
+	} `json:"price_changes"`
+}
+
 func NewMessageHandler(db *gorm.DB, r *redis.Client) *MessageHandler {
 	return &MessageHandler{
 		DB:            db,
@@ -139,6 +147,71 @@ func (h *MessageHandler) shouldCache(assetID string) bool {
 		return true
 	}
 	return h.cacheAllowlist.IsAllowed(assetID)
+}
+
+// ShouldEnqueueMessage performs a lightweight admission check before the RTDS
+// payload is queued for worker processing. This keeps the queue focused on
+// allowlisted assets and avoids backpressure from irrelevant market traffic.
+func (h *MessageHandler) ShouldEnqueueMessage(msg []byte) bool {
+	msg = bytes.TrimSpace(msg)
+	if len(msg) == 0 {
+		return false
+	}
+
+	switch msg[0] {
+	case '{':
+		return h.shouldEnqueueObject(msg)
+	case '[':
+		var batch []json.RawMessage
+		if err := json.Unmarshal(msg, &batch); err != nil {
+			// Preserve behavior on malformed batches; handler will surface errors.
+			return true
+		}
+		for _, raw := range batch {
+			if h.shouldEnqueueObject(raw) {
+				return true
+			}
+		}
+		return false
+	default:
+		text := strings.ToUpper(string(msg))
+		return text != "PING" && text != "PONG"
+	}
+}
+
+func (h *MessageHandler) shouldEnqueueObject(msg []byte) bool {
+	msg = bytes.TrimSpace(msg)
+	if len(msg) == 0 || msg[0] != '{' {
+		return false
+	}
+
+	// No allowlist means full ingestion mode.
+	if h.cacheAllowlist == nil {
+		return true
+	}
+
+	var probe messageEnqueueProbe
+	if err := json.Unmarshal(msg, &probe); err != nil {
+		// Preserve behavior on malformed payloads; handler will surface errors.
+		return true
+	}
+
+	switch probe.EventType {
+	case EventTypePriceChange:
+		for _, change := range probe.PriceChanges {
+			if h.shouldCache(change.AssetID) {
+				return true
+			}
+		}
+		return false
+	case EventTypeBook:
+		return h.shouldCache(probe.AssetID)
+	case EventTypeLastTradePrice, EventTypeLastTrade:
+		// Keep trade flow unfiltered for analytics/volume tracking paths.
+		return true
+	default:
+		return false
+	}
 }
 
 // HandleMessage routes the raw JSON message to the specific handler

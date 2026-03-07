@@ -65,9 +65,9 @@ type Client struct {
 	reconnecting bool
 	reconnectMu  sync.Mutex
 
-	queueDropMu      sync.Mutex
-	queueDropped     int
-	queueDropWindow  time.Time
+	queueDropMu     sync.Mutex
+	queueDropped    int
+	queueDropWindow time.Time
 }
 
 func NewClient(cfg *config.Config, handler *MessageHandler) *Client {
@@ -315,6 +315,10 @@ func (c *Client) readLoop(ctx context.Context) {
 					logger.Warn("market RTDS read error: %v", err)
 				}
 				return
+			}
+
+			if c.handler != nil && !c.handler.ShouldEnqueueMessage(message) {
+				continue
 			}
 
 			// Bounded queue to cap concurrent handlers under load.
