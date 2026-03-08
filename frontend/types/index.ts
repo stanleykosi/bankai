@@ -536,6 +536,8 @@ export interface UpDownSignal {
   risk_flags: RiskFlags;
   reason_codes: string[];
   recommendation: Recommendation;
+  model_diagnostic_code: string;
+  model_diagnostic_detail?: string;
   locked_recommendation?: Recommendation;
   recommendation_locked_at?: string;
 }

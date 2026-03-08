@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
@@ -143,6 +143,8 @@ const isMarketActiveAt = (market: UpDownMarket, nowMs: number, anchorMs: number)
 };
 
 const formatRiskFlag = (value: string) => value.replaceAll("_", " ");
+const formatDiagCode = (value?: string) =>
+  !value ? "--" : value.replaceAll("_", " ");
 
 type RailLane = {
   key: string;
@@ -279,11 +281,22 @@ const hasSynthProbabilities = (signal: UpDownSignal | null) =>
     typeof signal.p_model_up === "number" ||
     typeof signal.p_lp_up === "number");
 
+const impliedUpProbability = (up: number | undefined, down: number | undefined) => {
+  if (typeof up === "number" && up > 0 && typeof down === "number" && down > 0) {
+    const total = up + down;
+    if (total > 0) return Math.min(0.99, Math.max(0.01, up / total));
+  }
+  if (typeof up === "number" && up > 0) return Math.min(0.99, Math.max(0.01, up));
+  if (typeof down === "number" && down > 0) return Math.min(0.99, Math.max(0.01, 1 - down));
+  return null;
+};
+
 export default function UpDownPage() {
   const [asset, setAsset] = useState<(typeof ASSETS)[number]>("ALL");
   const [windowType, setWindowType] = useState<(typeof WINDOWS)[number]>("all");
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const [liveSignals, setLiveSignals] = useState<Record<string, UpDownSignal>>({});
+  const requestedStreamsRef = useRef<Set<string>>(new Set());
   const [prefill, setPrefill] = useState<TradeRecommendationPrefill | null>(null);
   const [prefillBlockReason, setPrefillBlockReason] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState<number>(Date.now());
@@ -348,13 +361,6 @@ export default function UpDownPage() {
       markets.find((market) => market.slug === normalizedSelectedSlug) ??
       null,
     [markets, normalizedSelectedSlug, railSourceMarkets],
-  );
-  const activeConditionIds = useMemo(
-    () =>
-      Array.from(
-        new Set(railActiveMarkets.map((market) => market.condition_id).filter(Boolean)),
-      ).sort(),
-    [railActiveMarkets],
   );
 
   useEffect(() => {
@@ -445,15 +451,10 @@ export default function UpDownPage() {
   useEffect(() => {
     const conditionId = selectedMarket?.condition_id;
     if (!conditionId) return;
+    if (requestedStreamsRef.current.has(conditionId)) return;
+    requestedStreamsRef.current.add(conditionId);
     requestMarketStream(conditionId).catch(() => undefined);
   }, [selectedMarket?.condition_id]);
-
-  useEffect(() => {
-    if (!activeConditionIds.length) return;
-    for (const conditionId of activeConditionIds) {
-      requestMarketStream(conditionId).catch(() => undefined);
-    }
-  }, [activeConditionIds.join("|")]);
 
   const selectedSignal = useMemo(() => {
     if (!normalizedSelectedSlug) return null;
@@ -525,6 +526,26 @@ export default function UpDownPage() {
 
   const liveMarket = selectedMarket ? augmentMarket(selectedMarket.market) : null;
   const signalHasSynth = hasSynthProbabilities(selectedSignal);
+  const livePMarketUp = useMemo(() => {
+    if (!selectedMarket || !liveMarket) return selectedSignal?.p_market_up;
+
+    const upAsk =
+      selectedMarket.outcome_index_up === 0 ? liveMarket.yes_best_ask : liveMarket.no_best_ask;
+    const downAsk =
+      selectedMarket.outcome_index_down === 0
+        ? liveMarket.yes_best_ask
+        : liveMarket.no_best_ask;
+    const fromAsk = impliedUpProbability(upAsk, downAsk);
+    if (typeof fromAsk === "number") return fromAsk;
+
+    const upLast = selectedMarket.outcome_index_up === 0 ? liveMarket.yes_price : liveMarket.no_price;
+    const downLast =
+      selectedMarket.outcome_index_down === 0 ? liveMarket.yes_price : liveMarket.no_price;
+    const fromLast = impliedUpProbability(upLast, downLast);
+    if (typeof fromLast === "number") return fromLast;
+
+    return selectedSignal?.p_market_up;
+  }, [selectedMarket, liveMarket, selectedSignal?.p_market_up]);
 
   const rawIntegrityFailure =
     staleSignal ||
@@ -799,7 +820,7 @@ export default function UpDownPage() {
                       {selectedMarket.market?.title || selectedMarket.slug}
                     </div>
                     <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-3 2xl:grid-cols-5">
-                      <Metric label="P_Market" value={pct(selectedSignal.p_market_up)} />
+                      <Metric label="P_Market" value={pct(livePMarketUp)} />
                       <Metric label="P_Synth" value={pct(selectedSignal.p_synth_up)} />
                       <Metric label="P_Model" value={pct(selectedSignal.p_model_up)} />
                       <Metric label="P_LP" value={pct(selectedSignal.p_lp_up)} />
@@ -809,6 +830,18 @@ export default function UpDownPage() {
                         accent
                       />
                     </div>
+                    {typeof selectedSignal.p_model_up !== "number" ? (
+                      <p className="mt-2 text-[11px] text-amber-300">
+                        Model unavailable: {formatDiagCode(selectedSignal.model_diagnostic_code)}
+                        {selectedSignal.model_diagnostic_detail
+                          ? ` (${formatDiagCode(selectedSignal.model_diagnostic_detail)})`
+                          : ""}
+                      </p>
+                    ) : selectedSignal.model_diagnostic_detail ? (
+                      <p className="mt-2 text-[11px] text-muted-foreground">
+                        Model note: {formatDiagCode(selectedSignal.model_diagnostic_detail)}
+                      </p>
+                    ) : null}
                   </div>
 
                   <div className="grid gap-3 2xl:grid-cols-2">

@@ -91,6 +91,9 @@ type MarketService struct {
 	activeSnapshot     []models.Market
 	activeSnapshotAt   time.Time
 	activeCacheLastLog time.Time
+	assetSnapshotMu    sync.RWMutex
+	assetSnapshot      map[string]MarketAsset
+	assetSnapshotAt    time.Time
 
 	realtimeLogMu   sync.Mutex
 	realtimeLastLog map[string]time.Time
@@ -212,6 +215,46 @@ func (s *MarketService) loadActiveSnapshot(now time.Time) ([]models.Market, bool
 	s.activeSnapshotMu.RUnlock()
 
 	return filterActiveMarkets(copyMarkets, now), true
+}
+
+func (s *MarketService) storeAssetSnapshot(assets []MarketAsset) {
+	if s == nil {
+		return
+	}
+
+	index := make(map[string]MarketAsset, len(assets))
+	for _, asset := range assets {
+		conditionID := strings.TrimSpace(asset.ConditionID)
+		if conditionID == "" {
+			continue
+		}
+		index[conditionID] = asset
+	}
+	if len(index) == 0 {
+		return
+	}
+
+	s.assetSnapshotMu.Lock()
+	s.assetSnapshot = index
+	s.assetSnapshotAt = time.Now().UTC()
+	s.assetSnapshotMu.Unlock()
+}
+
+func (s *MarketService) loadAssetSnapshotByConditionID(conditionID string, now time.Time) (MarketAsset, bool) {
+	if s == nil {
+		return MarketAsset{}, false
+	}
+
+	s.assetSnapshotMu.RLock()
+	snapshotAt := s.assetSnapshotAt
+	snapshot := s.assetSnapshot
+	if len(snapshot) == 0 || snapshotAt.IsZero() || now.Sub(snapshotAt) > activeMarketsMemoryTTL {
+		s.assetSnapshotMu.RUnlock()
+		return MarketAsset{}, false
+	}
+	asset, ok := snapshot[conditionID]
+	s.assetSnapshotMu.RUnlock()
+	return asset, ok
 }
 
 func (s *MarketService) logActiveCacheError(prefix string, err error) {
@@ -464,6 +507,8 @@ func (s *MarketService) syncActiveMarketsCache(ctx context.Context) error {
 	for _, market := range dedup {
 		allMarkets = append(allMarkets, market)
 	}
+	assetSource := make([]models.Market, len(allMarkets))
+	copy(assetSource, allMarkets)
 	allMarkets = trimActiveMarketSnapshot(allMarkets)
 
 	data, err := json.Marshal(allMarkets)
@@ -473,6 +518,8 @@ func (s *MarketService) syncActiveMarketsCache(ctx context.Context) error {
 		s.storeActiveSnapshot(allMarkets)
 		s.setActiveMarketsCache(ctx, data)
 		s.cacheDerivedSnapshots(ctx, allMarkets)
+		// Stream subscriptions need full active-market token coverage, not just trimmed UI snapshots.
+		s.cacheFullMarketAssets(ctx, assetSource)
 	}
 
 	return nil
@@ -574,6 +621,51 @@ func (s *MarketService) getCachedActiveMarketBySlug(ctx context.Context, slug st
 	return s.getCachedActiveMarket(ctx, func(market models.Market) bool {
 		return market.Slug == slug
 	})
+}
+
+func (s *MarketService) loadMarketAssetsFromCache(ctx context.Context) ([]MarketAsset, error) {
+	if s == nil || s.Redis == nil {
+		return nil, redis.Nil
+	}
+
+	cacheCtx, cancel := withCacheTimeout(ctx, activeMarketsCacheReadTimeout)
+	val, err := s.Redis.Get(cacheCtx, CacheKeyMarketAssets).Result()
+	cancel()
+	if err != nil {
+		return nil, err
+	}
+
+	var assets []MarketAsset
+	if err := json.Unmarshal([]byte(val), &assets); err != nil {
+		return nil, err
+	}
+	s.storeAssetSnapshot(assets)
+	return assets, nil
+}
+
+func (s *MarketService) getCachedMarketAssetByConditionID(ctx context.Context, conditionID string) *MarketAsset {
+	conditionID = strings.TrimSpace(conditionID)
+	if conditionID == "" {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	if asset, ok := s.loadAssetSnapshotByConditionID(conditionID, now); ok {
+		matched := asset
+		return &matched
+	}
+
+	assets, err := s.loadMarketAssetsFromCache(ctx)
+	if err != nil {
+		return nil
+	}
+	for _, asset := range assets {
+		if strings.TrimSpace(asset.ConditionID) == conditionID {
+			matched := asset
+			return &matched
+		}
+	}
+	return nil
 }
 
 // GetActiveMarkets returns the full active market snapshot (without pagination).
@@ -1824,7 +1916,15 @@ func (s *MarketService) cacheMarketLanes(ctx context.Context, lanes *MarketLanes
 }
 
 func (s *MarketService) cacheMarketAssets(ctx context.Context, markets []models.Market) {
-	if len(markets) == 0 {
+	s.cacheMarketAssetsSnapshot(ctx, markets, false)
+}
+
+func (s *MarketService) cacheFullMarketAssets(ctx context.Context, markets []models.Market) {
+	s.cacheMarketAssetsSnapshot(ctx, markets, true)
+}
+
+func (s *MarketService) cacheMarketAssetsSnapshot(ctx context.Context, markets []models.Market, authoritative bool) {
+	if s == nil || s.Redis == nil || len(markets) == 0 {
 		return
 	}
 
@@ -1846,6 +1946,14 @@ func (s *MarketService) cacheMarketAssets(ctx context.Context, markets []models.
 		return
 	}
 
+	if !authoritative {
+		// Partial snapshots (trimmed/UI/fallback) must not replace broader authoritative caches.
+		if existing, err := s.loadMarketAssetsFromCache(ctx); err == nil && len(existing) > len(assets) {
+			return
+		}
+	}
+	s.storeAssetSnapshot(assets)
+
 	if data, err := json.Marshal(assets); err == nil {
 		_ = s.Redis.Set(ctx, CacheKeyMarketAssets, data, CacheTTL).Err()
 	}
@@ -1863,13 +1971,11 @@ func (s *MarketService) cacheDerivedSnapshots(ctx context.Context, markets []mod
 }
 
 func (s *MarketService) GetMarketAssets(ctx context.Context, maxCount int) ([]MarketAsset, error) {
-	var assets []MarketAsset
-	if val, err := s.Redis.Get(ctx, CacheKeyMarketAssets).Result(); err == nil {
-		if err := json.Unmarshal([]byte(val), &assets); err == nil {
-			return trimMarketAssets(assets, maxCount), nil
-		}
+	if assets, err := s.loadMarketAssetsFromCache(ctx); err == nil {
+		return trimMarketAssets(assets, maxCount), nil
 	}
 
+	var assets []MarketAsset
 	markets, err := s.loadAllActiveMarkets(ctx)
 	if err != nil {
 		return nil, err
@@ -1889,7 +1995,7 @@ func (s *MarketService) GetMarketAssets(ctx context.Context, maxCount int) ([]Ma
 		})
 	}
 
-	s.cacheMarketAssets(ctx, markets)
+	s.cacheFullMarketAssets(ctx, markets)
 	return trimMarketAssets(assets, maxCount), nil
 }
 
@@ -1987,20 +2093,23 @@ func (s *MarketService) RequestMarketStream(ctx context.Context, conditionID str
 		return errors.New("condition id is required")
 	}
 
-	var market models.Market
-	if cached := s.getCachedActiveMarketByConditionID(ctx, conditionID); cached != nil {
-		market = *cached
-	} else {
-		// Up/down streaming uses active cache as source of truth; do not hit DB here.
-		return gorm.ErrRecordNotFound
-	}
-
 	tokenValues := make([]string, 0, 2)
-	if market.TokenIDYes != "" {
-		tokenValues = append(tokenValues, market.TokenIDYes)
-	}
-	if market.TokenIDNo != "" {
-		tokenValues = append(tokenValues, market.TokenIDNo)
+	if asset := s.getCachedMarketAssetByConditionID(ctx, conditionID); asset != nil {
+		if asset.TokenIDYes != "" {
+			tokenValues = append(tokenValues, asset.TokenIDYes)
+		}
+		if asset.TokenIDNo != "" {
+			tokenValues = append(tokenValues, asset.TokenIDNo)
+		}
+	} else if cached := s.getCachedActiveMarketByConditionID(ctx, conditionID); cached != nil {
+		if cached.TokenIDYes != "" {
+			tokenValues = append(tokenValues, cached.TokenIDYes)
+		}
+		if cached.TokenIDNo != "" {
+			tokenValues = append(tokenValues, cached.TokenIDNo)
+		}
+	} else {
+		return gorm.ErrRecordNotFound
 	}
 
 	if len(tokenValues) == 0 {

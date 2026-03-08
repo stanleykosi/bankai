@@ -207,9 +207,11 @@ type UpDownSignal struct {
 	Regime         string  `json:"regime"`
 	Confidence     float64 `json:"confidence"`
 
-	RiskFlags      UpDownRiskFlags      `json:"risk_flags"`
-	ReasonCodes    []string             `json:"reason_codes"`
-	Recommendation UpDownRecommendation `json:"recommendation"`
+	RiskFlags             UpDownRiskFlags      `json:"risk_flags"`
+	ReasonCodes           []string             `json:"reason_codes"`
+	Recommendation        UpDownRecommendation `json:"recommendation"`
+	ModelDiagnosticCode   string               `json:"model_diagnostic_code"`
+	ModelDiagnosticDetail string               `json:"model_diagnostic_detail,omitempty"`
 	// Mid-window lock keeps decision stable while quotes keep streaming.
 	LockedRecommendation   *UpDownRecommendation `json:"locked_recommendation,omitempty"`
 	RecommendationLockedAt *time.Time            `json:"recommendation_locked_at,omitempty"`
@@ -692,7 +694,7 @@ func (s *UpDownService) scheduleSignalRecompute(update marketPriceUpdate) {
 			continue
 		}
 		s.recomputeJobs[slug] = time.AfterFunc(upDownEventDebounce, func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 1800*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 3200*time.Millisecond)
 			defer cancel()
 			s.recomputeSignalBySlug(ctx, slug)
 			s.recomputeMu.Lock()
@@ -1726,8 +1728,11 @@ func (s *UpDownService) buildSignalWithOptions(
 
 	var pMarketPtr *float64
 	var pSynthPtr *float64
-	var pModelPtr *float64
+	var pModelDisplayPtr *float64
+	var pModelBlendPtr *float64
 	var pLPPtr *float64
+	modelDiagnosticCode := "not_requested"
+	modelDiagnosticDetail := ""
 	var referenceStartPrice *float64
 	var referenceCurrentPrice *float64
 	var referenceEndPrice *float64
@@ -1783,13 +1788,21 @@ func (s *UpDownService) buildSignalWithOptions(
 	}
 
 	synthResp := s.getSynthUpDownCached(ctx, market, synthCache, options.allowSynthFetch)
+	proxySynthWindow := false
+	directSynthProbabilityAllowed := true
 	var synthClock time.Time
 	if synthResp != nil && !synthUpDownResponseMatchesMarket(market, synthResp) {
-		flags.SourceMismatch = true
-		reasons = append(reasons, "synth_market_window_mismatch")
 		if synthUpDownResponseNearMarketWindow(market, synthResp) {
+			proxySynthWindow = true
+			directSynthProbabilityAllowed = false
 			reasons = append(reasons, "synth_window_proxy")
+			if market.WindowType != Window5m {
+				flags.SourceMismatch = true
+				reasons = append(reasons, "synth_market_window_mismatch")
+			}
 		} else {
+			flags.SourceMismatch = true
+			reasons = append(reasons, "synth_market_window_mismatch")
 			synthResp = nil
 		}
 	}
@@ -1806,7 +1819,7 @@ func (s *UpDownService) buildSignalWithOptions(
 				referenceCurrentPrice = &v
 			}
 		}
-		if synthResp.SynthProbabilityUp >= 0 && synthResp.SynthProbabilityUp <= 1 {
+		if directSynthProbabilityAllowed && synthResp.SynthProbabilityUp >= 0 && synthResp.SynthProbabilityUp <= 1 {
 			v := synthResp.SynthProbabilityUp
 			pSynthPtr = &v
 		}
@@ -1870,7 +1883,7 @@ func (s *UpDownService) buildSignalWithOptions(
 	if thresholdPrice > 0 && supportsSynthAnalyticsForWindow(market.WindowType) && s.synth != nil && s.synth.Enabled() {
 		percentileSynthEstimate = s.estimateProbabilityFromPercentiles(ctx, market, thresholdPrice, percentileCache, options.allowSynthFetch)
 	}
-	if thresholdPrice > 0 && supportsSynthAnalyticsForWindow(market.WindowType) && s.synth != nil && s.synth.Enabled() {
+	if thresholdPrice > 0 && supportsSynthAnalyticsForWindow(market.WindowType) && s.synth != nil && s.synth.Enabled() && !proxySynthWindow {
 		lp := s.getSynthLPProbabilitiesCached(ctx, market, lpCache, options.allowSynthFetch)
 		if p, ok := lpProbabilityAtThreshold(lp, horizon, thresholdPrice); ok {
 			v := upDownClamp(p, 0.01, 0.99)
@@ -1879,11 +1892,24 @@ func (s *UpDownService) buildSignalWithOptions(
 		}
 	}
 
-	if thresholdPrice > 0 && supportsSynthAnalyticsForWindow(market.WindowType) && s.cfg.Services.UpDownEnterpriseEnabled && s.synth != nil && s.synth.Enabled() {
-		pModel := s.computeModelProbability(ctx, market, thresholdPrice, percentileCache, options.allowSynthFetch)
+	switch {
+	case !supportsSynthAnalyticsForWindow(market.WindowType):
+		modelDiagnosticCode = "window_unsupported"
+	case s.synth == nil || !s.synth.Enabled():
+		modelDiagnosticCode = "synth_disabled"
+	case thresholdPrice <= 0:
+		modelDiagnosticCode = "threshold_missing"
+	case s.cfg == nil || !s.cfg.Services.UpDownEnterpriseEnabled:
+		modelDiagnosticCode = "enterprise_disabled"
+	default:
+		pModel, code := s.computeModelProbability(ctx, market, thresholdPrice, percentileCache, options.allowSynthFetch)
+		if code != "" {
+			modelDiagnosticCode = code
+		}
 		if pModel > 0 {
 			v := upDownClamp(pModel, 0.01, 0.99)
-			pModelPtr = &v
+			pModelDisplayPtr = &v
+			pModelBlendPtr = &v
 		}
 	}
 	if supportsDirectSynthUpDownWindow(market.WindowType) && pSynthPtr == nil {
@@ -1891,19 +1917,23 @@ func (s *UpDownService) buildSignalWithOptions(
 			v := upDownClamp(percentileSynthEstimate, 0.01, 0.99)
 			pSynthPtr = &v
 			reasons = append(reasons, "synth_fallback_percentiles")
-			if pModelPtr != nil && math.Abs(*pModelPtr-v) <= 0.015 {
-				// Avoid double-counting nearly identical synth/model estimates.
-				pModelPtr = nil
+			if pModelBlendPtr != nil && math.Abs(*pModelBlendPtr-v) <= 0.015 {
+				// Avoid double-counting nearly identical synth/model estimates in blend,
+				// but keep raw model value visible to operators.
+				pModelBlendPtr = nil
 				reasons = append(reasons, "model_deduped_with_synth_fallback")
+				if modelDiagnosticCode == "ok" || strings.HasPrefix(modelDiagnosticCode, "enterprise_") {
+					modelDiagnosticDetail = "deduped_in_blend"
+				}
 			}
-		} else if prevSignal != nil && prevSignal.PSynthUp != nil && now.Sub(prevSignal.Timestamp) <= upDownSignalHistoryTTL {
+		} else if !proxySynthWindow && prevSignal != nil && prevSignal.PSynthUp != nil && now.Sub(prevSignal.Timestamp) <= upDownSignalHistoryTTL {
 			v := upDownClamp(*prevSignal.PSynthUp, 0.01, 0.99)
 			pSynthPtr = &v
 			reasons = append(reasons, "synth_fallback_previous")
-		} else if pModelPtr != nil {
-			v := upDownClamp(*pModelPtr, 0.01, 0.99)
+		} else if pModelDisplayPtr != nil {
+			v := upDownClamp(*pModelDisplayPtr, 0.01, 0.99)
 			pSynthPtr = &v
-			pModelPtr = nil
+			pModelBlendPtr = nil
 			reasons = append(reasons, "synth_fallback_model")
 		} else {
 			flags.SynthMissing = true
@@ -1912,7 +1942,7 @@ func (s *UpDownService) buildSignalWithOptions(
 	}
 
 	calibration, hasCalibration := s.getAssetCalibration(market.Asset)
-	pFinalUp, confidence := blendProbabilities(pMarketPtr, pSynthPtr, pModelPtr, pLPPtr, upAsk, downAsk, flags)
+	pFinalUp, confidence := blendProbabilities(pMarketPtr, pSynthPtr, pModelBlendPtr, pLPPtr, upAsk, downAsk, flags)
 	if pLPPtr != nil {
 		lpDelta := math.Abs(pFinalUp - *pLPPtr)
 		switch {
@@ -2045,7 +2075,7 @@ func (s *UpDownService) buildSignalWithOptions(
 		ReferenceUpdatedAt:     referenceUpdatedAt,
 		PMarketUp:              pMarketPtr,
 		PSynthUp:               pSynthPtr,
-		PModelUp:               pModelPtr,
+		PModelUp:               pModelDisplayPtr,
 		PLPUp:                  pLPPtr,
 		PFinalUp:               pFinalUp,
 		ExecutableAskUp:        upAsk,
@@ -2066,6 +2096,8 @@ func (s *UpDownService) buildSignalWithOptions(
 		RiskFlags:              flags,
 		ReasonCodes:            dedupeStrings(reasons),
 		Recommendation:         rec,
+		ModelDiagnosticCode:    modelDiagnosticCode,
+		ModelDiagnosticDetail:  modelDiagnosticDetail,
 		LockedRecommendation:   lockedRec,
 		RecommendationLockedAt: lockedAt,
 	}
@@ -2084,7 +2116,7 @@ func lockRecommendationAtMidWindow(
 
 	if prevSignal != nil && prevSignal.LockedRecommendation != nil {
 		locked := *prevSignal.LockedRecommendation
-		if locked.Slug == current.Slug {
+		if locked.Slug == current.Slug && isLockableRecommendationDecision(locked.Decision) {
 			var lockedAt *time.Time
 			if prevSignal.RecommendationLockedAt != nil && !prevSignal.RecommendationLockedAt.IsZero() {
 				ts := prevSignal.RecommendationLockedAt.UTC()
@@ -2096,10 +2128,17 @@ func lockRecommendationAtMidWindow(
 			return locked, &locked, lockedAt
 		}
 	}
+	if !isLockableRecommendationDecision(current.Decision) {
+		return current, nil, nil
+	}
 
 	locked := current
 	lockTs := now.UTC()
 	return locked, &locked, &lockTs
+}
+
+func isLockableRecommendationDecision(decision string) bool {
+	return decision == "BUY_UP" || decision == "BUY_DOWN"
 }
 
 func shouldLockRecommendation(now time.Time, market UpDownMarket) bool {
@@ -2140,7 +2179,12 @@ func tokenIDsByOutcome(market UpDownMarket) (string, string, error) {
 	return noToken, yesToken, nil
 }
 
-func (s *UpDownService) executablePrices(ctx context.Context, market models.Market, tokenID string, probeSize float64) (ask float64, bid float64, slippage float64, missingDepth bool) {
+func (s *UpDownService) executablePrices(
+	ctx context.Context,
+	market models.Market,
+	tokenID string,
+	probeSize float64,
+) (ask float64, bid float64, slippage float64, missingDepth bool) {
 	if tokenID == "" {
 		return 0, 0, 0, true
 	}
@@ -2659,6 +2703,9 @@ func synthUpDownCacheKey(market UpDownMarket) string {
 		return ""
 	}
 	horizon := strings.ToLower(strings.TrimSpace(horizonForWindow(market.WindowType)))
+	if !market.EventStartTime.IsZero() {
+		return asset + "|" + string(window) + "|" + horizon + "|" + strconv.FormatInt(market.EventStartTime.UTC().Unix(), 10)
+	}
 	return asset + "|" + string(window) + "|" + horizon
 }
 
@@ -2916,22 +2963,22 @@ func (s *UpDownService) computeModelProbability(
 	threshold float64,
 	percentileCache map[string]*synthdata.PredictionPercentilesResponse,
 	allowFetch bool,
-) float64 {
+) (float64, string) {
 	if s.synth == nil || !s.synth.Enabled() {
-		return 0
+		return 0, "synth_disabled"
 	}
 	timeToExpiry := market.EventEndTime.Sub(time.Now().UTC())
 	if timeToExpiry <= 0 {
-		return 0
+		return 0, "window_expired"
 	}
 
 	if threshold <= 0 {
-		return 0
+		return 0, "threshold_missing"
 	}
 
 	p := s.estimateProbabilityFromPercentiles(ctx, market, threshold, percentileCache, allowFetch)
 	if p <= 0 {
-		return 0
+		return 0, "percentiles_unavailable"
 	}
 
 	stepSeconds := synthSamplingInterval(horizonForWindow(market.WindowType))
@@ -2946,7 +2993,7 @@ func (s *UpDownService) computeModelProbability(
 	timeLength := targetStep * timeIncrement
 
 	if s.cfg == nil || !s.cfg.Services.UpDownEnterpriseEnabled {
-		return p
+		return p, "enterprise_disabled_percentile_proxy"
 	}
 
 	thresholdBucket := quantizeThreshold(threshold)
@@ -2960,19 +3007,19 @@ func (s *UpDownService) computeModelProbability(
 	)
 	now := time.Now().UTC()
 	if cached, ok := s.getCachedSynthModelProbability(modelKey, now, upDownSynthModelRefresh); ok {
-		return cached
+		return cached, "cache_hit"
 	}
 	if !allowFetch {
 		if fallback, ok := s.getStaleSynthModelProbability(modelKey, now); ok {
-			return fallback
+			return fallback, "realtime_stale_cache"
 		}
-		return p
+		return 0, "cache_cold_realtime"
 	}
 	if !s.consumeSynthCredit(ctx) {
 		if fallback, ok := s.getStaleSynthModelProbability(modelKey, now); ok {
-			return fallback
+			return fallback, "budget_exhausted_stale_cache"
 		}
-		return p
+		return p, "budget_exhausted_percentile_proxy"
 	}
 
 	fetchCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -2981,22 +3028,20 @@ func (s *UpDownService) computeModelProbability(
 	if err == nil && prob != nil && prob.ProbabilityUp >= 0 && prob.ProbabilityUp <= 1 {
 		val := upDownClamp(prob.ProbabilityUp, 0.01, 0.99)
 		s.storeSynthModelProbability(modelKey, val, now, upDownSynthModelRefresh)
-		return val
+		return val, "ok"
 	}
 
 	s.markSynthModelProbabilityFailure(modelKey, now)
 	if fallback, ok := s.getStaleSynthModelProbability(modelKey, now); ok {
-		return fallback
+		return fallback, "enterprise_failed_stale_cache"
 	}
-	return p
+	return p, "enterprise_failed_percentile_proxy"
 }
 
 func synthWindowForMarket(window UpDownWindowType) synthdata.UpDownWindow {
 	switch window {
 	case Window5m:
-		// SynthData up/down docs expose 15m/hourly/daily windows.
-		// Use 15m as the nearest proxy for 5m windows.
-		return synthdata.UpDownWindow15m
+		return synthdata.UpDownWindow5m
 	case Window15m:
 		return synthdata.UpDownWindow15m
 	case Window1h:
