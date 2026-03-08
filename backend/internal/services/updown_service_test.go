@@ -773,8 +773,720 @@ func TestBuildSignalUsesPercentilesWhenDirectSynthUnavailable(t *testing.T) {
 	if signal.PSynthUp == nil {
 		t.Fatalf("expected p_synth to be derived from percentile fallback")
 	}
+	if signal.PModelUp == nil {
+		t.Fatalf("expected p_model to be derived from percentile proxy when enterprise is disabled")
+	}
+	if signal.ModelDiagnosticCode != "enterprise_disabled_percentile_proxy" {
+		t.Fatalf("expected enterprise_disabled_percentile_proxy diagnostic, got %s", signal.ModelDiagnosticCode)
+	}
 	if signal.RiskFlags.SynthMissing {
 		t.Fatalf("expected synth_missing to clear when percentile fallback is available")
+	}
+}
+
+func TestGetSynthUpDownCachedRespectsFailureBackoff(t *testing.T) {
+	var callCount atomic.Int32
+	synthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/insights/polymarket/up-down/5min" {
+			callCount.Add(1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`"No prediction available"`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer synthSrv.Close()
+
+	cfg := &config.Config{
+		Services: config.ServicesConfig{
+			UpDownEnabled:    true,
+			SynthDataAPIKey:  "test-key",
+			SynthDataBaseURL: synthSrv.URL,
+		},
+	}
+	svc := &UpDownService{
+		cfg:                  cfg,
+		synth:                synthdata.NewClient(cfg),
+		synthUpDownCache:     make(map[string]cachedSynthUpDown),
+		synthPercentileCache: make(map[string]cachedSynthPercentile),
+		synthVolatilityCache: make(map[string]cachedSynthVolatility),
+		synthLPCache:         make(map[string]cachedSynthLP),
+		synthModelProbCache:  make(map[string]cachedSynthModelProb),
+	}
+
+	now := time.Now().UTC()
+	market := UpDownMarket{
+		Asset:          "BTC",
+		WindowType:     Window5m,
+		EventStartTime: now.Add(-2 * time.Minute),
+		EventEndTime:   now.Add(3 * time.Minute),
+	}
+
+	_ = svc.getSynthUpDownCached(context.Background(), market, map[string]*synthdata.PolymarketUpDownResponse{}, true)
+	_ = svc.getSynthUpDownCached(context.Background(), market, map[string]*synthdata.PolymarketUpDownResponse{}, true)
+
+	if got := callCount.Load(); got != 1 {
+		t.Fatalf("expected one synth fetch attempt during backoff window, got %d", got)
+	}
+}
+
+func TestGetSynthUpDownCachedCapsFailureBackoffForLongWindows(t *testing.T) {
+	var callCount atomic.Int32
+	synthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/insights/polymarket/up-down/5min" {
+			callCount.Add(1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`"No prediction available"`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer synthSrv.Close()
+
+	cfg := &config.Config{
+		Services: config.ServicesConfig{
+			UpDownEnabled:    true,
+			SynthDataAPIKey:  "test-key",
+			SynthDataBaseURL: synthSrv.URL,
+		},
+	}
+	svc := &UpDownService{
+		cfg:                  cfg,
+		synth:                synthdata.NewClient(cfg),
+		synthUpDownCache:     make(map[string]cachedSynthUpDown),
+		synthPercentileCache: make(map[string]cachedSynthPercentile),
+		synthVolatilityCache: make(map[string]cachedSynthVolatility),
+		synthLPCache:         make(map[string]cachedSynthLP),
+		synthModelProbCache:  make(map[string]cachedSynthModelProb),
+	}
+
+	now := time.Now().UTC()
+	market := UpDownMarket{
+		Asset:          "BTC",
+		WindowType:     Window5m,
+		EventStartTime: now.Add(-30 * time.Second),
+		EventEndTime:   now.Add(4 * time.Hour),
+	}
+
+	before := time.Now().UTC()
+	_ = svc.getSynthUpDownCached(context.Background(), market, map[string]*synthdata.PolymarketUpDownResponse{}, true)
+	if got := callCount.Load(); got != 1 {
+		t.Fatalf("expected one synth fetch call, got %d", got)
+	}
+
+	key := synthUpDownCacheKey(market)
+	svc.synthCacheMu.RLock()
+	entry, ok := svc.synthUpDownCache[key]
+	svc.synthCacheMu.RUnlock()
+	if !ok {
+		t.Fatalf("expected cache entry for failed synth fetch")
+	}
+
+	backoff := entry.NextFetchAt.Sub(before)
+	if backoff < 90*time.Second {
+		t.Fatalf("expected at least ~90s backoff, got %s", backoff)
+	}
+	if backoff > upDownSynthFailureBackoff+5*time.Second {
+		t.Fatalf("expected backoff to be capped near %s, got %s", upDownSynthFailureBackoff, backoff)
+	}
+}
+
+func TestRunRefreshWarmupTriggersCalibrationRefresh(t *testing.T) {
+	var historicalCalls atomic.Int32
+	synthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/prediction/historical" {
+			historicalCalls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"items":[
+					{"predictions":[[100,101,102,103],[100,99,98,97]],"realized":[100,101,102,103]},
+					{"predictions":[[101,102,103,104],[101,100,99,98]],"realized":[101,102,103,104]},
+					{"predictions":[[102,103,104,105],[102,101,100,99]],"realized":[102,103,104,105]},
+					{"predictions":[[103,104,105,106],[103,102,101,100]],"realized":[103,104,105,106]}
+				]
+			}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer synthSrv.Close()
+
+	cfg := &config.Config{
+		Services: config.ServicesConfig{
+			UpDownEnabled:    false,
+			SynthDataAPIKey:  "test-key",
+			SynthDataBaseURL: synthSrv.URL,
+		},
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	svc := &UpDownService{
+		cfg:                cfg,
+		synth:              synthdata.NewClient(cfg),
+		marketsBySlug:      make(map[string]UpDownMarket),
+		calibrationByAsset: make(map[string]assetCalibration),
+	}
+	svc.marketsBySlug["btc-updown-5m-test"] = UpDownMarket{
+		Slug:           "btc-updown-5m-test",
+		Asset:          "BTC",
+		WindowType:     Window5m,
+		EventStartTime: now.Add(-time.Minute),
+		EventEndTime:   now.Add(time.Minute),
+	}
+
+	svc.runRefreshWarmup()
+
+	if got := historicalCalls.Load(); got == 0 {
+		t.Fatalf("expected warmup to trigger calibration fetch")
+	}
+	cal, ok := svc.getAssetCalibration("BTC")
+	if !ok {
+		t.Fatalf("expected BTC calibration to be populated during warmup")
+	}
+	if cal.Samples < 4 {
+		t.Fatalf("expected calibration sample count >= 4, got %d", cal.Samples)
+	}
+}
+
+func TestRefreshCalibrationIfDueRefreshesMissingActiveAssets(t *testing.T) {
+	var btcCalls atomic.Int32
+	var ethCalls atomic.Int32
+	synthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/prediction/historical" {
+			http.NotFound(w, r)
+			return
+		}
+		switch r.URL.Query().Get("asset") {
+		case "BTC":
+			btcCalls.Add(1)
+		case "ETH":
+			ethCalls.Add(1)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"items":[
+				{"predictions":[[100,101,102,103],[100,99,98,97]],"realized":[100,101,102,103]},
+				{"predictions":[[101,102,103,104],[101,100,99,98]],"realized":[101,102,103,104]},
+				{"predictions":[[102,103,104,105],[102,101,100,99]],"realized":[102,103,104,105]},
+				{"predictions":[[103,104,105,106],[103,102,101,100]],"realized":[103,104,105,106]}
+			]
+		}`))
+	}))
+	defer synthSrv.Close()
+
+	cfg := &config.Config{
+		Services: config.ServicesConfig{
+			UpDownEnabled:    true,
+			SynthDataAPIKey:  "test-key",
+			SynthDataBaseURL: synthSrv.URL,
+		},
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	svc := &UpDownService{
+		cfg:                cfg,
+		synth:              synthdata.NewClient(cfg),
+		marketsBySlug:      make(map[string]UpDownMarket),
+		calibrationByAsset: make(map[string]assetCalibration),
+	}
+	svc.calibrationUpdated = now
+	svc.calibrationByAsset["BTC"] = assetCalibration{
+		Asset:     "BTC",
+		Samples:   12,
+		Source:    "seeded",
+		UpdatedAt: now,
+	}
+	svc.marketsBySlug["btc-updown-5m-test"] = UpDownMarket{
+		Slug:           "btc-updown-5m-test",
+		Asset:          "BTC",
+		WindowType:     Window5m,
+		EventStartTime: now.Add(-time.Minute),
+		EventEndTime:   now.Add(time.Minute),
+	}
+	svc.marketsBySlug["eth-updown-5m-test"] = UpDownMarket{
+		Slug:           "eth-updown-5m-test",
+		Asset:          "ETH",
+		WindowType:     Window5m,
+		EventStartTime: now.Add(-time.Minute),
+		EventEndTime:   now.Add(time.Minute),
+	}
+
+	svc.refreshCalibrationIfDue(context.Background(), false)
+
+	if got := btcCalls.Load(); got != 0 {
+		t.Fatalf("expected BTC calibration to stay cached, got %d refresh calls", got)
+	}
+	if got := ethCalls.Load(); got != 1 {
+		t.Fatalf("expected ETH calibration refresh call, got %d", got)
+	}
+	btcCal, ok := svc.getAssetCalibration("BTC")
+	if !ok {
+		t.Fatalf("expected BTC calibration to remain available")
+	}
+	if btcCal.Source != "seeded" {
+		t.Fatalf("expected BTC calibration to be preserved, got source=%s", btcCal.Source)
+	}
+	if ethCal, ok := svc.getAssetCalibration("ETH"); !ok || ethCal.Samples < 4 {
+		t.Fatalf("expected ETH calibration to be populated, got ok=%v samples=%d", ok, ethCal.Samples)
+	}
+}
+
+func TestRefreshCalibrationIfDueBacksOffRepeatedFailuresWithoutBaseline(t *testing.T) {
+	var ethCalls atomic.Int32
+	synthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/prediction/historical" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Query().Get("asset") == "ETH" {
+			ethCalls.Add(1)
+		}
+		http.Error(w, "temporary synth error", http.StatusBadGateway)
+	}))
+	defer synthSrv.Close()
+
+	cfg := &config.Config{
+		Services: config.ServicesConfig{
+			UpDownEnabled:    true,
+			SynthDataAPIKey:  "test-key",
+			SynthDataBaseURL: synthSrv.URL,
+		},
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	svc := &UpDownService{
+		cfg:                cfg,
+		synth:              synthdata.NewClient(cfg),
+		marketsBySlug:      make(map[string]UpDownMarket),
+		calibrationByAsset: make(map[string]assetCalibration),
+		calibrationRetryAt: make(map[string]time.Time),
+	}
+	svc.marketsBySlug["eth-updown-5m-failure-backoff"] = UpDownMarket{
+		Slug:           "eth-updown-5m-failure-backoff",
+		Asset:          "ETH",
+		WindowType:     Window5m,
+		EventStartTime: now.Add(-time.Minute),
+		EventEndTime:   now.Add(time.Minute),
+	}
+
+	svc.refreshCalibrationIfDue(context.Background(), false)
+	svc.refreshCalibrationIfDue(context.Background(), false)
+
+	if got := ethCalls.Load(); got != 1 {
+		t.Fatalf("expected only one calibration fetch attempt inside failure backoff window, got %d", got)
+	}
+	svc.calibrationMu.RLock()
+	nextRetryAt, ok := svc.calibrationRetryAt["ETH"]
+	svc.calibrationMu.RUnlock()
+	if !ok {
+		t.Fatalf("expected retry backoff timestamp to be stored for failed ETH calibration")
+	}
+	if !nextRetryAt.After(time.Now().UTC()) {
+		t.Fatalf("expected retry backoff timestamp in the future, got %s", nextRetryAt)
+	}
+}
+
+func TestWindowAwareSynthFetchesOneCallPerEndpointPerWindow(t *testing.T) {
+	var upDownCalls atomic.Int32
+	var percentileCalls atomic.Int32
+	var volatilityCalls atomic.Int32
+	var lpCalls atomic.Int32
+	var modelCalls atomic.Int32
+
+	now := time.Now().UTC().Truncate(time.Second)
+	synthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/insights/polymarket/up-down/5min":
+			upDownCalls.Add(1)
+			_, _ = w.Write([]byte(`{
+				"slug":"btc-updown-5m-test",
+				"start_price":68000,
+				"current_time":"` + now.Format(time.RFC3339Nano) + `",
+				"current_price":68020,
+				"synth_probability_up":0.54,
+				"event_start_time":"` + now.Add(-time.Minute).Format(time.RFC3339Nano) + `",
+				"event_end_time":"` + now.Add(4*time.Minute).Format(time.RFC3339Nano) + `"
+			}`))
+		case "/insights/prediction-percentiles":
+			percentileCalls.Add(1)
+			_, _ = w.Write([]byte(`{"current_price":68000,"forecast_future":{"percentiles":[{"0.005":67600,"0.05":67800,"0.2":67900,"0.35":67950,"0.5":68000,"0.65":68050,"0.8":68100,"0.95":68200,"0.995":68400}]}}`))
+		case "/insights/volatility":
+			volatilityCalls.Add(1)
+			_, _ = w.Write([]byte(`{"current_price":68000,"forecast_future":{"average_volatility":32,"volatility":[0.01,0.02]},"forecast_past":{"average_volatility":30,"volatility":[0.01,0.02]}}`))
+		case "/insights/lp-probabilities":
+			lpCalls.Add(1)
+			_, _ = w.Write([]byte(`{"current_price":68000,"data":{"1h":{"probability_above":{"68000":0.53},"probability_below":{"68000":0.47}}}}`))
+		case "/v2/prediction/best":
+			modelCalls.Add(1)
+			_, _ = w.Write([]byte(`{"predictions":[[67980,67990,68010,68020,68030,68040,68050]]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer synthSrv.Close()
+
+	cfg := &config.Config{
+		Services: config.ServicesConfig{
+			UpDownEnabled:           true,
+			UpDownEnterpriseEnabled: true,
+			SynthDataAPIKey:         "test-key",
+			SynthDataBaseURL:        synthSrv.URL,
+		},
+	}
+	svc := &UpDownService{
+		cfg:                  cfg,
+		synth:                synthdata.NewClient(cfg),
+		synthUpDownCache:     make(map[string]cachedSynthUpDown),
+		synthPercentileCache: make(map[string]cachedSynthPercentile),
+		synthVolatilityCache: make(map[string]cachedSynthVolatility),
+		synthLPCache:         make(map[string]cachedSynthLP),
+		synthModelProbCache:  make(map[string]cachedSynthModelProb),
+	}
+
+	market := UpDownMarket{
+		Asset:          "BTC",
+		WindowType:     Window5m,
+		EventStartTime: now.Add(-time.Minute),
+		EventEndTime:   now.Add(4 * time.Minute),
+	}
+
+	for i := 0; i < 2; i++ {
+		if resp := svc.getSynthUpDownCached(context.Background(), market, map[string]*synthdata.PolymarketUpDownResponse{}, true); resp == nil {
+			t.Fatalf("expected up/down synth response")
+		}
+		if resp := svc.getSynthPercentilesCached(context.Background(), market, map[string]*synthdata.PredictionPercentilesResponse{}, true); resp == nil {
+			t.Fatalf("expected percentile response")
+		}
+		if resp := svc.getSynthVolatilityCached(context.Background(), market, map[string]*synthdata.VolatilityResponse{}, true); resp == nil {
+			t.Fatalf("expected volatility response")
+		}
+		if resp := svc.getSynthLPProbabilitiesCached(context.Background(), market, map[string]*synthdata.LPProbabilitiesResponse{}, true); resp == nil {
+			t.Fatalf("expected lp probability response")
+		}
+		pModel, code := svc.computeModelProbability(context.Background(), market, 68000, map[string]*synthdata.PredictionPercentilesResponse{}, true)
+		if pModel <= 0 {
+			t.Fatalf("expected p_model > 0, got %.4f (%s)", pModel, code)
+		}
+	}
+
+	if got := upDownCalls.Load(); got != 1 {
+		t.Fatalf("expected 1 up/down call in a window, got %d", got)
+	}
+	if got := percentileCalls.Load(); got != 1 {
+		t.Fatalf("expected 1 percentile call in a window, got %d", got)
+	}
+	if got := volatilityCalls.Load(); got != 1 {
+		t.Fatalf("expected 1 volatility call in a window, got %d", got)
+	}
+	if got := lpCalls.Load(); got != 1 {
+		t.Fatalf("expected 1 lp call in a window, got %d", got)
+	}
+	if got := modelCalls.Load(); got != 1 {
+		t.Fatalf("expected 1 model call in a window, got %d", got)
+	}
+}
+
+func TestSynthWindowModelCacheKeyIncludesTargetStep(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	market := UpDownMarket{
+		Asset:          "BTC",
+		WindowType:     Window5m,
+		EventStartTime: now.Add(-time.Minute),
+		EventEndTime:   now.Add(4 * time.Minute),
+	}
+
+	keyStep5 := synthWindowModelCacheKey(market, 60, 3600, 5, 68000)
+	keyStep4 := synthWindowModelCacheKey(market, 60, 3600, 4, 68000)
+	if keyStep5 == "" || keyStep4 == "" {
+		t.Fatalf("expected non-empty model cache keys")
+	}
+	if keyStep5 == keyStep4 {
+		t.Fatalf("expected model cache key to vary by target step")
+	}
+}
+
+func TestShouldAllowSynthFetchForMarketActiveOnly(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+
+	active := UpDownMarket{
+		EventStartTime: now.Add(-time.Minute),
+		EventEndTime:   now.Add(4 * time.Minute),
+	}
+	if !shouldAllowSynthFetchForMarket(now, active) {
+		t.Fatalf("expected active market to allow synth fetch")
+	}
+
+	upcoming := UpDownMarket{
+		EventStartTime: now.Add(10 * time.Second),
+		EventEndTime:   now.Add(5*time.Minute + 10*time.Second),
+	}
+	if shouldAllowSynthFetchForMarket(now, upcoming) {
+		t.Fatalf("expected upcoming market to deny synth fetch")
+	}
+
+	closed := UpDownMarket{
+		EventStartTime: now.Add(-10 * time.Minute),
+		EventEndTime:   now.Add(-time.Minute),
+	}
+	if shouldAllowSynthFetchForMarket(now, closed) {
+		t.Fatalf("expected closed market to deny synth fetch")
+	}
+}
+
+func TestSynthWindowCacheTTLPreStartExpiresAtWindowStart(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	market := UpDownMarket{
+		EventStartTime: now.Add(10 * time.Minute),
+		EventEndTime:   now.Add(15 * time.Minute),
+	}
+
+	ttl := synthWindowCacheTTL(now, market)
+	if ttl < 9*time.Minute+59*time.Second || ttl > 10*time.Minute+time.Second {
+		t.Fatalf("expected pre-start ttl to align with start boundary, got %s", ttl)
+	}
+}
+
+func TestBuildSignalDoesNotFetchSynthBeforeWindowStarts(t *testing.T) {
+	var upDownCalls atomic.Int32
+	now := time.Now().UTC().Truncate(time.Second)
+	slug := "btc-updown-5m-prestart-gate"
+	mini := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mini.Addr()})
+
+	synthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/insights/polymarket/up-down/5min":
+			upDownCalls.Add(1)
+			_, _ = w.Write([]byte(`{
+				"slug":"` + slug + `",
+				"start_price":68000,
+				"current_time":"` + now.Format(time.RFC3339Nano) + `",
+				"current_price":68010,
+				"synth_probability_up":0.53
+			}`))
+		case "/insights/volatility":
+			_, _ = w.Write([]byte(`{"current_price":68000,"forecast_future":{"average_volatility":32,"volatility":[0.01,0.02]},"forecast_past":{"average_volatility":30,"volatility":[0.01,0.02]}}`))
+		case "/insights/prediction-percentiles":
+			_, _ = w.Write([]byte(`{"current_price":68000,"forecast_future":{"percentiles":[{"0.005":67600,"0.05":67800,"0.2":67900,"0.35":67950,"0.5":68000,"0.65":68050,"0.8":68100,"0.95":68200,"0.995":68400}]}}`))
+		case "/insights/lp-probabilities":
+			_, _ = w.Write([]byte(`{"current_price":68000,"data":{"1h":{"probability_above":{"68000":0.53},"probability_below":{"68000":0.47}}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer synthSrv.Close()
+
+	cfg := &config.Config{
+		Services: config.ServicesConfig{
+			UpDownEnabled:    true,
+			SynthDataAPIKey:  "test-key",
+			SynthDataBaseURL: synthSrv.URL,
+		},
+	}
+	svc := &UpDownService{
+		cfg:                  cfg,
+		redis:                rdb,
+		market:               NewMarketService(nil, rdb, nil, nil),
+		synth:                synthdata.NewClient(cfg),
+		synthUpDownCache:     make(map[string]cachedSynthUpDown),
+		synthPercentileCache: make(map[string]cachedSynthPercentile),
+		synthVolatilityCache: make(map[string]cachedSynthVolatility),
+		synthLPCache:         make(map[string]cachedSynthLP),
+		synthModelProbCache:  make(map[string]cachedSynthModelProb),
+	}
+	live := models.Market{
+		ConditionID: "0xprestart-gate",
+		Slug:        slug,
+		Outcomes:    `["Up","Down"]`,
+		TokenIDYes:  "yes-prestart-gate",
+		TokenIDNo:   "no-prestart-gate",
+	}
+
+	_, err := svc.buildSignal(
+		context.Background(),
+		UpDownMarket{
+			Slug:                 slug,
+			ConditionID:          live.ConditionID,
+			Asset:                "BTC",
+			WindowType:           Window5m,
+			ResolutionSourceType: ResolutionSourceBinance,
+			EventStartTime:       now.Add(2 * time.Minute),
+			EventEndTime:         now.Add(7 * time.Minute),
+			OutcomeIndexUp:       0,
+			OutcomeIndexDown:     1,
+			Market:               live,
+		},
+		map[string]*synthdata.PolymarketUpDownResponse{},
+		map[string]*synthdata.PredictionPercentilesResponse{},
+		map[string]*synthdata.VolatilityResponse{},
+		map[string]*synthdata.LPProbabilitiesResponse{},
+	)
+	if err != nil {
+		t.Fatalf("build scheduled signal: %v", err)
+	}
+	if got := upDownCalls.Load(); got != 0 {
+		t.Fatalf("expected no pre-start synth fetch, got %d up/down calls", got)
+	}
+
+	_, err = svc.buildSignal(
+		context.Background(),
+		UpDownMarket{
+			Slug:                 slug,
+			ConditionID:          live.ConditionID,
+			Asset:                "BTC",
+			WindowType:           Window5m,
+			ResolutionSourceType: ResolutionSourceBinance,
+			EventStartTime:       now.Add(-2 * time.Minute),
+			EventEndTime:         now.Add(3 * time.Minute),
+			OutcomeIndexUp:       0,
+			OutcomeIndexDown:     1,
+			Market:               live,
+		},
+		map[string]*synthdata.PolymarketUpDownResponse{},
+		map[string]*synthdata.PredictionPercentilesResponse{},
+		map[string]*synthdata.VolatilityResponse{},
+		map[string]*synthdata.LPProbabilitiesResponse{},
+	)
+	if err != nil {
+		t.Fatalf("build active signal: %v", err)
+	}
+	if got := upDownCalls.Load(); got != 1 {
+		t.Fatalf("expected one active-window synth fetch, got %d", got)
+	}
+}
+
+func TestBuildSignalClosedMarketUsesPersistedReferenceSnapshot(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&models.Market{}); err != nil {
+		t.Fatalf("automigrate market: %v", err)
+	}
+	if err := db.Exec(`
+		CREATE TABLE updown_market_windows (
+			condition_id TEXT NOT NULL,
+			event_start_time DATETIME NOT NULL,
+			reference_start_price REAL,
+			reference_current_price REAL,
+			reference_end_price REAL,
+			signal_timestamp DATETIME
+		)
+	`).Error; err != nil {
+		t.Fatalf("create updown_market_windows: %v", err)
+	}
+
+	mini := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mini.Addr()})
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	start := now.Add(-6 * time.Minute)
+	end := now.Add(-time.Minute)
+
+	live := models.Market{
+		ConditionID:     "0xpersisted-reference",
+		Slug:            "btc-updown-5m-persisted-reference",
+		Title:           "Bitcoin Up or Down - Persisted Reference",
+		Outcomes:        `["Up","Down"]`,
+		ResolutionRules: "Resolution source: Binance 1h candle open and close.",
+		TokenIDYes:      "yes-persisted-reference",
+		TokenIDNo:       "no-persisted-reference",
+		AcceptingOrders: false,
+		Active:          false,
+		Closed:          true,
+		EventStartTime:  &start,
+		EndDate:         &end,
+		Liquidity:       20_000,
+	}
+	if err := db.Create(&live).Error; err != nil {
+		t.Fatalf("create market: %v", err)
+	}
+
+	updated := now.Format(time.RFC3339Nano)
+	if err := rdb.HSet(ctx, priceRedisKey(live.ConditionID, live.TokenIDYes), map[string]any{
+		"best_bid": "0.50",
+		"best_ask": "0.51",
+		"updated":  updated,
+	}).Err(); err != nil {
+		t.Fatalf("seed yes price: %v", err)
+	}
+	if err := rdb.HSet(ctx, priceRedisKey(live.ConditionID, live.TokenIDNo), map[string]any{
+		"best_bid": "0.49",
+		"best_ask": "0.50",
+		"updated":  updated,
+	}).Err(); err != nil {
+		t.Fatalf("seed no price: %v", err)
+	}
+
+	persistedStart := 68000.0
+	persistedCurrent := 68042.0
+	signalTimestamp := end.Add(-20 * time.Second)
+	if err := db.Exec(`
+		INSERT INTO updown_market_windows (
+			condition_id, event_start_time, reference_start_price, reference_current_price, reference_end_price, signal_timestamp
+		) VALUES (?, ?, ?, ?, ?, ?)
+	`,
+		live.ConditionID,
+		start.UTC(),
+		persistedStart,
+		persistedCurrent,
+		nil,
+		signalTimestamp.UTC(),
+	).Error; err != nil {
+		t.Fatalf("insert persisted window snapshot: %v", err)
+	}
+
+	svc := &UpDownService{
+		db:    db,
+		redis: rdb,
+		cfg: &config.Config{
+			Services: config.ServicesConfig{
+				UpDownEnabled:             true,
+				UpDownFeeBps:              10,
+				UpDownDepthProbeShares:    10,
+				UpDownMaxSpreadToTrade:    0.10,
+				UpDownEVMinThreshold:      0.01,
+				UpDownKellyFraction:       0.25,
+				UpDownMaxFractionPerTrade: 0.05,
+				UpDownAssetExposureCap:    0.20,
+				UpDownNotionalBankroll:    1000,
+			},
+		},
+		market: NewMarketService(db, rdb, nil, nil),
+	}
+
+	signal, err := svc.buildSignalWithOptions(
+		ctx,
+		UpDownMarket{
+			Slug:                 live.Slug,
+			ConditionID:          live.ConditionID,
+			Asset:                "BTC",
+			WindowType:           Window5m,
+			ResolutionSourceType: ResolutionSourceBinance,
+			EventStartTime:       start,
+			EventEndTime:         end,
+			TimeToStartSeconds:   int64(start.Sub(now).Seconds()),
+			TimeToEndSeconds:     int64(end.Sub(now).Seconds()),
+			OutcomeIndexUp:       0,
+			OutcomeIndexDown:     1,
+			Market:               live,
+		},
+		map[string]*synthdata.PolymarketUpDownResponse{},
+		map[string]*synthdata.PredictionPercentilesResponse{},
+		map[string]*synthdata.VolatilityResponse{},
+		map[string]*synthdata.LPProbabilitiesResponse{},
+		signalBuildOptions{allowSynthFetch: false},
+	)
+	if err != nil {
+		t.Fatalf("build signal: %v", err)
+	}
+	if signal.ReferenceCurrentPrice == nil || *signal.ReferenceCurrentPrice != persistedCurrent {
+		t.Fatalf("expected reference current price from persisted snapshot, got %+v", signal.ReferenceCurrentPrice)
+	}
+	if signal.ReferenceEndPrice == nil || *signal.ReferenceEndPrice != persistedCurrent {
+		t.Fatalf("expected reference end price from persisted snapshot fallback, got %+v", signal.ReferenceEndPrice)
+	}
+	if outcome, _ := resolveUpDownOutcome(signal); outcome == upDownOutcomePending {
+		t.Fatalf("expected closed signal to resolve with persisted reference snapshot")
 	}
 }
 
