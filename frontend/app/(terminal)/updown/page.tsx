@@ -470,13 +470,26 @@ export default function UpDownPage() {
   }, [liveSignals, normalizedSelectedSlug, signalQuery.data]);
 
   const selectedRecommendation = useMemo(() => {
+    if (selectedSignal?.locked_recommendation) return selectedSignal.locked_recommendation;
     if (selectedSignal?.recommendation) return selectedSignal.recommendation;
     return (
       (recommendationsQuery.data ?? []).find(
         (recommendation) => recommendation.slug === normalizedSelectedSlug,
       ) ?? null
     );
-  }, [recommendationsQuery.data, selectedSignal?.recommendation, normalizedSelectedSlug]);
+  }, [
+    recommendationsQuery.data,
+    selectedSignal?.locked_recommendation,
+    selectedSignal?.recommendation,
+    normalizedSelectedSlug,
+  ]);
+
+  const recommendationLockedAt = useMemo(() => {
+    if (!selectedSignal?.recommendation_locked_at) return null;
+    const ts = Date.parse(selectedSignal.recommendation_locked_at);
+    if (Number.isNaN(ts)) return null;
+    return new Date(ts);
+  }, [selectedSignal?.recommendation_locked_at]);
 
   const staleSignal = useMemo(() => {
     if (!selectedSignal) return false;
@@ -765,10 +778,22 @@ export default function UpDownPage() {
                         >
                           {staleSignal ? "STALE" : "LIVE"}
                         </span>
+                        {recommendationLockedAt ? (
+                          <span className="rounded bg-primary/15 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-primary">
+                            Locked
+                          </span>
+                        ) : null}
                       </div>
-                      <span className="font-mono text-xs text-foreground">
-                        {selectedRecommendation?.decision ?? "NO_TRADE"}
-                      </span>
+                      <div className="text-right">
+                        <span className="font-mono text-xs text-foreground">
+                          {selectedRecommendation?.decision ?? "NO_TRADE"}
+                        </span>
+                        {recommendationLockedAt ? (
+                          <div className="text-[10px] text-muted-foreground">
+                            Locked {recommendationLockedAt.toLocaleTimeString()}
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
                     <div className="mt-2 text-sm font-semibold text-foreground">
                       {selectedMarket.market?.title || selectedMarket.slug}
@@ -788,18 +813,6 @@ export default function UpDownPage() {
 
                   <div className="grid gap-3 2xl:grid-cols-2">
                     <div className="space-y-3">
-                      <div className="rounded-md border border-border/60 bg-background/40 p-3">
-                        <div className="mb-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-                          Execution Quotes
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <Metric label="Up Ask" value={pct(selectedSignal.executable_ask_up)} />
-                          <Metric label="Down Ask" value={pct(selectedSignal.executable_ask_down)} />
-                          <Metric label="Up Bid" value={pct(selectedSignal.executable_bid_up)} />
-                          <Metric label="Down Bid" value={pct(selectedSignal.executable_bid_down)} />
-                        </div>
-                      </div>
-
                       <div className="rounded-md border border-border/60 bg-background/40 p-3">
                         <div className="mb-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
                           Edge + Confidence
@@ -875,6 +888,11 @@ export default function UpDownPage() {
                             {selectedRecommendation?.decision ?? "NO_TRADE"}
                           </span>
                         </div>
+                        {recommendationLockedAt ? (
+                          <p className="mb-2 text-[11px] text-primary">
+                            Mid-window recommendation locked for execution stability.
+                          </p>
+                        ) : null}
                         <p className="text-muted-foreground">
                           {selectedRecommendation?.reason_codes?.join(" · ") ||
                             "No reason codes available."}

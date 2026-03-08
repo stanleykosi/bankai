@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -207,6 +208,15 @@ func TestExpectedValueBuyBinary(t *testing.T) {
 	}
 }
 
+func TestSynthWindowForMarketUses15mProxyFor5m(t *testing.T) {
+	if got := synthWindowForMarket(Window5m); got != synthdata.UpDownWindow15m {
+		t.Fatalf("expected 5m synth window proxy to be 15min, got %q", got)
+	}
+	if got := synthWindowForMarket(Window15m); got != synthdata.UpDownWindow15m {
+		t.Fatalf("expected 15m synth window to remain 15min, got %q", got)
+	}
+}
+
 func TestBuildSignalUsesLiveMarketQuotesForPMarket(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
 	if err != nil {
@@ -256,6 +266,41 @@ func TestBuildSignalUsesLiveMarketQuotesForPMarket(t *testing.T) {
 		"updated":  updated,
 	}).Err(); err != nil {
 		t.Fatalf("seed no price: %v", err)
+	}
+
+	// Seed stale order-book snapshots with materially different depth estimates.
+	// p_market should still use top-of-book from RTDS best bid/ask, not these stale levels.
+	yesBook, err := json.Marshal(orderBookSnapshot{
+		AssetID: live.TokenIDYes,
+		Market:  live.ConditionID,
+		Bids: []orderBookLevel{
+			{Price: "0.40", Size: "200"},
+		},
+		Asks: []orderBookLevel{
+			{Price: "0.70", Size: "200"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal yes book: %v", err)
+	}
+	noBook, err := json.Marshal(orderBookSnapshot{
+		AssetID: live.TokenIDNo,
+		Market:  live.ConditionID,
+		Bids: []orderBookLevel{
+			{Price: "0.30", Size: "200"},
+		},
+		Asks: []orderBookLevel{
+			{Price: "0.80", Size: "200"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal no book: %v", err)
+	}
+	if err := rdb.Set(ctx, "book:"+live.ConditionID+":"+live.TokenIDYes, string(yesBook), time.Minute).Err(); err != nil {
+		t.Fatalf("seed yes book: %v", err)
+	}
+	if err := rdb.Set(ctx, "book:"+live.ConditionID+":"+live.TokenIDNo, string(noBook), time.Minute).Err(); err != nil {
+		t.Fatalf("seed no book: %v", err)
 	}
 
 	svc := &UpDownService{
@@ -1222,5 +1267,196 @@ func TestLogDecisionValidationErrorClassification(t *testing.T) {
 	}
 	if errors.Is(err, ErrInvalidUpDownDecisionRequest) {
 		t.Fatalf("expected db error not to be classified as invalid request: %v", err)
+	}
+}
+
+func TestBuildSignalRealtimeSkipsSynthFetchWhenCacheMiss(t *testing.T) {
+	var calls atomic.Int32
+	synthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`"No prediction available"`))
+	}))
+	defer synthSrv.Close()
+
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&models.Market{}); err != nil {
+		t.Fatalf("automigrate market: %v", err)
+	}
+
+	mini := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mini.Addr()})
+
+	cfg := &config.Config{
+		Services: config.ServicesConfig{
+			UpDownEnabled:             true,
+			UpDownEnterpriseEnabled:   false,
+			UpDownFeeBps:              10,
+			UpDownDepthProbeShares:    10,
+			UpDownMaxSpreadToTrade:    0.10,
+			UpDownEVMinThreshold:      0.01,
+			UpDownKellyFraction:       0.25,
+			UpDownMaxFractionPerTrade: 0.05,
+			UpDownAssetExposureCap:    0.20,
+			UpDownNotionalBankroll:    1000,
+			SynthDataAPIKey:           "test-key",
+			SynthDataBaseURL:          synthSrv.URL,
+		},
+	}
+
+	svc := &UpDownService{
+		cfg:                  cfg,
+		redis:                rdb,
+		market:               NewMarketService(db, rdb, nil, nil),
+		synth:                synthdata.NewClient(cfg),
+		synthUpDownCache:     make(map[string]cachedSynthUpDown),
+		synthPercentileCache: make(map[string]cachedSynthPercentile),
+		synthVolatilityCache: make(map[string]cachedSynthVolatility),
+		synthLPCache:         make(map[string]cachedSynthLP),
+		synthModelProbCache:  make(map[string]cachedSynthModelProb),
+	}
+
+	now := time.Now().UTC()
+	market := UpDownMarket{
+		Slug:                 "btc-updown-5m-cacheonly",
+		ConditionID:          "0xcacheonly",
+		Asset:                "BTC",
+		WindowType:           Window5m,
+		ResolutionSourceType: ResolutionSourceUnknown,
+		EventStartTime:       now.Add(-2 * time.Minute),
+		EventEndTime:         now.Add(3 * time.Minute),
+		TimeToStartSeconds:   -120,
+		TimeToEndSeconds:     180,
+		OutcomeIndexUp:       0,
+		OutcomeIndexDown:     1,
+		Market: models.Market{
+			ConditionID: "0xcacheonly",
+			TokenIDYes:  "yes-cacheonly",
+			TokenIDNo:   "no-cacheonly",
+			YesBestBid:  0.49,
+			YesBestAsk:  0.51,
+			NoBestBid:   0.48,
+			NoBestAsk:   0.50,
+			Liquidity:   25_000,
+		},
+	}
+
+	_, err = svc.buildSignalWithOptions(
+		context.Background(),
+		market,
+		map[string]*synthdata.PolymarketUpDownResponse{},
+		map[string]*synthdata.PredictionPercentilesResponse{},
+		map[string]*synthdata.VolatilityResponse{},
+		map[string]*synthdata.LPProbabilitiesResponse{},
+		signalBuildOptions{allowSynthFetch: false},
+	)
+	if err != nil {
+		t.Fatalf("build realtime signal: %v", err)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("expected realtime/cache-only path to avoid synth fetches, got %d calls", got)
+	}
+
+	_, err = svc.buildSignalWithOptions(
+		context.Background(),
+		market,
+		map[string]*synthdata.PolymarketUpDownResponse{},
+		map[string]*synthdata.PredictionPercentilesResponse{},
+		map[string]*synthdata.VolatilityResponse{},
+		map[string]*synthdata.LPProbabilitiesResponse{},
+		signalBuildOptions{allowSynthFetch: true},
+	)
+	if err != nil {
+		t.Fatalf("build refresh signal: %v", err)
+	}
+	if got := calls.Load(); got == 0 {
+		t.Fatalf("expected refresh path to fetch synth at least once")
+	}
+}
+
+func TestLockRecommendationAtMidWindowPersistsPreviousLock(t *testing.T) {
+	start := time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	now := start.Add(3 * time.Minute)
+	market := UpDownMarket{
+		Slug:           "btc-updown-5m-lock",
+		EventStartTime: start,
+		EventEndTime:   end,
+	}
+
+	initial := UpDownRecommendation{
+		ID:          "rec-1",
+		Slug:        market.Slug,
+		Decision:    "BUY_UP",
+		GeneratedAt: now,
+	}
+
+	lockedRec, lockedPtr, lockedAt := lockRecommendationAtMidWindow(now, market, nil, initial)
+	if lockedPtr == nil || lockedAt == nil {
+		t.Fatalf("expected recommendation to lock after midpoint")
+	}
+	if lockedRec.Decision != "BUY_UP" {
+		t.Fatalf("expected locked decision BUY_UP, got %s", lockedRec.Decision)
+	}
+
+	next := UpDownRecommendation{
+		ID:          "rec-2",
+		Slug:        market.Slug,
+		Decision:    "BUY_DOWN",
+		GeneratedAt: now.Add(20 * time.Second),
+	}
+	prev := &UpDownSignal{
+		LockedRecommendation:   lockedPtr,
+		RecommendationLockedAt: lockedAt,
+	}
+	lockedAgain, lockedPtrAgain, _ := lockRecommendationAtMidWindow(now.Add(20*time.Second), market, prev, next)
+	if lockedPtrAgain == nil {
+		t.Fatalf("expected prior lock to persist")
+	}
+	if lockedAgain.Decision != "BUY_UP" {
+		t.Fatalf("expected persisted lock decision BUY_UP, got %s", lockedAgain.Decision)
+	}
+}
+
+func TestLockRecommendationAtMidWindowReleasesLockAfterWindowClose(t *testing.T) {
+	start := time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	lockTime := start.Add(3 * time.Minute)
+	market := UpDownMarket{
+		Slug:           "btc-updown-5m-lock-release",
+		EventStartTime: start,
+		EventEndTime:   end,
+	}
+
+	locked := UpDownRecommendation{
+		ID:          "rec-locked",
+		Slug:        market.Slug,
+		Decision:    "BUY_UP",
+		GeneratedAt: lockTime,
+	}
+	_, lockedPtr, lockedAt := lockRecommendationAtMidWindow(lockTime, market, nil, locked)
+	if lockedPtr == nil || lockedAt == nil {
+		t.Fatalf("expected initial lock to be set")
+	}
+
+	current := UpDownRecommendation{
+		ID:          "rec-current",
+		Slug:        market.Slug,
+		Decision:    "NO_TRADE",
+		GeneratedAt: end.Add(10 * time.Second),
+	}
+	prev := &UpDownSignal{
+		LockedRecommendation:   lockedPtr,
+		RecommendationLockedAt: lockedAt,
+	}
+	got, gotLocked, gotLockedAt := lockRecommendationAtMidWindow(end.Add(10*time.Second), market, prev, current)
+	if gotLocked != nil || gotLockedAt != nil {
+		t.Fatalf("expected lock metadata to be cleared after window close")
+	}
+	if got.ID != current.ID || got.Decision != current.Decision {
+		t.Fatalf("expected current recommendation after close, got id=%s decision=%s", got.ID, got.Decision)
 	}
 }

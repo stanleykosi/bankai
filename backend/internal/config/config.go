@@ -122,6 +122,7 @@ type ServicesConfig struct {
 	UpDownNoTradeCutoff1hSeconds   int
 	UpDownNoTradeCutoff4hSeconds   int
 	UpDownMaxMarkets               int
+	UpDownSynthMonthlyCreditCap    int
 }
 
 // AuthConfig holds wallet-only auth configuration
@@ -234,6 +235,7 @@ func Load() (*Config, error) {
 			UpDownNoTradeCutoff1hSeconds:   getEnvAsInt("UPDOWN_NO_TRADE_CUTOFF_1H_SECONDS", 120),
 			UpDownNoTradeCutoff4hSeconds:   getEnvAsInt("UPDOWN_NO_TRADE_CUTOFF_4H_SECONDS", 300),
 			UpDownMaxMarkets:               getEnvAsInt("UPDOWN_MAX_MARKETS", 64),
+			UpDownSynthMonthlyCreditCap:    getEnvAsInt("UPDOWN_SYNTH_MONTHLY_CREDIT_CAP", 18000),
 		},
 	}
 

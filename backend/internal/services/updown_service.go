@@ -42,12 +42,12 @@ const (
 	upDownCloseFinalizeTTL  = 4 * time.Minute
 	upDownSignalHistoryTTL  = 20 * time.Second
 
-	upDownSynthDailyCreditCap      = 600
-	upDownSynthFailureBackoff      = 2 * time.Minute
-	upDownSynthAnalyticsRefresh    = 6 * time.Hour
-	upDownSynthModelRefresh        = 2 * time.Hour
-	upDownSynthModelFailureBackoff = 10 * time.Minute
-	upDownSynthStaleGrace          = 24 * time.Hour
+	upDownSynthMonthlyCreditCapDefault = 18000
+	upDownSynthFailureBackoff          = 2 * time.Minute
+	upDownSynthAnalyticsRefresh        = 6 * time.Hour
+	upDownSynthModelRefresh            = 2 * time.Hour
+	upDownSynthModelFailureBackoff     = 10 * time.Minute
+	upDownSynthStaleGrace              = 24 * time.Hour
 
 	upDownWindowStatusScheduled = "scheduled"
 	upDownWindowStatusActive    = "active"
@@ -57,6 +57,8 @@ const (
 	upDownOutcomeUp      = "UP"
 	upDownOutcomeDown    = "DOWN"
 	upDownOutcomeFlat    = "FLAT"
+
+	upDownRecommendationLockFraction = 0.5
 )
 
 var (
@@ -208,6 +210,9 @@ type UpDownSignal struct {
 	RiskFlags      UpDownRiskFlags      `json:"risk_flags"`
 	ReasonCodes    []string             `json:"reason_codes"`
 	Recommendation UpDownRecommendation `json:"recommendation"`
+	// Mid-window lock keeps decision stable while quotes keep streaming.
+	LockedRecommendation   *UpDownRecommendation `json:"locked_recommendation,omitempty"`
+	RecommendationLockedAt *time.Time            `json:"recommendation_locked_at,omitempty"`
 }
 
 type UpDownDecisionLogRequest struct {
@@ -301,6 +306,10 @@ type cachedSynthModelProb struct {
 	StaleUntil  time.Time
 }
 
+type signalBuildOptions struct {
+	allowSynthFetch bool
+}
+
 type UpDownService struct {
 	db        *gorm.DB
 	redis     *redis.Client
@@ -327,15 +336,15 @@ type UpDownService struct {
 	calibrationByAsset map[string]assetCalibration
 	calibrationUpdated time.Time
 
-	synthCacheMu         sync.RWMutex
-	synthUpDownCache     map[string]cachedSynthUpDown
-	synthPercentileCache map[string]cachedSynthPercentile
-	synthVolatilityCache map[string]cachedSynthVolatility
-	synthLPCache         map[string]cachedSynthLP
-	synthModelProbCache  map[string]cachedSynthModelProb
-	synthBudgetDay       string
-	synthBudgetUsed      int
-	synthBudgetWarnedDay string
+	synthCacheMu           sync.RWMutex
+	synthUpDownCache       map[string]cachedSynthUpDown
+	synthPercentileCache   map[string]cachedSynthPercentile
+	synthVolatilityCache   map[string]cachedSynthVolatility
+	synthLPCache           map[string]cachedSynthLP
+	synthModelProbCache    map[string]cachedSynthModelProb
+	synthBudgetMonth       string
+	synthBudgetUsed        int
+	synthBudgetWarnedMonth string
 }
 
 func NewUpDownService(db *gorm.DB, rdb *redis.Client, cfg *config.Config, marketService *MarketService, synthClient *synthdata.Client) *UpDownService {
@@ -711,13 +720,14 @@ func (s *UpDownService) recomputeSignalBySlug(ctx context.Context, slug string) 
 		return
 	}
 
-	signal, err := s.buildSignal(
+	signal, err := s.buildSignalWithOptions(
 		ctx,
 		market,
 		map[string]*synthdata.PolymarketUpDownResponse{},
 		map[string]*synthdata.PredictionPercentilesResponse{},
 		map[string]*synthdata.VolatilityResponse{},
 		map[string]*synthdata.LPProbabilitiesResponse{},
+		signalBuildOptions{allowSynthFetch: false},
 	)
 	if err != nil {
 		return
@@ -1653,6 +1663,20 @@ func (s *UpDownService) buildSignal(
 	volCache map[string]*synthdata.VolatilityResponse,
 	lpCache map[string]*synthdata.LPProbabilitiesResponse,
 ) (UpDownSignal, error) {
+	return s.buildSignalWithOptions(ctx, market, synthCache, percentileCache, volCache, lpCache, signalBuildOptions{
+		allowSynthFetch: true,
+	})
+}
+
+func (s *UpDownService) buildSignalWithOptions(
+	ctx context.Context,
+	market UpDownMarket,
+	synthCache map[string]*synthdata.PolymarketUpDownResponse,
+	percentileCache map[string]*synthdata.PredictionPercentilesResponse,
+	volCache map[string]*synthdata.VolatilityResponse,
+	lpCache map[string]*synthdata.LPProbabilitiesResponse,
+	options signalBuildOptions,
+) (UpDownSignal, error) {
 	now := time.Now().UTC()
 	var prevSignal *UpDownSignal
 	s.mu.RLock()
@@ -1758,7 +1782,7 @@ func (s *UpDownService) buildSignal(
 		}
 	}
 
-	synthResp := s.getSynthUpDownCached(ctx, market, synthCache)
+	synthResp := s.getSynthUpDownCached(ctx, market, synthCache, options.allowSynthFetch)
 	var synthClock time.Time
 	if synthResp != nil && !synthUpDownResponseMatchesMarket(market, synthResp) {
 		flags.SourceMismatch = true
@@ -1834,7 +1858,7 @@ func (s *UpDownService) buildSignal(
 
 	var volSummary *synthdata.VolatilityResponse
 	if supportsSynthAnalyticsForWindow(market.WindowType) && s.synth != nil && s.synth.Enabled() {
-		volSummary = s.getSynthVolatilityCached(ctx, market, volCache)
+		volSummary = s.getSynthVolatilityCached(ctx, market, volCache, options.allowSynthFetch)
 	}
 	if volSummary != nil && volSummary.ForecastFuture.AverageVolatility >= 80 {
 		flags.HighVolatility = true
@@ -1844,10 +1868,10 @@ func (s *UpDownService) buildSignal(
 	thresholdPrice := resolveUpThresholdPrice(referenceStartPrice, synthResp)
 	percentileSynthEstimate := 0.0
 	if thresholdPrice > 0 && supportsSynthAnalyticsForWindow(market.WindowType) && s.synth != nil && s.synth.Enabled() {
-		percentileSynthEstimate = s.estimateProbabilityFromPercentiles(ctx, market, thresholdPrice, percentileCache)
+		percentileSynthEstimate = s.estimateProbabilityFromPercentiles(ctx, market, thresholdPrice, percentileCache, options.allowSynthFetch)
 	}
 	if thresholdPrice > 0 && supportsSynthAnalyticsForWindow(market.WindowType) && s.synth != nil && s.synth.Enabled() {
-		lp := s.getSynthLPProbabilitiesCached(ctx, market, lpCache)
+		lp := s.getSynthLPProbabilitiesCached(ctx, market, lpCache, options.allowSynthFetch)
 		if p, ok := lpProbabilityAtThreshold(lp, horizon, thresholdPrice); ok {
 			v := upDownClamp(p, 0.01, 0.99)
 			pLPPtr = &v
@@ -1856,7 +1880,7 @@ func (s *UpDownService) buildSignal(
 	}
 
 	if thresholdPrice > 0 && supportsSynthAnalyticsForWindow(market.WindowType) && s.cfg.Services.UpDownEnterpriseEnabled && s.synth != nil && s.synth.Enabled() {
-		pModel := s.computeModelProbability(ctx, market, thresholdPrice, percentileCache)
+		pModel := s.computeModelProbability(ctx, market, thresholdPrice, percentileCache, options.allowSynthFetch)
 		if pModel > 0 {
 			v := upDownClamp(pModel, 0.01, 0.99)
 			pModelPtr = &v
@@ -2007,42 +2031,87 @@ func (s *UpDownService) buildSignal(
 	expectedSlippage := maxFloat(upSlippage, downSlippage)
 
 	rec := buildRecommendation(now, market, pFinalUp, evUp, evDown, upAsk, downAsk, confidence, dynamicEVMin, flags, reasons, s.cfg)
+	rec, lockedRec, lockedAt := lockRecommendationAtMidWindow(now, market, prevSignal, rec)
 	signal := UpDownSignal{
-		Slug:                  market.Slug,
-		ConditionID:           market.ConditionID,
-		Asset:                 market.Asset,
-		WindowType:            market.WindowType,
-		ResolutionSourceType:  market.ResolutionSourceType,
-		Timestamp:             now,
-		ReferenceStartPrice:   referenceStartPrice,
-		ReferenceCurrentPrice: referenceCurrentPrice,
-		ReferenceEndPrice:     referenceEndPrice,
-		ReferenceUpdatedAt:    referenceUpdatedAt,
-		PMarketUp:             pMarketPtr,
-		PSynthUp:              pSynthPtr,
-		PModelUp:              pModelPtr,
-		PLPUp:                 pLPPtr,
-		PFinalUp:              pFinalUp,
-		ExecutableAskUp:       upAsk,
-		ExecutableAskDown:     downAsk,
-		ExecutableBidUp:       upBid,
-		ExecutableBidDown:     downBid,
-		SpreadUp:              spreadUp,
-		SpreadDown:            spreadDown,
-		DepthImbalance:        depthImb,
-		ExpectedSlippage:      expectedSlippage,
-		EVUp:                  evUp,
-		EVDown:                evDown,
-		EVMinThreshold:        dynamicEVMin,
-		FeesBps:               s.cfg.Services.UpDownFeeBps,
-		TimeToExpiryMs:        timeToExpiryMs,
-		Regime:                regime,
-		Confidence:            confidence,
-		RiskFlags:             flags,
-		ReasonCodes:           dedupeStrings(reasons),
-		Recommendation:        rec,
+		Slug:                   market.Slug,
+		ConditionID:            market.ConditionID,
+		Asset:                  market.Asset,
+		WindowType:             market.WindowType,
+		ResolutionSourceType:   market.ResolutionSourceType,
+		Timestamp:              now,
+		ReferenceStartPrice:    referenceStartPrice,
+		ReferenceCurrentPrice:  referenceCurrentPrice,
+		ReferenceEndPrice:      referenceEndPrice,
+		ReferenceUpdatedAt:     referenceUpdatedAt,
+		PMarketUp:              pMarketPtr,
+		PSynthUp:               pSynthPtr,
+		PModelUp:               pModelPtr,
+		PLPUp:                  pLPPtr,
+		PFinalUp:               pFinalUp,
+		ExecutableAskUp:        upAsk,
+		ExecutableAskDown:      downAsk,
+		ExecutableBidUp:        upBid,
+		ExecutableBidDown:      downBid,
+		SpreadUp:               spreadUp,
+		SpreadDown:             spreadDown,
+		DepthImbalance:         depthImb,
+		ExpectedSlippage:       expectedSlippage,
+		EVUp:                   evUp,
+		EVDown:                 evDown,
+		EVMinThreshold:         dynamicEVMin,
+		FeesBps:                s.cfg.Services.UpDownFeeBps,
+		TimeToExpiryMs:         timeToExpiryMs,
+		Regime:                 regime,
+		Confidence:             confidence,
+		RiskFlags:              flags,
+		ReasonCodes:            dedupeStrings(reasons),
+		Recommendation:         rec,
+		LockedRecommendation:   lockedRec,
+		RecommendationLockedAt: lockedAt,
 	}
 	return signal, nil
+}
+
+func lockRecommendationAtMidWindow(
+	now time.Time,
+	market UpDownMarket,
+	prevSignal *UpDownSignal,
+	current UpDownRecommendation,
+) (UpDownRecommendation, *UpDownRecommendation, *time.Time) {
+	if !shouldLockRecommendation(now, market) {
+		return current, nil, nil
+	}
+
+	if prevSignal != nil && prevSignal.LockedRecommendation != nil {
+		locked := *prevSignal.LockedRecommendation
+		if locked.Slug == current.Slug {
+			var lockedAt *time.Time
+			if prevSignal.RecommendationLockedAt != nil && !prevSignal.RecommendationLockedAt.IsZero() {
+				ts := prevSignal.RecommendationLockedAt.UTC()
+				lockedAt = &ts
+			} else {
+				ts := locked.GeneratedAt.UTC()
+				lockedAt = &ts
+			}
+			return locked, &locked, lockedAt
+		}
+	}
+
+	locked := current
+	lockTs := now.UTC()
+	return locked, &locked, &lockTs
+}
+
+func shouldLockRecommendation(now time.Time, market UpDownMarket) bool {
+	if now.Before(market.EventStartTime) || !now.Before(market.EventEndTime) {
+		return false
+	}
+	windowDuration := market.EventEndTime.Sub(market.EventStartTime)
+	if windowDuration <= 0 {
+		return false
+	}
+	elapsed := now.Sub(market.EventStartTime)
+	return elapsed >= time.Duration(float64(windowDuration)*upDownRecommendationLockFraction)
 }
 
 func tokenIDsByOutcome(market UpDownMarket) (string, string, error) {
@@ -2081,13 +2150,15 @@ func (s *UpDownService) executablePrices(ctx context.Context, market models.Mark
 
 	var buyDepth *DepthEstimate
 	if est, err := s.market.GetDepthEstimate(ctx, market.ConditionID, tokenID, "BUY", probeSize); err == nil && est != nil {
-		if est.EstimatedAveragePrice > 0 {
+		// Keep top-of-book as the primary trading signal price and only
+		// fall back to depth estimates when the live quote is missing.
+		if ask <= 0 && est.EstimatedAveragePrice > 0 {
 			ask = est.EstimatedAveragePrice
 		}
 		buyDepth = est
 	}
 	if est, err := s.market.GetDepthEstimate(ctx, market.ConditionID, tokenID, "SELL", probeSize); err == nil && est != nil {
-		if est.EstimatedAveragePrice > 0 {
+		if bid <= 0 && est.EstimatedAveragePrice > 0 {
 			bid = est.EstimatedAveragePrice
 		}
 	}
@@ -2523,7 +2594,12 @@ func noTradeCutoffForWindow(window UpDownWindowType, cfg *config.Config) int {
 	}
 }
 
-func (s *UpDownService) getSynthUpDownCached(ctx context.Context, market UpDownMarket, cache map[string]*synthdata.PolymarketUpDownResponse) *synthdata.PolymarketUpDownResponse {
+func (s *UpDownService) getSynthUpDownCached(
+	ctx context.Context,
+	market UpDownMarket,
+	cache map[string]*synthdata.PolymarketUpDownResponse,
+	allowFetch bool,
+) *synthdata.PolymarketUpDownResponse {
 	if s.synth == nil || !s.synth.Enabled() {
 		return nil
 	}
@@ -2545,6 +2621,11 @@ func (s *UpDownService) getSynthUpDownCached(ctx context.Context, market UpDownM
 	if cachedResp, ok := s.getCachedSynthUpDown(key, now, refreshInterval); ok {
 		cache[key] = cachedResp
 		return cachedResp
+	}
+	if !allowFetch {
+		fallback := s.getStaleSynthUpDown(key, now)
+		cache[key] = fallback
+		return fallback
 	}
 
 	if !s.consumeSynthCredit(ctx) {
@@ -2581,7 +2662,12 @@ func synthUpDownCacheKey(market UpDownMarket) string {
 	return asset + "|" + string(window) + "|" + horizon
 }
 
-func (s *UpDownService) getSynthPercentilesCached(ctx context.Context, market UpDownMarket, cache map[string]*synthdata.PredictionPercentilesResponse) *synthdata.PredictionPercentilesResponse {
+func (s *UpDownService) getSynthPercentilesCached(
+	ctx context.Context,
+	market UpDownMarket,
+	cache map[string]*synthdata.PredictionPercentilesResponse,
+	allowFetch bool,
+) *synthdata.PredictionPercentilesResponse {
 	if s.synth == nil || !s.synth.Enabled() {
 		return nil
 	}
@@ -2594,6 +2680,11 @@ func (s *UpDownService) getSynthPercentilesCached(ctx context.Context, market Up
 	if cachedResp, ok := s.getCachedSynthPercentiles(key, now, refreshInterval); ok {
 		cache[key] = cachedResp
 		return cachedResp
+	}
+	if !allowFetch {
+		fallback := s.getStaleSynthPercentiles(key, now)
+		cache[key] = fallback
+		return fallback
 	}
 
 	if !s.consumeSynthCredit(ctx) {
@@ -2616,7 +2707,12 @@ func (s *UpDownService) getSynthPercentilesCached(ctx context.Context, market Up
 	return resp
 }
 
-func (s *UpDownService) getSynthVolatilityCached(ctx context.Context, market UpDownMarket, cache map[string]*synthdata.VolatilityResponse) *synthdata.VolatilityResponse {
+func (s *UpDownService) getSynthVolatilityCached(
+	ctx context.Context,
+	market UpDownMarket,
+	cache map[string]*synthdata.VolatilityResponse,
+	allowFetch bool,
+) *synthdata.VolatilityResponse {
 	if s.synth == nil || !s.synth.Enabled() {
 		return nil
 	}
@@ -2629,6 +2725,11 @@ func (s *UpDownService) getSynthVolatilityCached(ctx context.Context, market UpD
 	if cachedResp, ok := s.getCachedSynthVolatility(key, now, refreshInterval); ok {
 		cache[key] = cachedResp
 		return cachedResp
+	}
+	if !allowFetch {
+		fallback := s.getStaleSynthVolatility(key, now)
+		cache[key] = fallback
+		return fallback
 	}
 
 	if !s.consumeSynthCredit(ctx) {
@@ -2651,7 +2752,12 @@ func (s *UpDownService) getSynthVolatilityCached(ctx context.Context, market UpD
 	return resp
 }
 
-func (s *UpDownService) getSynthLPProbabilitiesCached(ctx context.Context, market UpDownMarket, cache map[string]*synthdata.LPProbabilitiesResponse) *synthdata.LPProbabilitiesResponse {
+func (s *UpDownService) getSynthLPProbabilitiesCached(
+	ctx context.Context,
+	market UpDownMarket,
+	cache map[string]*synthdata.LPProbabilitiesResponse,
+	allowFetch bool,
+) *synthdata.LPProbabilitiesResponse {
 	if s.synth == nil || !s.synth.Enabled() {
 		return nil
 	}
@@ -2664,6 +2770,11 @@ func (s *UpDownService) getSynthLPProbabilitiesCached(ctx context.Context, marke
 	if cachedResp, ok := s.getCachedSynthLP(key, now, refreshInterval); ok {
 		cache[key] = cachedResp
 		return cachedResp
+	}
+	if !allowFetch {
+		fallback := s.getStaleSynthLP(key, now)
+		cache[key] = fallback
+		return fallback
 	}
 
 	if !s.consumeSynthCredit(ctx) {
@@ -2767,11 +2878,17 @@ func nearestLPProbability(levels map[string]float64, thresholdPrice float64) (fl
 	return upDownClamp(bestProb, 0, 1), true
 }
 
-func (s *UpDownService) estimateProbabilityFromPercentiles(ctx context.Context, market UpDownMarket, threshold float64, percentileCache map[string]*synthdata.PredictionPercentilesResponse) float64 {
+func (s *UpDownService) estimateProbabilityFromPercentiles(
+	ctx context.Context,
+	market UpDownMarket,
+	threshold float64,
+	percentileCache map[string]*synthdata.PredictionPercentilesResponse,
+	allowFetch bool,
+) float64 {
 	if s.synth == nil || !s.synth.Enabled() || threshold <= 0 {
 		return 0
 	}
-	pp := s.getSynthPercentilesCached(ctx, market, percentileCache)
+	pp := s.getSynthPercentilesCached(ctx, market, percentileCache, allowFetch)
 	if pp == nil || len(pp.ForecastFuture.Percentiles) == 0 {
 		return 0
 	}
@@ -2793,7 +2910,13 @@ func (s *UpDownService) estimateProbabilityFromPercentiles(ctx context.Context, 
 	return upDownClamp(p, 0.01, 0.99)
 }
 
-func (s *UpDownService) computeModelProbability(ctx context.Context, market UpDownMarket, threshold float64, percentileCache map[string]*synthdata.PredictionPercentilesResponse) float64 {
+func (s *UpDownService) computeModelProbability(
+	ctx context.Context,
+	market UpDownMarket,
+	threshold float64,
+	percentileCache map[string]*synthdata.PredictionPercentilesResponse,
+	allowFetch bool,
+) float64 {
 	if s.synth == nil || !s.synth.Enabled() {
 		return 0
 	}
@@ -2806,7 +2929,7 @@ func (s *UpDownService) computeModelProbability(ctx context.Context, market UpDo
 		return 0
 	}
 
-	p := s.estimateProbabilityFromPercentiles(ctx, market, threshold, percentileCache)
+	p := s.estimateProbabilityFromPercentiles(ctx, market, threshold, percentileCache, allowFetch)
 	if p <= 0 {
 		return 0
 	}
@@ -2839,6 +2962,12 @@ func (s *UpDownService) computeModelProbability(ctx context.Context, market UpDo
 	if cached, ok := s.getCachedSynthModelProbability(modelKey, now, upDownSynthModelRefresh); ok {
 		return cached
 	}
+	if !allowFetch {
+		if fallback, ok := s.getStaleSynthModelProbability(modelKey, now); ok {
+			return fallback
+		}
+		return p
+	}
 	if !s.consumeSynthCredit(ctx) {
 		if fallback, ok := s.getStaleSynthModelProbability(modelKey, now); ok {
 			return fallback
@@ -2865,7 +2994,9 @@ func (s *UpDownService) computeModelProbability(ctx context.Context, market UpDo
 func synthWindowForMarket(window UpDownWindowType) synthdata.UpDownWindow {
 	switch window {
 	case Window5m:
-		return synthdata.UpDownWindow5m
+		// SynthData up/down docs expose 15m/hourly/daily windows.
+		// Use 15m as the nearest proxy for 5m windows.
+		return synthdata.UpDownWindow15m
 	case Window15m:
 		return synthdata.UpDownWindow15m
 	case Window1h:
@@ -2997,6 +3128,10 @@ func synthUpDownResponseNearMarketWindow(market UpDownMarket, resp *synthdata.Po
 		windowSpan = 5 * time.Minute
 	}
 	tolerance := maxDuration(2*time.Minute, windowSpan)
+	if market.WindowType == Window5m {
+		// 5m markets can use SynthData 15m proxy windows.
+		tolerance = maxDuration(tolerance, 12*time.Minute)
+	}
 	startDelta := absDuration(market.EventStartTime.Sub(start))
 	endDelta := absDuration(market.EventEndTime.Sub(end))
 	return startDelta <= tolerance && endDelta <= tolerance
@@ -3534,24 +3669,28 @@ func (s *UpDownService) markSynthModelProbabilityFailure(key string, now time.Ti
 
 func (s *UpDownService) consumeSynthCredit(ctx context.Context) bool {
 	_ = ctx
-	if upDownSynthDailyCreditCap <= 0 {
+	cap := upDownSynthMonthlyCreditCapDefault
+	if s != nil && s.cfg != nil {
+		cap = s.cfg.Services.UpDownSynthMonthlyCreditCap
+	}
+	if cap <= 0 {
 		return true
 	}
 
 	now := time.Now().UTC()
-	day := now.Format("2006-01-02")
-	key := "updown:synth:credits:" + now.Format("20060102")
+	month := now.Format("2006-01")
+	key := "updown:synth:credits:" + now.Format("200601")
 
 	if s.redis != nil {
 		budgetCtx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
 		count, err := s.redis.Incr(budgetCtx, key).Result()
 		if err == nil {
 			if count == 1 {
-				_ = s.redis.Expire(budgetCtx, key, 48*time.Hour).Err()
+				_ = s.redis.Expire(budgetCtx, key, 45*24*time.Hour).Err()
 			}
 			cancel()
-			if count > int64(upDownSynthDailyCreditCap) {
-				s.logSynthBudgetWarning(day, int(count))
+			if count > int64(cap) {
+				s.logSynthBudgetWarning(month, cap, int(count))
 				return false
 			}
 			return true
@@ -3561,18 +3700,18 @@ func (s *UpDownService) consumeSynthCredit(ctx context.Context) bool {
 
 	s.synthCacheMu.Lock()
 	defer s.synthCacheMu.Unlock()
-	if s.synthBudgetDay != day {
-		s.synthBudgetDay = day
+	if s.synthBudgetMonth != month {
+		s.synthBudgetMonth = month
 		s.synthBudgetUsed = 0
 	}
-	if s.synthBudgetUsed >= upDownSynthDailyCreditCap {
-		if s.synthBudgetWarnedDay != day {
+	if s.synthBudgetUsed >= cap {
+		if s.synthBudgetWarnedMonth != month {
 			logger.Warn(
 				"updown synth budget exhausted for %s (cap=%d); using cached synth responses only",
-				day,
-				upDownSynthDailyCreditCap,
+				month,
+				cap,
 			)
-			s.synthBudgetWarnedDay = day
+			s.synthBudgetWarnedMonth = month
 		}
 		return false
 	}
@@ -3580,19 +3719,19 @@ func (s *UpDownService) consumeSynthCredit(ctx context.Context) bool {
 	return true
 }
 
-func (s *UpDownService) logSynthBudgetWarning(day string, used int) {
+func (s *UpDownService) logSynthBudgetWarning(month string, cap int, used int) {
 	s.synthCacheMu.Lock()
 	defer s.synthCacheMu.Unlock()
-	if s.synthBudgetWarnedDay == day {
+	if s.synthBudgetWarnedMonth == month {
 		return
 	}
 	logger.Warn(
 		"updown synth budget exhausted for %s (cap=%d used=%d); using cached synth responses only",
-		day,
-		upDownSynthDailyCreditCap,
+		month,
+		cap,
 		used,
 	)
-	s.synthBudgetWarnedDay = day
+	s.synthBudgetWarnedMonth = month
 }
 
 func upDownClamp(v, lo, hi float64) float64 {

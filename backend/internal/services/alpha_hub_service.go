@@ -147,6 +147,7 @@ type washTradeSnapshot struct {
 
 // WashTradeDetector tracks recent wallet activity to flag wash trading patterns.
 type WashTradeDetector struct {
+	mu            sync.Mutex
 	walletTrades  map[string][]washTradeSnapshot
 	timeWindow    time.Duration
 	sizeThreshold float64
@@ -166,6 +167,8 @@ func (d *WashTradeDetector) IsWashTrade(trade clob.TradeEvent, wallet string, no
 	if wallet == "" || notional <= 0 {
 		return false, nil
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
 	ts := time.Unix(normalizeTradeTimestamp(trade.MatchTime), 0)
 	cutoff := ts.Add(-d.timeWindow)
