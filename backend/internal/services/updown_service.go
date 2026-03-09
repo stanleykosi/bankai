@@ -2860,7 +2860,7 @@ func (s *UpDownService) getSynthUpDownCached(
 	defer cancel()
 	resp, err := s.synth.GetPolymarketUpDown(fetchCtx, market.Asset, window, horizon, 14, 10)
 	if err != nil {
-		s.markSynthUpDownFetchFailure(key, now, refreshInterval)
+		s.markSynthUpDownFetchFailure(key, now, synthFailureRetryInterval(market.WindowType))
 		fallbackResp := fallback()
 		cache[key] = fallbackResp
 		return fallbackResp
@@ -2916,7 +2916,7 @@ func synthWindowCacheTTL(now time.Time, market UpDownMarket) time.Duration {
 	return 30 * time.Second
 }
 
-func synthWindowModelCacheKey(market UpDownMarket, timeIncrement int, timeLength int, targetStep int, thresholdBucket float64) string {
+func synthWindowModelCacheKey(market UpDownMarket, timeIncrement int, timeLength int, thresholdBucket float64) string {
 	base := synthUpDownBaseCacheKey(market)
 	if base == "" {
 		return ""
@@ -2925,7 +2925,37 @@ func synthWindowModelCacheKey(market UpDownMarket, timeIncrement int, timeLength
 	if !market.EventStartTime.IsZero() {
 		startUnix = market.EventStartTime.UTC().Unix()
 	}
-	return fmt.Sprintf("%s|model|%d|%d|%d|%d|%.4f", base, startUnix, timeIncrement, timeLength, targetStep, thresholdBucket)
+	return fmt.Sprintf("%s|model|%d|%d|%d|%.4f", base, startUnix, timeIncrement, timeLength, thresholdBucket)
+}
+
+func synthFailureRetryInterval(window UpDownWindowType) time.Duration {
+	switch window {
+	case Window5m:
+		return 8 * time.Second
+	case Window15m:
+		return 10 * time.Second
+	case Window1h:
+		return 15 * time.Second
+	case Window4h:
+		return 25 * time.Second
+	default:
+		return 10 * time.Second
+	}
+}
+
+func synthModelFailureRetryInterval(window UpDownWindowType) time.Duration {
+	switch window {
+	case Window5m:
+		return 10 * time.Second
+	case Window15m:
+		return 12 * time.Second
+	case Window1h:
+		return 18 * time.Second
+	case Window4h:
+		return 30 * time.Second
+	default:
+		return 12 * time.Second
+	}
 }
 
 func synthUpDownCacheKey(market UpDownMarket) string {
@@ -2979,7 +3009,7 @@ func (s *UpDownService) getSynthPercentilesCached(
 	defer cancel()
 	resp, err := s.synth.GetPredictionPercentiles(fetchCtx, market.Asset, horizonForWindow(market.WindowType), 14, 10)
 	if err != nil {
-		s.markSynthPercentileFetchFailure(key, now, refreshInterval)
+		s.markSynthPercentileFetchFailure(key, now, synthFailureRetryInterval(market.WindowType))
 		fallback := s.getStaleSynthPercentiles(key, now)
 		cache[key] = fallback
 		return fallback
@@ -3029,7 +3059,7 @@ func (s *UpDownService) getSynthVolatilityCached(
 	defer cancel()
 	resp, err := s.synth.GetVolatility(fetchCtx, market.Asset, horizonForWindow(market.WindowType), 14, 10)
 	if err != nil {
-		s.markSynthVolatilityFetchFailure(key, now, refreshInterval)
+		s.markSynthVolatilityFetchFailure(key, now, synthFailureRetryInterval(market.WindowType))
 		fallback := s.getStaleSynthVolatility(key, now)
 		cache[key] = fallback
 		return fallback
@@ -3079,7 +3109,7 @@ func (s *UpDownService) getSynthLPProbabilitiesCached(
 	defer cancel()
 	resp, err := s.synth.GetLPProbabilities(fetchCtx, market.Asset, horizonForWindow(market.WindowType), 14, 10)
 	if err != nil {
-		s.markSynthLPFetchFailure(key, now, refreshInterval)
+		s.markSynthLPFetchFailure(key, now, synthFailureRetryInterval(market.WindowType))
 		fallback := s.getStaleSynthLP(key, now)
 		cache[key] = fallback
 		return fallback
@@ -3254,7 +3284,7 @@ func (s *UpDownService) computeModelProbability(
 	}
 
 	thresholdBucket := quantizeThreshold(threshold)
-	modelKey := synthWindowModelCacheKey(market, timeIncrement, timeLength, targetStep, thresholdBucket)
+	modelKey := synthWindowModelCacheKey(market, timeIncrement, timeLength, thresholdBucket)
 	now := time.Now().UTC()
 	refreshInterval := synthWindowCacheTTL(now, market)
 	if cached, ok := s.getCachedSynthModelProbability(modelKey, now, refreshInterval); ok {
@@ -3297,7 +3327,7 @@ func (s *UpDownService) computeModelProbability(
 		return val, "ok"
 	}
 
-	s.markSynthModelProbabilityFailure(modelKey, now, refreshInterval)
+	s.markSynthModelProbabilityFailure(modelKey, now, synthModelFailureRetryInterval(market.WindowType))
 	if fallback, ok := s.getStaleSynthModelProbability(modelKey, now); ok {
 		return fallback, "enterprise_failed_stale_cache"
 	}
@@ -4077,7 +4107,10 @@ func normalizeSynthFailureBackoff(refreshInterval time.Duration, maxBackoff time
 	case refreshInterval > maxBackoff:
 		refreshInterval = maxBackoff
 	}
-	return normalizeSynthCacheTTL(refreshInterval)
+	if refreshInterval < time.Second {
+		return time.Second
+	}
+	return refreshInterval
 }
 
 func (s *UpDownService) pruneExpiredSynthCaches(now time.Time) {

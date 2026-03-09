@@ -830,7 +830,7 @@ func TestGetSynthUpDownCachedRespectsFailureBackoff(t *testing.T) {
 	}
 }
 
-func TestGetSynthUpDownCachedCapsFailureBackoffForLongWindows(t *testing.T) {
+func TestGetSynthUpDownCachedUsesShortFailureRetryForActiveWindow(t *testing.T) {
 	var callCount atomic.Int32
 	synthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/insights/polymarket/up-down/5min" {
@@ -883,11 +883,11 @@ func TestGetSynthUpDownCachedCapsFailureBackoffForLongWindows(t *testing.T) {
 	}
 
 	backoff := entry.NextFetchAt.Sub(before)
-	if backoff < 90*time.Second {
-		t.Fatalf("expected at least ~90s backoff, got %s", backoff)
+	if backoff < 5*time.Second {
+		t.Fatalf("expected short retry backoff, got %s", backoff)
 	}
-	if backoff > upDownSynthFailureBackoff+5*time.Second {
-		t.Fatalf("expected backoff to be capped near %s, got %s", upDownSynthFailureBackoff, backoff)
+	if backoff > 20*time.Second {
+		t.Fatalf("expected retry backoff under 20s, got %s", backoff)
 	}
 }
 
@@ -1184,7 +1184,7 @@ func TestWindowAwareSynthFetchesOneCallPerEndpointPerWindow(t *testing.T) {
 	}
 }
 
-func TestSynthWindowModelCacheKeyIncludesTargetStep(t *testing.T) {
+func TestSynthWindowModelCacheKeyStableWithinWindow(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	market := UpDownMarket{
 		Asset:          "BTC",
@@ -1193,13 +1193,13 @@ func TestSynthWindowModelCacheKeyIncludesTargetStep(t *testing.T) {
 		EventEndTime:   now.Add(4 * time.Minute),
 	}
 
-	keyStep5 := synthWindowModelCacheKey(market, 60, 3600, 5, 68000)
-	keyStep4 := synthWindowModelCacheKey(market, 60, 3600, 4, 68000)
-	if keyStep5 == "" || keyStep4 == "" {
+	keyA := synthWindowModelCacheKey(market, 60, 3600, 68000)
+	keyB := synthWindowModelCacheKey(market, 60, 3600, 68000)
+	if keyA == "" || keyB == "" {
 		t.Fatalf("expected non-empty model cache keys")
 	}
-	if keyStep5 == keyStep4 {
-		t.Fatalf("expected model cache key to vary by target step")
+	if keyA != keyB {
+		t.Fatalf("expected stable model cache key within same window")
 	}
 }
 
