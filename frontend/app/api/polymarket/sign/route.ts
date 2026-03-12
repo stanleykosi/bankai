@@ -257,26 +257,42 @@ function normalizeRateLimitIdentity(raw: string): string {
   return clean || "anon";
 }
 
-function isRateLimited(keyScope: string, identity: string): boolean {
-  const now = Date.now();
-  if (rateBucket.size > MAX_RATE_BUCKET_ENTRIES) {
-    for (const [entryKey, entry] of rateBucket.entries()) {
-      if (entry.resetAt <= now) {
-        rateBucket.delete(entryKey);
-      }
+function pruneExpiredRateBuckets(now: number) {
+  for (const [entryKey, entry] of rateBucket.entries()) {
+    if (entry.resetAt <= now) {
+      rateBucket.delete(entryKey);
     }
   }
+}
+
+function evictLeastRecentlyUsedBuckets(maxEntries: number) {
+  while (rateBucket.size > maxEntries) {
+    const oldestKey = rateBucket.keys().next().value as string | undefined;
+    if (!oldestKey) {
+      break;
+    }
+    rateBucket.delete(oldestKey);
+  }
+}
+
+function isRateLimited(keyScope: string, identity: string): boolean {
+  const now = Date.now();
+  pruneExpiredRateBuckets(now);
 
   const key = `${keyScope}:${normalizeRateLimitIdentity(identity)}`;
   const state = rateBucket.get(key);
 
   if (!state || state.resetAt <= now) {
     rateBucket.set(key, { count: 1, resetAt: now + 60_000 });
+    evictLeastRecentlyUsedBuckets(MAX_RATE_BUCKET_ENTRIES);
     return false;
   }
 
   state.count += 1;
+  // Map insertion order is used as an LRU queue.
+  rateBucket.delete(key);
   rateBucket.set(key, state);
+  evictLeastRecentlyUsedBuckets(MAX_RATE_BUCKET_ENTRIES);
   return state.count > SIGN_RATE_LIMIT_PER_MINUTE;
 }
 

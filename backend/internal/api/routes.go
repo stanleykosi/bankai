@@ -173,8 +173,20 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	analysis.Get("/ai-picks", analysisHandler.GetAIPicks)
 	analysis.Get("/whales/recent", analysisHandler.GetRecentWhales)
 	analysis.Get("/whales/stream", analysisHandler.StreamWhaleUpdates)
-	analysis.Post("/ai-picks/cancel", analysisHandler.CancelAIPicks)
-	analysis.Post("/ai-picks/resume", analysisHandler.ResumeAIPicks)
+	analysis.Post(
+		"/ai-picks/cancel",
+		middleware.Protected(),
+		middleware.AccountGuard(rdb, db),
+		middleware.AdminOnly(cfg.Services.AdminWalletAllow),
+		analysisHandler.CancelAIPicks,
+	)
+	analysis.Post(
+		"/ai-picks/resume",
+		middleware.Protected(),
+		middleware.AccountGuard(rdb, db),
+		middleware.AdminOnly(cfg.Services.AdminWalletAllow),
+		analysisHandler.ResumeAIPicks,
+	)
 
 	// Up/Down Pro Trading Routes
 	updown := v1.Group("/updown")

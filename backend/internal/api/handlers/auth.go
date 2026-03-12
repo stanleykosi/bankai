@@ -81,6 +81,20 @@ const (
 	signerAssertionTTL = 2 * time.Minute
 )
 
+var consumeNonceScript = redis.NewScript(`
+local key = KEYS[1]
+local expected = ARGV[1]
+local current = redis.call("GET", key)
+if not current then
+  return 0
+end
+if current ~= expected then
+  return -1
+end
+redis.call("DEL", key)
+return 1
+`)
+
 // Challenge returns a SIWE message for the client to sign.
 // POST /api/v1/auth/challenge
 func (h *AuthHandler) Challenge(c *fiber.Ctx) error {
@@ -157,25 +171,22 @@ func (h *AuthHandler) Verify(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Unsupported SIWE version"})
 	}
 
-	key := nonceKey(msg.Nonce)
-	stored, err := h.Redis.Get(context.Background(), key).Result()
-	if err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Nonce expired"})
-	}
-
-	addrLower, chainID, err := parseNonceValue(stored)
-	if err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid nonce data"})
-	}
-	if !strings.EqualFold(addrLower, msg.Address) || chainID != msg.ChainID {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Nonce mismatch"})
-	}
-
 	if err := verifySignature(req.Message, req.Signature, msg.Address); err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	_ = h.Redis.Del(context.Background(), key).Err()
+	key := nonceKey(msg.Nonce)
+	expectedNoncePayload := fmt.Sprintf("%s|%d", strings.ToLower(msg.Address), msg.ChainID)
+	consumed, mismatch, err := h.consumeNonce(context.Background(), key, expectedNoncePayload)
+	if err != nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "Auth store unavailable"})
+	}
+	if mismatch {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Nonce mismatch"})
+	}
+	if !consumed {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Nonce expired"})
+	}
 
 	user, err := h.upsertUser(strings.ToLower(msg.Address))
 	if err != nil {
@@ -325,16 +336,24 @@ func nonceKey(nonce string) string {
 	return nonceKeyPrefix + nonce
 }
 
-func parseNonceValue(value string) (string, int, error) {
-	parts := strings.Split(value, "|")
-	if len(parts) != 2 {
-		return "", 0, fmt.Errorf("invalid nonce payload")
+func (h *AuthHandler) consumeNonce(ctx context.Context, key, expected string) (consumed bool, mismatch bool, err error) {
+	if h == nil || h.Redis == nil {
+		return false, false, fmt.Errorf("auth store unavailable")
 	}
-	chainID, err := strconv.Atoi(parts[1])
+	result, err := consumeNonceScript.Run(ctx, h.Redis, []string{key}, expected).Int()
 	if err != nil {
-		return "", 0, err
+		return false, false, err
 	}
-	return parts[0], chainID, nil
+	switch result {
+	case 1:
+		return true, false, nil
+	case 0:
+		return false, false, nil
+	case -1:
+		return false, true, nil
+	default:
+		return false, false, fmt.Errorf("unexpected nonce consume result: %d", result)
+	}
 }
 
 func buildSIWEMessage(domain, address, statement, uri string, chainID int, nonce string, issuedAt time.Time) string {
