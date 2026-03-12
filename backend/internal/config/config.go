@@ -102,6 +102,7 @@ type ServicesConfig struct {
 	UpDownEnabled                  bool
 	UpDownReadOnly                 bool
 	UpDownKillSwitch               bool
+	UpDownDBWritesPaused           bool
 	UpDownEnterpriseEnabled        bool
 	UpDownPollIntervalSeconds      int
 	UpDownStaleThresholdSeconds    int
@@ -215,6 +216,7 @@ func Load() (*Config, error) {
 			UpDownEnabled:                  getEnvAsBool("UPDOWN_ENABLED", true),
 			UpDownReadOnly:                 getEnvAsBool("UPDOWN_READ_ONLY", false),
 			UpDownKillSwitch:               getEnvAsBool("UPDOWN_KILL_SWITCH", false),
+			UpDownDBWritesPaused:           getEnvAsBool("UPDOWN_DB_WRITES_PAUSED", false),
 			UpDownEnterpriseEnabled:        getEnvAsBool("UPDOWN_ENTERPRISE_ENABLED", true),
 			UpDownPollIntervalSeconds:      getEnvAsInt("UPDOWN_POLL_INTERVAL_SECONDS", 2),
 			UpDownStaleThresholdSeconds:    getEnvAsInt("UPDOWN_STALE_THRESHOLD_SECONDS", 8),

@@ -61,6 +61,7 @@ const (
 
 var (
 	ErrInvalidUpDownDecisionRequest = errors.New("invalid updown decision request")
+	ErrUpDownDBWritesPaused         = errors.New("updown db writes are paused")
 )
 
 type marketPriceUpdate struct {
@@ -395,6 +396,14 @@ func (s *UpDownService) Enabled() bool {
 
 func (s *UpDownService) ReadOnly() bool {
 	return s == nil || s.cfg == nil || s.cfg.Services.UpDownReadOnly
+}
+
+func (s *UpDownService) DBWritesPaused() bool {
+	return s != nil && s.cfg != nil && s.cfg.Services.UpDownDBWritesPaused
+}
+
+func (s *UpDownService) canWriteDB() bool {
+	return s != nil && s.db != nil && !s.DBWritesPaused()
 }
 
 func (s *UpDownService) StreamHub() *PriceStreamHub {
@@ -1088,6 +1097,9 @@ func (s *UpDownService) ListRecommendations(ctx context.Context, asset string, l
 func (s *UpDownService) LogDecision(ctx context.Context, userID string, req UpDownDecisionLogRequest) (*UpDownDecisionLog, error) {
 	if s.db == nil {
 		return nil, errors.New("database is not configured")
+	}
+	if s.DBWritesPaused() {
+		return nil, ErrUpDownDBWritesPaused
 	}
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
@@ -3519,7 +3531,7 @@ func latestMarketTimestamp(m models.Market) time.Time {
 }
 
 func (s *UpDownService) persistMarketWindow(ctx context.Context, market UpDownMarket, signal UpDownSignal) {
-	if s.db == nil {
+	if !s.canWriteDB() {
 		return
 	}
 
@@ -3667,7 +3679,7 @@ func resolveUpDownOutcome(signal UpDownSignal) (string, *time.Time) {
 }
 
 func (s *UpDownService) syncPerformanceDailyFromWindows(ctx context.Context, dayStart, dayEnd time.Time, asset, window string) error {
-	if s == nil || s.db == nil {
+	if s == nil || !s.canWriteDB() {
 		return nil
 	}
 	if dayEnd.Before(dayStart) {

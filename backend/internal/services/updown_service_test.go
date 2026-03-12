@@ -2153,6 +2153,29 @@ func TestLogDecisionValidationErrorClassification(t *testing.T) {
 	}
 }
 
+func TestLogDecisionHonorsDBWritePauseFlag(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	svc := &UpDownService{
+		db: db,
+		cfg: &config.Config{
+			Services: config.ServicesConfig{
+				UpDownDBWritesPaused: true,
+			},
+		},
+	}
+
+	_, err = svc.LogDecision(context.Background(), "user-1", UpDownDecisionLogRequest{
+		Slug:   "btc-updown-5m-1",
+		Action: "accepted",
+	})
+	if !errors.Is(err, ErrUpDownDBWritesPaused) {
+		t.Fatalf("expected ErrUpDownDBWritesPaused, got: %v", err)
+	}
+}
+
 func TestBuildSignalRealtimeSkipsSynthFetchWhenCacheMiss(t *testing.T) {
 	var calls atomic.Int32
 	synthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
