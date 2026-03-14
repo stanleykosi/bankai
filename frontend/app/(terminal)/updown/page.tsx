@@ -47,6 +47,8 @@ const EXECUTION_SOURCES = ["llm", "deterministic"] as const;
 const PREFILL_DRIFT_BPS = 35;
 const STREAM_RETRY_BASE_MS = 1200;
 const STREAM_RETRY_MAX_MS = 15000;
+const STREAM_REQUEST_RETRY_BASE_MS = 1000;
+const STREAM_REQUEST_RETRY_MAX_MS = 12000;
 
 const pct = (value?: number) => {
   if (typeof value !== "number" || Number.isNaN(value)) return "--";
@@ -405,6 +407,24 @@ export default function UpDownPage() {
       null,
     [markets, normalizedSelectedSlug, railSourceMarkets],
   );
+  const streamRequestTargetsKey = useMemo(() => {
+    const targets = new Set<string>();
+    const selectedConditionId = selectedMarket?.condition_id?.trim();
+    if (selectedConditionId) {
+      targets.add(selectedConditionId);
+    }
+    for (const lane of railLanes) {
+      const liveConditionId = lane.live?.condition_id?.trim();
+      if (liveConditionId) {
+        targets.add(liveConditionId);
+      }
+      const nextConditionId = lane.next?.condition_id?.trim();
+      if (nextConditionId) {
+        targets.add(nextConditionId);
+      }
+    }
+    return Array.from(targets).sort().join("|");
+  }, [railLanes, selectedMarket?.condition_id]);
 
   useEffect(() => {
     const id = setInterval(() => setNowMs(Date.now()), 1000);
@@ -500,12 +520,75 @@ export default function UpDownPage() {
   }, []);
 
   useEffect(() => {
-    const conditionId = selectedMarket?.condition_id;
-    if (!conditionId) return;
-    if (requestedStreamsRef.current.has(conditionId)) return;
-    requestedStreamsRef.current.add(conditionId);
-    requestMarketStream(conditionId).catch(() => undefined);
-  }, [selectedMarket?.condition_id]);
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    let stopped = false;
+    let attempts = 0;
+
+    const clearRetry = () => {
+      if (retry) {
+        clearTimeout(retry);
+        retry = null;
+      }
+    };
+
+    const scheduleRetry = () => {
+      if (stopped) return;
+      clearRetry();
+      attempts += 1;
+      const exponential = STREAM_REQUEST_RETRY_BASE_MS * 2 ** Math.min(attempts - 1, 5);
+      const backoff = Math.min(STREAM_REQUEST_RETRY_MAX_MS, exponential);
+      const jitter = Math.floor(Math.random() * 250);
+      retry = setTimeout(() => {
+        void requestPending();
+      }, backoff + jitter);
+    };
+
+    const requestPending = async () => {
+      if (stopped) return;
+      clearRetry();
+      const targets = streamRequestTargetsKey ? streamRequestTargetsKey.split("|") : [];
+      const pending = targets.filter(
+        (conditionId) => !requestedStreamsRef.current.has(conditionId),
+      );
+      if (!pending.length) {
+        attempts = 0;
+        return;
+      }
+
+      const results = await Promise.allSettled(
+        pending.map((conditionId) => requestMarketStream(conditionId)),
+      );
+      if (stopped) return;
+
+      let sawFailure = false;
+      for (let i = 0; i < pending.length; i += 1) {
+        const conditionId = pending[i];
+        const result = results[i];
+        if (result?.status === "fulfilled") {
+          requestedStreamsRef.current.add(conditionId);
+          continue;
+        }
+        sawFailure = true;
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("Failed to request up/down market stream", conditionId, result?.reason);
+        }
+      }
+
+      if (sawFailure) {
+        scheduleRetry();
+        return;
+      }
+
+      attempts = 0;
+    };
+
+    void requestPending();
+
+    return () => {
+      stopped = true;
+      clearRetry();
+    };
+  }, [streamRequestTargetsKey]);
 
   const selectedSignal = useMemo(() => {
     if (!normalizedSelectedSlug) return null;

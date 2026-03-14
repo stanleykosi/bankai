@@ -160,16 +160,11 @@ export const fetchDepthEstimate = async (
 };
 
 export const requestMarketStream = async (conditionId: string): Promise<void> => {
-  if (!conditionId) {
-    return;
+  const trimmed = conditionId.trim();
+  if (!trimmed) {
+    throw new Error("conditionId is required");
   }
-  try {
-    await api.post(`/markets/${encodeURIComponent(conditionId)}/stream`);
-  } catch (error) {
-    if (process.env.NODE_ENV !== "production") {
-      console.warn("Failed to request market stream", error);
-    }
-  }
+  await api.post(`/markets/${encodeURIComponent(trimmed)}/stream`);
 };
 
 import type { HoldersResponse } from "@/types";

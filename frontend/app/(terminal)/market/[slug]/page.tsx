@@ -49,19 +49,63 @@ export default function MarketDetailPage() {
   }, [market, setActiveMarket]);
 
   useEffect(() => {
-    const conditionId = market?.condition_id;
+    const conditionId = market?.condition_id?.trim();
     if (!conditionId) {
       return;
     }
     if (streamRequestedRef.current === conditionId) {
       return;
     }
-    streamRequestedRef.current = conditionId;
-    requestMarketStream(conditionId).catch((err) => {
-      if (process.env.NODE_ENV !== "production") {
-        console.warn("Failed to request live stream for market", conditionId, err);
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    let stopped = false;
+    let attempts = 0;
+
+    const clearRetry = () => {
+      if (retry) {
+        clearTimeout(retry);
+        retry = null;
       }
-    });
+    };
+
+    const scheduleRetry = () => {
+      if (stopped) {
+        return;
+      }
+      clearRetry();
+      attempts += 1;
+      const exponential = 1000 * 2 ** Math.min(attempts - 1, 5);
+      const backoff = Math.min(12000, exponential);
+      const jitter = Math.floor(Math.random() * 250);
+      retry = setTimeout(() => {
+        void requestStream();
+      }, backoff + jitter);
+    };
+
+    const requestStream = async () => {
+      if (stopped) {
+        return;
+      }
+      try {
+        await requestMarketStream(conditionId);
+        if (stopped) {
+          return;
+        }
+        streamRequestedRef.current = conditionId;
+        attempts = 0;
+      } catch (err) {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("Failed to request live stream for market", conditionId, err);
+        }
+        scheduleRetry();
+      }
+    };
+
+    void requestStream();
+
+    return () => {
+      stopped = true;
+      clearRetry();
+    };
   }, [market?.condition_id]);
 
   const liveMarket = useMemo(
