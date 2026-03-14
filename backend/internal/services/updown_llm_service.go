@@ -862,64 +862,62 @@ func (s *UpDownLLMService) collectIndependentSnapshot(ctx context.Context, marke
 	var volSummary *synthdata.VolatilityResponse
 	var percentile *synthdata.PredictionPercentilesResponse
 	var lpSummary *synthdata.LPProbabilitiesResponse
+	var synthUpDownErr error
+	var synthVolErr error
+	var synthPercentileErr error
+	var synthLPErr error
 	horizon := horizonForWindow(marketCopy.WindowType)
-	if s.updown != nil {
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			synthResp = s.updown.getSynthUpDownCached(ctx, marketCopy, map[string]*synthdata.PolymarketUpDownResponse{}, true)
-		}()
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			volSummary = s.updown.getSynthVolatilityCached(ctx, marketCopy, map[string]*synthdata.VolatilityResponse{}, true)
-		}()
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			percentile = s.updown.getSynthPercentilesCached(ctx, marketCopy, map[string]*synthdata.PredictionPercentilesResponse{}, true)
-		}()
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			lpSummary = s.updown.getSynthLPProbabilitiesCached(ctx, marketCopy, map[string]*synthdata.LPProbabilitiesResponse{}, true)
-		}()
-		wg.Wait()
-	} else if s.synth != nil && s.synth.Enabled() && supportsSynthAnalyticsForWindow(marketCopy.WindowType) {
+	if s.synth != nil && s.synth.Enabled() && supportsSynthAnalyticsForWindow(marketCopy.WindowType) {
 		var wg sync.WaitGroup
 		synthWindow := synthWindowForMarket(marketCopy.WindowType)
 		if synthWindow != "" {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				reqCtx, cancel := context.WithTimeout(ctx, synthRequestTimeoutForWindow(marketCopy.WindowType))
+				reqCtx, cancel := synthRequestContext(ctx, marketCopy.WindowType)
 				defer cancel()
-				synthResp, _ = s.synth.GetPolymarketUpDown(reqCtx, marketCopy.Asset, synthWindow, horizon, 14, 10)
+				synthResp, synthUpDownErr = s.synth.GetPolymarketUpDown(reqCtx, marketCopy.Asset, synthWindow, horizon, 14, 10)
 			}()
+		} else {
+			synthUpDownErr = fmt.Errorf("synth window unsupported")
 		}
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			reqCtx, cancel := context.WithTimeout(ctx, synthRequestTimeoutForWindow(marketCopy.WindowType))
+			reqCtx, cancel := synthRequestContext(ctx, marketCopy.WindowType)
 			defer cancel()
-			volSummary, _ = s.synth.GetVolatility(reqCtx, marketCopy.Asset, horizon, 14, 10)
+			volSummary, synthVolErr = s.synth.GetVolatility(reqCtx, marketCopy.Asset, horizon, 14, 10)
 		}()
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			reqCtx, cancel := context.WithTimeout(ctx, synthRequestTimeoutForWindow(marketCopy.WindowType))
+			reqCtx, cancel := synthRequestContext(ctx, marketCopy.WindowType)
 			defer cancel()
-			percentile, _ = s.synth.GetPredictionPercentiles(reqCtx, marketCopy.Asset, horizon, 14, 10)
+			percentile, synthPercentileErr = s.synth.GetPredictionPercentiles(reqCtx, marketCopy.Asset, horizon, 14, 10)
 		}()
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			reqCtx, cancel := context.WithTimeout(ctx, synthRequestTimeoutForWindow(marketCopy.WindowType))
+			reqCtx, cancel := synthRequestContext(ctx, marketCopy.WindowType)
 			defer cancel()
-			lpSummary, _ = s.synth.GetLPProbabilities(reqCtx, marketCopy.Asset, horizon, 14, 10)
+			lpSummary, synthLPErr = s.synth.GetLPProbabilities(reqCtx, marketCopy.Asset, horizon, 14, 10)
 		}()
 		wg.Wait()
+	}
+	if code := synthFetchReasonCode("synth_updown", synthUpDownErr); code != "" {
+		reasons = append(reasons, code)
+	}
+	if code := synthFetchReasonCode("synth_volatility", synthVolErr); code != "" {
+		reasons = append(reasons, code)
+	}
+	if code := synthFetchReasonCode("synth_percentiles", synthPercentileErr); code != "" {
+		reasons = append(reasons, code)
+	}
+	if code := synthFetchReasonCode("synth_lp", synthLPErr); code != "" {
+		reasons = append(reasons, code)
 	}
 
 	proxySynthWindow := false
@@ -1025,30 +1023,49 @@ func (s *UpDownLLMService) collectIndependentSnapshot(ctx context.Context, marke
 		modelDiagnosticCode = "threshold_missing"
 	} else if s.synth == nil || !s.synth.Enabled() {
 		modelDiagnosticCode = "synth_disabled"
-	} else if s.updown != nil {
-		percentileCache := map[string]*synthdata.PredictionPercentilesResponse{}
-		if percentile != nil {
-			if key := synthWindowAnalyticsCacheKey(marketCopy, "percentiles"); key != "" {
-				percentileCache[key] = percentile
-			}
-		}
-		allowModelFetch := !now.Before(marketCopy.EventStartTime) && now.Before(marketCopy.EventEndTime)
-		pModel, code := s.updown.computeModelProbability(ctx, marketCopy, thresholdPrice, percentileCache, allowModelFetch)
-		if code != "" {
-			modelDiagnosticCode = code
-		}
-		if pModel > 0 {
-			v := upDownClamp(pModel, 0.01, 0.99)
-			pModelPtr = &v
-		}
-		if strings.HasPrefix(modelDiagnosticCode, "enterprise_failed") {
-			reasons = append(reasons, "enterprise_failed")
-		}
 	} else {
-		if pSynthPercentilePtr != nil {
-			v := *pSynthPercentilePtr
+		stepSeconds := synthSamplingInterval(horizonForWindow(marketCopy.WindowType))
+		targetStep := int(math.Ceil(math.Max(1, marketCopy.EventEndTime.Sub(now).Seconds()) / math.Max(stepSeconds.Seconds(), 1)))
+		if targetStep < 1 {
+			targetStep = 1
+		}
+		timeIncrement, timeLength := synthPredictionShapeForWindow(marketCopy.WindowType)
+		if timeIncrement <= 0 {
+			timeIncrement = int(stepSeconds.Seconds())
+		}
+		if timeIncrement <= 0 {
+			timeIncrement = 300
+		}
+		if timeLength <= 0 {
+			timeLength = maxInt(timeIncrement, targetStep*timeIncrement)
+		}
+		maxStep := int(math.Ceil(float64(timeLength) / float64(timeIncrement)))
+		if maxStep < 1 {
+			maxStep = 1
+		}
+		if targetStep > maxStep {
+			targetStep = maxStep
+		}
+		reqCtx, cancel := synthRequestContext(ctx, marketCopy.WindowType)
+		defer cancel()
+		pred, predErr := s.synth.GetEnterpriseProbabilityUp(
+			reqCtx,
+			marketCopy.Asset,
+			timeIncrement,
+			timeLength,
+			targetStep,
+			quantizeThreshold(thresholdPrice),
+		)
+		if predErr != nil {
+			modelDiagnosticCode = "enterprise_fetch_failed"
+			modelDiagnosticDetail = compactError(predErr)
+			reasons = append(reasons, synthFetchReasonCode("synth_enterprise", predErr))
+		} else if pred != nil && pred.ProbabilityUp >= 0 && pred.ProbabilityUp <= 1 {
+			v := upDownClamp(pred.ProbabilityUp, 0.01, 0.99)
 			pModelPtr = &v
-			modelDiagnosticCode = "percentile_proxy"
+			modelDiagnosticCode = "ok"
+		} else {
+			modelDiagnosticCode = "enterprise_empty"
 		}
 	}
 	if pSynthPtr == nil {
@@ -2264,6 +2281,45 @@ func computeEffectiveGuardBlocks(
 		blocks = append(blocks, "retrieval_quality_low")
 	}
 	return dedupeStrings(blocks)
+}
+
+func synthFetchReasonCode(prefix string, err error) string {
+	if err == nil {
+		return ""
+	}
+	base := strings.ToLower(strings.TrimSpace(prefix))
+	if base == "" {
+		base = "synth"
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(msg, "no prediction available"):
+		return base + "_no_prediction"
+	case strings.Contains(msg, "status 404"):
+		return base + "_not_found"
+	case strings.Contains(msg, "status 401"), strings.Contains(msg, "status 403"):
+		return base + "_auth_failed"
+	case strings.Contains(msg, "context deadline exceeded"), strings.Contains(msg, "timeout"):
+		return base + "_timeout"
+	case strings.Contains(msg, "disabled"):
+		return base + "_disabled"
+	case strings.Contains(msg, "unsupported"):
+		return base + "_unsupported"
+	default:
+		return base + "_fetch_failed"
+	}
+}
+
+func compactError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.TrimSpace(err.Error())
+	msg = strings.ReplaceAll(msg, "\n", " ")
+	if len(msg) > 220 {
+		msg = strings.TrimSpace(msg[:220])
+	}
+	return msg
 }
 
 func shouldMarkLLMMarketStale(
