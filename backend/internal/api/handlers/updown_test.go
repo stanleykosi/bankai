@@ -2,7 +2,10 @@ package handlers
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/bankai-project/backend/internal/config"
@@ -92,5 +95,25 @@ func TestUpDownLogDecisionValidationErrorReturnsBadRequest(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected status 400 for validation error, got %d", resp.StatusCode)
+	}
+}
+
+func TestIsGatewayTimeoutErr(t *testing.T) {
+	timeoutErr := fmt.Errorf("wrapped: %w", context.DeadlineExceeded)
+	if !isGatewayTimeoutErr(timeoutErr) {
+		t.Fatalf("expected wrapped deadline exceeded to be treated as gateway timeout")
+	}
+
+	urlTimeoutErr := &url.Error{
+		Op:  "Post",
+		URL: "https://openrouter.ai/api/v1/chat/completions",
+		Err: context.DeadlineExceeded,
+	}
+	if !isGatewayTimeoutErr(urlTimeoutErr) {
+		t.Fatalf("expected url timeout error to be treated as gateway timeout")
+	}
+
+	if isGatewayTimeoutErr(fmt.Errorf("wrapped: %w", services.ErrInvalidUpDownDecisionRequest)) {
+		t.Fatalf("did not expect non-timeout error to be treated as gateway timeout")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -191,7 +192,11 @@ func (h *UpDownHandler) GenerateLLMPacket(c *fiber.Ctx) error {
 	packet, err := h.LLMService.Generate(c.Context(), req)
 	if err != nil {
 		logger.Error("updown llm generate failed slug=%s force_refresh=%t err=%v", strings.TrimSpace(req.Slug), req.ForceRefresh, err)
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		status := fiber.StatusBadRequest
+		if isGatewayTimeoutErr(err) {
+			status = fiber.StatusGatewayTimeout
+		}
+		return c.Status(status).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(packet)
 }
@@ -218,4 +223,15 @@ func (h *UpDownHandler) LLMHealth(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "updown llm service unavailable"})
 	}
 	return c.JSON(h.LLMService.Health())
+}
+
+func isGatewayTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }

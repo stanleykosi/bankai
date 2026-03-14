@@ -257,7 +257,7 @@ func Load() (*Config, error) {
 			UpDownLLMEnabled:               getEnvAsBool("UPDOWN_LLM_ENABLED", true),
 			UpDownLLMShadowMode:            getEnvAsBool("UPDOWN_LLM_SHADOW_MODE", false),
 			UpDownLLMCacheTTLSeconds:       getEnvAsInt("UPDOWN_LLM_CACHE_TTL_SECONDS", 15),
-			UpDownLLMTimeoutSeconds:        getEnvAsInt("UPDOWN_LLM_TIMEOUT_SECONDS", 8),
+			UpDownLLMTimeoutSeconds:        getEnvAsInt("UPDOWN_LLM_TIMEOUT_SECONDS", 45),
 			UpDownLLMMaxTokens:             getEnvAsInt("UPDOWN_LLM_MAX_TOKENS", 20000),
 			UpDownLLMAlloraFreshMaxSeconds: getEnvAsInt("UPDOWN_LLM_ALLORA_FRESH_MAX_SECONDS", 60),
 			UpDownLLMAlloraSoftLagSeconds:  getEnvAsInt("UPDOWN_LLM_ALLORA_SOFT_LAG_SECONDS", 380),
