@@ -23,25 +23,27 @@ import (
 )
 
 const (
-	upDownSignalChannel     = "updown:signal_updates"
-	upDownMarketsCacheKey   = "updown:markets:snapshot"
-	upDownRecsCacheKey      = "updown:recommendations"
-	upDownSignalCachePref   = "updown:signal:"
-	upDownCacheTTL          = 30 * time.Second
-	defaultRiskProfile      = "Balanced"
-	upDownEventDebounce     = 250 * time.Millisecond
-	upDownPersistTimeout    = 1500 * time.Millisecond
-	upDownGammaTagUpOrDown  = 102127
-	upDownGammaPageLimit    = 200
-	upDownGammaMaxPages     = 2
-	upDownGammaPageTimeout  = 2200 * time.Millisecond
-	upDownGammaPageRetries  = 2
-	upDownGammaRetryDelay   = 180 * time.Millisecond
-	upDownGammaEndLookback  = 45 * time.Minute
-	upDownGammaEndLookahead = 5 * time.Hour
-	upDownCloseFinalizeTTL  = 4 * time.Minute
-	upDownSignalHistoryTTL  = 20 * time.Second
-	upDownSynthPrefetchLead = 75 * time.Second
+	upDownSignalChannel      = "updown:signal_updates"
+	upDownMarketsCacheKey    = "updown:markets:snapshot"
+	upDownRecsCacheKey       = "updown:recommendations"
+	upDownSignalCachePref    = "updown:signal:"
+	upDownSignalRefCachePref = "updown:signal_ref:"
+	upDownCacheTTL           = 30 * time.Second
+	upDownSignalRefCacheTTL  = 24 * time.Hour
+	defaultRiskProfile       = "Balanced"
+	upDownEventDebounce      = 250 * time.Millisecond
+	upDownPersistTimeout     = 1500 * time.Millisecond
+	upDownGammaTagUpOrDown   = 102127
+	upDownGammaPageLimit     = 200
+	upDownGammaMaxPages      = 2
+	upDownGammaPageTimeout   = 2200 * time.Millisecond
+	upDownGammaPageRetries   = 2
+	upDownGammaRetryDelay    = 180 * time.Millisecond
+	upDownGammaEndLookback   = 45 * time.Minute
+	upDownGammaEndLookahead  = 5 * time.Hour
+	upDownCloseFinalizeTTL   = 4 * time.Minute
+	upDownSignalHistoryTTL   = 20 * time.Second
+	upDownSynthPrefetchLead  = 75 * time.Second
 
 	upDownSynthMonthlyCreditCapDefault = 18000
 	upDownSynthFailureBackoff          = 2 * time.Minute
@@ -217,6 +219,16 @@ type UpDownSignal struct {
 	RecommendationLockedAt *time.Time            `json:"recommendation_locked_at,omitempty"`
 }
 
+type upDownSignalReferenceSnapshot struct {
+	Slug                  string     `json:"slug"`
+	ConditionID           string     `json:"condition_id,omitempty"`
+	ReferenceStartPrice   *float64   `json:"reference_start_price,omitempty"`
+	ReferenceCurrentPrice *float64   `json:"reference_current_price,omitempty"`
+	ReferenceEndPrice     *float64   `json:"reference_end_price,omitempty"`
+	ReferenceUpdatedAt    *time.Time `json:"reference_updated_at,omitempty"`
+	CapturedAt            time.Time  `json:"captured_at"`
+}
+
 type UpDownDecisionLogRequest struct {
 	Slug             string   `json:"slug"`
 	RecommendationID string   `json:"recommendation_id"`
@@ -310,13 +322,6 @@ type cachedSynthModelProb struct {
 
 type signalBuildOptions struct {
 	allowSynthFetch bool
-}
-
-type persistedWindowReference struct {
-	ReferenceStartPrice   *float64   `gorm:"column:reference_start_price"`
-	ReferenceCurrentPrice *float64   `gorm:"column:reference_current_price"`
-	ReferenceEndPrice     *float64   `gorm:"column:reference_end_price"`
-	SignalTimestamp       *time.Time `gorm:"column:signal_timestamp"`
 }
 
 type UpDownService struct {
@@ -1281,6 +1286,7 @@ func (s *UpDownService) publishSignal(ctx context.Context, market UpDownMarket, 
 	if s.redis == nil {
 		return
 	}
+	s.persistSignalReferenceSnapshot(ctx, market.Slug, signal)
 	payload := map[string]interface{}{
 		"type":           "signal_update",
 		"slug":           market.Slug,
@@ -1954,24 +1960,24 @@ func (s *UpDownService) buildSignalWithOptions(
 		}
 	}
 	if !chainlinkReference && !now.Before(market.EventEndTime) && referenceEndPrice == nil && (referenceCurrentPrice == nil || prevSignal == nil) {
-		if persisted, ok := s.loadPersistedWindowReference(ctx, market); ok {
-			if referenceStartPrice == nil && persisted.ReferenceStartPrice != nil {
-				v := *persisted.ReferenceStartPrice
+		if cachedSignal, ok := s.loadCachedSignalReference(ctx, market.Slug); ok {
+			if referenceStartPrice == nil && cachedSignal.ReferenceStartPrice != nil {
+				v := *cachedSignal.ReferenceStartPrice
 				referenceStartPrice = &v
-				reasons = append(reasons, "start_snapshot_fallback_persisted")
+				reasons = append(reasons, "start_snapshot_fallback_redis")
 			}
-			if referenceCurrentPrice == nil && persisted.ReferenceCurrentPrice != nil {
-				v := *persisted.ReferenceCurrentPrice
+			if referenceCurrentPrice == nil && cachedSignal.ReferenceCurrentPrice != nil {
+				v := *cachedSignal.ReferenceCurrentPrice
 				referenceCurrentPrice = &v
-				reasons = append(reasons, "current_snapshot_fallback_persisted")
+				reasons = append(reasons, "current_snapshot_fallback_redis")
 			}
-			if referenceEndPrice == nil && persisted.ReferenceEndPrice != nil {
-				v := *persisted.ReferenceEndPrice
+			if referenceEndPrice == nil && cachedSignal.ReferenceEndPrice != nil {
+				v := *cachedSignal.ReferenceEndPrice
 				referenceEndPrice = &v
-				reasons = append(reasons, "end_snapshot_fallback_persisted")
+				reasons = append(reasons, "end_snapshot_fallback_redis")
 			}
-			if referenceUpdatedAt == nil && persisted.SignalTimestamp != nil && !persisted.SignalTimestamp.IsZero() {
-				ts := persisted.SignalTimestamp.UTC()
+			if referenceUpdatedAt == nil && cachedSignal.ReferenceUpdatedAt != nil && !cachedSignal.ReferenceUpdatedAt.IsZero() {
+				ts := cachedSignal.ReferenceUpdatedAt.UTC()
 				referenceUpdatedAt = &ts
 			}
 		}
@@ -2240,36 +2246,91 @@ func (s *UpDownService) buildSignalWithOptions(
 	return signal, nil
 }
 
-func (s *UpDownService) loadPersistedWindowReference(ctx context.Context, market UpDownMarket) (persistedWindowReference, bool) {
-	if s == nil || s.db == nil {
-		return persistedWindowReference{}, false
+func (s *UpDownService) loadCachedSignalReference(ctx context.Context, slug string) (UpDownSignal, bool) {
+	if s == nil || s.redis == nil {
+		return UpDownSignal{}, false
 	}
-	conditionID := strings.TrimSpace(market.ConditionID)
-	if conditionID == "" || market.EventStartTime.IsZero() {
-		return persistedWindowReference{}, false
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return UpDownSignal{}, false
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	queryCtx, cancel := context.WithTimeout(ctx, 450*time.Millisecond)
-	defer cancel()
-
-	var out persistedWindowReference
-	tx := s.db.WithContext(queryCtx).Raw(
-		`SELECT reference_start_price, reference_current_price, reference_end_price, signal_timestamp
-		 FROM updown_market_windows
-		 WHERE condition_id = ? AND event_start_time = ?
-		 LIMIT 1`,
-		conditionID,
-		market.EventStartTime.UTC(),
-	).Scan(&out)
-	if tx.Error != nil || tx.RowsAffected == 0 {
-		return persistedWindowReference{}, false
+	for _, key := range []string{
+		upDownSignalCachePref + slug,
+		upDownSignalRefCachePref + slug,
+	} {
+		payload, err := s.redis.Get(ctx, key).Bytes()
+		if err != nil || len(payload) == 0 {
+			continue
+		}
+		if out, ok := decodeCachedSignalReference(payload, slug); ok {
+			return out, true
+		}
 	}
-	if out.ReferenceStartPrice == nil && out.ReferenceCurrentPrice == nil && out.ReferenceEndPrice == nil {
-		return persistedWindowReference{}, false
+	return UpDownSignal{}, false
+}
+
+func (s *UpDownService) persistSignalReferenceSnapshot(ctx context.Context, slug string, signal UpDownSignal) {
+	if s == nil || s.redis == nil {
+		return
+	}
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		slug = strings.TrimSpace(signal.Slug)
+	}
+	if slug == "" || !hasSignalReferenceData(signal) {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	snapshot := upDownSignalReferenceSnapshot{
+		Slug:                  slug,
+		ConditionID:           signal.ConditionID,
+		ReferenceStartPrice:   signal.ReferenceStartPrice,
+		ReferenceCurrentPrice: signal.ReferenceCurrentPrice,
+		ReferenceEndPrice:     signal.ReferenceEndPrice,
+		ReferenceUpdatedAt:    signal.ReferenceUpdatedAt,
+		CapturedAt:            time.Now().UTC(),
+	}
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		return
+	}
+	_ = s.redis.Set(ctx, upDownSignalRefCachePref+slug, payload, upDownSignalRefCacheTTL).Err()
+}
+
+func decodeCachedSignalReference(payload []byte, slug string) (UpDownSignal, bool) {
+	var signal UpDownSignal
+	if err := json.Unmarshal(payload, &signal); err == nil && hasSignalReferenceData(signal) {
+		if strings.TrimSpace(signal.Slug) == "" {
+			signal.Slug = slug
+		}
+		return signal, true
+	}
+
+	var snapshot upDownSignalReferenceSnapshot
+	if err := json.Unmarshal(payload, &snapshot); err != nil {
+		return UpDownSignal{}, false
+	}
+	out := UpDownSignal{
+		Slug:                  slug,
+		ConditionID:           snapshot.ConditionID,
+		ReferenceStartPrice:   snapshot.ReferenceStartPrice,
+		ReferenceCurrentPrice: snapshot.ReferenceCurrentPrice,
+		ReferenceEndPrice:     snapshot.ReferenceEndPrice,
+		ReferenceUpdatedAt:    snapshot.ReferenceUpdatedAt,
+	}
+	if !hasSignalReferenceData(out) {
+		return UpDownSignal{}, false
 	}
 	return out, true
+}
+
+func hasSignalReferenceData(signal UpDownSignal) bool {
+	return signal.ReferenceStartPrice != nil || signal.ReferenceCurrentPrice != nil || signal.ReferenceEndPrice != nil
 }
 
 func lockRecommendationAtMidWindow(

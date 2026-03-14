@@ -307,6 +307,65 @@ func TestDecodeStrictLLMResponseRejectsUnknownField(t *testing.T) {
 	}
 }
 
+func TestDecodeStrictLLMResponseAllowsMissingInvalidationConditions(t *testing.T) {
+	t.Parallel()
+
+	raw, err := decodeStrictLLMResponse(`{
+		"decision":"NO_TRADE",
+		"recommended_side":"NONE",
+		"confidence":0.1,
+		"expected_value":0,
+		"suggested_limit_price":0,
+		"suggested_size_shares":0,
+		"suggested_notional":0,
+		"reason_codes":["confidence_guard","edge_below_threshold"]
+	}`)
+	if err != nil {
+		t.Fatalf("expected decode success without invalidation_conditions, got: %v", err)
+	}
+	if len(raw.InvalidationConditions) != 0 {
+		t.Fatalf("expected empty invalidation conditions when omitted, got %d", len(raw.InvalidationConditions))
+	}
+}
+
+func TestEnsurePacketInvalidationConditionsFillsMissing(t *testing.T) {
+	t.Parallel()
+
+	market := UpDownMarket{
+		Asset:            "BTC",
+		WindowType:       Window5m,
+		TimeToEndSeconds: 120,
+	}
+	packet := LLMTradePacket{
+		Decision:               "NO_TRADE",
+		RecommendedSide:        "NONE",
+		InvalidationConditions: []string{},
+	}
+	ensurePacketInvalidationConditions(&packet, market)
+	if len(packet.InvalidationConditions) == 0 {
+		t.Fatalf("expected default invalidation conditions to be filled")
+	}
+}
+
+func TestEnsurePacketInvalidationConditionsSupplementsTradeSingleCondition(t *testing.T) {
+	t.Parallel()
+
+	market := UpDownMarket{
+		Asset:            "BTC",
+		WindowType:       Window5m,
+		TimeToEndSeconds: 120,
+	}
+	packet := LLMTradePacket{
+		Decision:               "BUY_UP",
+		RecommendedSide:        "UP",
+		InvalidationConditions: []string{"Cancel if edge disappears"},
+	}
+	ensurePacketInvalidationConditions(&packet, market)
+	if len(packet.InvalidationConditions) < 2 {
+		t.Fatalf("expected trade packet invalidation conditions to be supplemented to at least 2")
+	}
+}
+
 func TestValidateLLMResponseRawRejectsTradeWithInvalidPrice(t *testing.T) {
 	t.Parallel()
 
@@ -373,7 +432,7 @@ func TestSnapshotStabilityHardBlockMixedLowDriftAllowsLLM(t *testing.T) {
 	}
 }
 
-func TestSnapshotStabilityHardBlockNoDirectionalVotes(t *testing.T) {
+func TestSnapshotStabilityHardBlockNoDirectionalVotesDoesNotHardBlock(t *testing.T) {
 	t.Parallel()
 
 	stability := LLMSnapshotStability{
@@ -387,8 +446,8 @@ func TestSnapshotStabilityHardBlockNoDirectionalVotes(t *testing.T) {
 		AskDownDrift:   0.007,
 		BestEVDrift:    0.004,
 	}
-	if !snapshotStabilityHardBlock(stability) {
-		t.Fatalf("expected no-direction snapshot set to hard block")
+	if snapshotStabilityHardBlock(stability) {
+		t.Fatalf("expected no-direction snapshot set to avoid hard block")
 	}
 }
 
@@ -408,4 +467,63 @@ func TestSnapshotStabilityHardBlockTriggersOnHighDrift(t *testing.T) {
 	if !snapshotStabilityHardBlock(stability) {
 		t.Fatalf("expected high-drift mixed stability to hard block")
 	}
+}
+
+func TestSnapshotStabilityHardBlockMixedTwoSnapshotsHighEVDriftDoesNotHardBlock(t *testing.T) {
+	t.Parallel()
+
+	stability := LLMSnapshotStability{
+		SampleCount:    2,
+		Stable:         false,
+		UpVotes:        1,
+		DownVotes:      1,
+		ConsensusDrift: 0.02,
+		AskUpDrift:     0.01,
+		AskDownDrift:   0.01,
+		BestEVDrift:    0.03,
+	}
+	if snapshotStabilityHardBlock(stability) {
+		t.Fatalf("expected two-snapshot mixed stability to avoid hard block and rely on soft instability handling")
+	}
+}
+
+func TestSnapshotStabilityHardBlockReasonsNoSampleIncludesSingleSnapshot(t *testing.T) {
+	t.Parallel()
+
+	stability := LLMSnapshotStability{
+		SampleCount: 0,
+	}
+	reasons := snapshotStabilityHardBlockReasons(stability)
+	if !containsString(reasons, "single_snapshot_risk_reduced") {
+		t.Fatalf("expected single snapshot reason for empty sample set")
+	}
+	if !containsString(reasons, "snapshot_instability_hard_block") {
+		t.Fatalf("expected hard block reason to be present")
+	}
+}
+
+func TestSnapshotStabilityHardBlockReasonsMixedIncludesDisagreementOnlyWhenMixed(t *testing.T) {
+	t.Parallel()
+
+	stability := LLMSnapshotStability{
+		SampleCount: 2,
+		UpVotes:     1,
+		DownVotes:   1,
+	}
+	reasons := snapshotStabilityHardBlockReasons(stability)
+	if !containsString(reasons, "multi_snapshot_disagreement") {
+		t.Fatalf("expected mixed disagreement reason")
+	}
+	if containsString(reasons, "single_snapshot_risk_reduced") {
+		t.Fatalf("did not expect single snapshot reason for multi-sample stability")
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, v := range values {
+		if v == target {
+			return true
+		}
+	}
+	return false
 }

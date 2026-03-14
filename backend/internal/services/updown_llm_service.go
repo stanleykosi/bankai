@@ -49,6 +49,16 @@ var (
 		"reason_codes":            {},
 		"invalidation_conditions": {},
 	}
+	llmResponseRequiredKeys = map[string]struct{}{
+		"decision":              {},
+		"recommended_side":      {},
+		"confidence":            {},
+		"expected_value":        {},
+		"suggested_limit_price": {},
+		"suggested_size_shares": {},
+		"suggested_notional":    {},
+		"reason_codes":          {},
+	}
 )
 
 type UpDownLLMGenerateRequest struct {
@@ -592,59 +602,6 @@ func (s *UpDownLLMService) Generate(ctx context.Context, req UpDownLLMGenerateRe
 		}
 	}
 	calibration := s.getClosedLoopCalibration(ctx, *market)
-	stabilityHardBlock := snapshotStabilityHardBlock(stability)
-
-	if stabilityHardBlock {
-		packet := LLMTradePacket{
-			Slug:            market.Slug,
-			ConditionID:     market.ConditionID,
-			Asset:           market.Asset,
-			WindowType:      market.WindowType,
-			Decision:        "NO_TRADE",
-			RecommendedSide: "NONE",
-			Confidence:      0,
-			ExpectedValue:   0,
-			ReasonCodes: dedupeStrings([]string{
-				"snapshot_instability_guard",
-				"single_snapshot_risk_reduced",
-				"multi_snapshot_disagreement",
-				"snapshot_instability_hard_block",
-			}),
-			InvalidationConditions: defaultLLMInvalidations(*market, "NONE"),
-			EffectiveGuardBlocks: dedupeStrings(append(
-				computeEffectiveGuardBlocks(*market, snapshot.RiskFlags, alloraMeta, LLMContextFreshness{
-					SynthAgeSeconds:  snapshot.SynthAgeSeconds,
-					AlloraAgeSeconds: alloraAge,
-					MarketAgeSeconds: snapshot.MarketAgeSeconds,
-					ContextHash:      contextHash,
-				}, s.cfg, snapshot.Retrieval, stability),
-				"snapshot_instability",
-			)),
-			RiskFlags:         snapshot.RiskFlags,
-			AlloraProxy:       alloraMeta,
-			SnapshotStability: stability,
-			Freshness: LLMContextFreshness{
-				SynthAgeSeconds:  snapshot.SynthAgeSeconds,
-				AlloraAgeSeconds: alloraAge,
-				MarketAgeSeconds: snapshot.MarketAgeSeconds,
-				ContextHash:      contextHash,
-			},
-			Trace: LLMTraceMeta{
-				PromptHash:     hashHex("snapshot_stability_gate:" + contextHash),
-				Model:          "snapshot_stability_gate",
-				LatencyMs:      0,
-				GeneratedAt:    now,
-				CacheHit:       false,
-				SnapshotCount:  stability.SampleCount,
-				SnapshotStable: false,
-			},
-			GeneratedAt: now,
-		}
-		packet.Entry = computeEntryMeta(*market, *snapshot, packet, alloraMeta, calibration)
-		s.writePacketCache(ctx, cacheKey, latestKey, packet)
-		_ = s.persistPacket(ctx, *market, contextData, packet)
-		return &packet, nil
-	}
 
 	systemPrompt := upDownLLMSystemPrompt()
 	userPrompt := "RAG bundle follows. Use only this canonical context JSON and return valid JSON only:\n" + contextJSON
@@ -737,9 +694,7 @@ func (s *UpDownLLMService) Generate(ctx context.Context, req UpDownLLMGenerateRe
 	}
 	packet.Confidence = upDownClamp(packet.Confidence, 0, 1)
 
-	if len(packet.InvalidationConditions) == 0 {
-		packet.InvalidationConditions = defaultLLMInvalidations(*market, packet.RecommendedSide)
-	}
+	ensurePacketInvalidationConditions(&packet, *market)
 	if packet.ExpectedValue == 0 {
 		if packet.RecommendedSide == "DOWN" {
 			packet.ExpectedValue = snapshot.EVDown
@@ -1483,9 +1438,6 @@ func snapshotStabilityHardBlock(stability LLMSnapshotStability) bool {
 	if stability.SampleCount <= 0 {
 		return true
 	}
-	if stability.UpVotes == 0 && stability.DownVotes == 0 {
-		return true
-	}
 	if stability.ConsensusDrift > upDownLLMSnapshotDriftHardMax {
 		return true
 	}
@@ -1493,6 +1445,11 @@ func snapshotStabilityHardBlock(stability LLMSnapshotStability) bool {
 		return true
 	}
 	if stability.UpVotes > 0 && stability.DownVotes > 0 {
+		// Two-snapshot mode is intentionally jitter-tolerant at short window rollovers.
+		// Mixed votes here should degrade confidence, not hard-block execution.
+		if stability.SampleCount < 3 {
+			return false
+		}
 		if stability.BestEVDrift >= upDownLLMSnapshotEVHardMin {
 			return true
 		}
@@ -1504,6 +1461,29 @@ func snapshotStabilityHardBlock(stability LLMSnapshotStability) bool {
 		}
 	}
 	return false
+}
+
+func snapshotStabilityHardBlockReasons(stability LLMSnapshotStability) []string {
+	reasons := []string{
+		"snapshot_instability_guard",
+		"snapshot_instability_hard_block",
+	}
+	if stability.SampleCount <= 1 {
+		reasons = append(reasons, "single_snapshot_risk_reduced")
+	}
+	if stability.UpVotes > 0 && stability.DownVotes > 0 {
+		reasons = append(reasons, "multi_snapshot_disagreement")
+	}
+	if stability.ConsensusDrift > upDownLLMSnapshotDriftHardMax {
+		reasons = append(reasons, "snapshot_consensus_drift_hard")
+	}
+	if stability.AskUpDrift > upDownLLMSnapshotDriftHardMax || stability.AskDownDrift > upDownLLMSnapshotDriftHardMax {
+		reasons = append(reasons, "snapshot_quote_drift_hard")
+	}
+	if stability.UpVotes > 0 && stability.DownVotes > 0 && stability.SampleCount >= 3 && stability.BestEVDrift >= upDownLLMSnapshotEVHardMin {
+		reasons = append(reasons, "snapshot_ev_drift_hard")
+	}
+	return dedupeStrings(reasons)
 }
 
 func mergeSnapshotSeries(samples []llmIndependentSnapshot) *llmIndependentSnapshot {
@@ -2213,9 +2193,6 @@ func computeEffectiveGuardBlocks(
 	}
 	if retrieval.CorrectiveAction == "force_no_trade" {
 		blocks = append(blocks, "retrieval_quality_low")
-	}
-	if snapshotStabilityHardBlock(stability) {
-		blocks = append(blocks, "snapshot_instability_hard")
 	}
 	return dedupeStrings(blocks)
 }
@@ -3056,7 +3033,7 @@ func decodeStrictLLMResponse(rawContent string) (llmResponseRaw, error) {
 			return llmResponseRaw{}, fmt.Errorf("llm output has unknown field %q", key)
 		}
 	}
-	for key := range llmResponseSchemaKeys {
+	for key := range llmResponseRequiredKeys {
 		if _, ok := payload[key]; !ok {
 			return llmResponseRaw{}, fmt.Errorf("llm output missing required field %q", key)
 		}
@@ -3134,12 +3111,6 @@ func validateLLMResponseRaw(raw llmResponseRaw) error {
 		}
 		seenReasons[code] = struct{}{}
 	}
-	if len(raw.InvalidationConditions) == 0 {
-		return fmt.Errorf("llm invalidation_conditions is required")
-	}
-	if raw.Decision != "NO_TRADE" && len(raw.InvalidationConditions) < 2 {
-		return fmt.Errorf("llm invalidation_conditions requires at least 2 items for trade decisions")
-	}
 	for _, condition := range raw.InvalidationConditions {
 		trimmed := strings.TrimSpace(condition)
 		if trimmed == "" {
@@ -3178,6 +3149,20 @@ func normalizeLLMResponse(raw llmResponseRaw) LLMTradePacket {
 	}
 }
 
+func ensurePacketInvalidationConditions(packet *LLMTradePacket, market UpDownMarket) {
+	if packet == nil {
+		return
+	}
+	defaults := defaultLLMInvalidations(market, packet.RecommendedSide)
+	if len(packet.InvalidationConditions) == 0 {
+		packet.InvalidationConditions = defaults
+		return
+	}
+	if packet.Decision != "NO_TRADE" && len(packet.InvalidationConditions) < 2 {
+		packet.InvalidationConditions = dedupeStrings(append(packet.InvalidationConditions, defaults...))
+	}
+}
+
 func upDownLLMSystemPrompt() string {
 	return strings.TrimSpace(`
 You are Bankai UpDown LLM Engine.
@@ -3199,7 +3184,12 @@ Schema:
 
 Core objective:
 - Maximize risk-adjusted directional accuracy for the current market window.
-- Prefer abstention (NO_TRADE) over low-quality or ambiguous setups.
+- Default to an actionable side (BUY_UP or BUY_DOWN) when no hard block exists and at least one side has positive net edge after costs.
+- Use NO_TRADE only when hard gates fail or both sides are non-positive/invalid after penalties.
+- Treat this as a fast-moving relative-price market:
+  - Outcome is determined by end-window price versus start price.
+  - Use start_price, current_price, event_end_unix, and time_to_end_seconds to infer directional path-to-close.
+  - In short windows, momentum and volatility can dominate; reason explicitly about projected move by expiry.
 
 Hard constraints (must obey):
 1) Use only provided context JSON.
@@ -3210,6 +3200,7 @@ Hard constraints (must obey):
 6) Do not emit fields outside schema.
 7) For BUY decisions, suggested_limit_price must be in [0.01,0.99].
 8) For NO_TRADE, set recommended_side=NONE and size/notional to 0.
+9) Always provide invalidation_conditions with at least 2 concise items (even for NO_TRADE, phrase as "re-entry conditions").
 
 Data-source contract (explicit trust policy):
 - Context is assembled at generation-time from internal connectors:
@@ -3235,6 +3226,8 @@ Allora interpretation rules:
   - stale_soft: confidence penalty
   - stale_hard: hard NO_TRADE
 - For 5m windows, non-fresh Allora is not execution-grade.
+- For 5m windows with fresh Allora, treat Allora as a high-importance directional prior.
+- Use allora.network_inference and allora.confidence_interval_values/percentiles to sanity-check directional confidence and uncertainty.
 
 Deterministic baseline usage:
 - deterministic_baseline is not an override, but a parity anchor.
@@ -3264,11 +3257,14 @@ Step D: Disagreement and uncertainty control
 - If p_market, p_synth, p_model, p_lp materially disagree, reduce confidence sharply.
 - If evidence is stale, contradictory, or low-coverage, reduce confidence or abstain.
 - If volatility regime is high, require stronger net edge to trade.
+- Cross-model disagreement alone is not a hard NO_TRADE when one side still has clear positive net edge.
+- Snapshot instability is advisory context, not an automatic blocker by itself.
 
 Step E: Trade selection
 - Choose BUY_UP only if UP edge remains positive after spread/slippage/liquidity penalties.
 - Choose BUY_DOWN only if DOWN edge remains positive after spread/slippage/liquidity penalties.
 - If both edges are weak/negative/close, output NO_TRADE.
+- For very short remaining time, prefer the side whose probability/edge is supported by both recent direction (start->current) and Synth/Allora priors.
 
 Step F: Output discipline
 - reason_codes: concise, traceable to observed evidence; include at least 3 when trading, at least 2 when NO_TRADE.
@@ -3300,8 +3296,9 @@ Preferred reason_code taxonomy (use these whenever applicable):
 - boundary_guard
 
 Abstention policy:
-- When uncertain, stale, conflicted, or underconstrained, prefer NO_TRADE.
-- False positives are worse than missed trades for this system.
+- NO_TRADE should be rare and reserved for hard blocks or genuinely non-positive edge on both sides.
+- If one side has a clear positive edge with acceptable microstructure, choose that side with calibrated confidence/size.
+- Do not abstain only because snapshots disagree if market-state, Synth, and Allora still support a positive side edge.
 `)
 }
 

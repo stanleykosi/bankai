@@ -1362,25 +1362,13 @@ func TestBuildSignalDoesNotFetchSynthBeforeWindowStarts(t *testing.T) {
 	}
 }
 
-func TestBuildSignalClosedMarketUsesPersistedReferenceSnapshot(t *testing.T) {
+func TestBuildSignalClosedMarketUsesRedisReferenceSnapshot(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	if err := db.AutoMigrate(&models.Market{}); err != nil {
 		t.Fatalf("automigrate market: %v", err)
-	}
-	if err := db.Exec(`
-		CREATE TABLE updown_market_windows (
-			condition_id TEXT NOT NULL,
-			event_start_time DATETIME NOT NULL,
-			reference_start_price REAL,
-			reference_current_price REAL,
-			reference_end_price REAL,
-			signal_timestamp DATETIME
-		)
-	`).Error; err != nil {
-		t.Fatalf("create updown_market_windows: %v", err)
 	}
 
 	mini := miniredis.RunT(t)
@@ -1425,22 +1413,21 @@ func TestBuildSignalClosedMarketUsesPersistedReferenceSnapshot(t *testing.T) {
 		t.Fatalf("seed no price: %v", err)
 	}
 
-	persistedStart := 68000.0
-	persistedCurrent := 68042.0
+	cachedStart := 68000.0
+	cachedCurrent := 68042.0
 	signalTimestamp := end.Add(-20 * time.Second)
-	if err := db.Exec(`
-		INSERT INTO updown_market_windows (
-			condition_id, event_start_time, reference_start_price, reference_current_price, reference_end_price, signal_timestamp
-		) VALUES (?, ?, ?, ?, ?, ?)
-	`,
-		live.ConditionID,
-		start.UTC(),
-		persistedStart,
-		persistedCurrent,
-		nil,
-		signalTimestamp.UTC(),
-	).Error; err != nil {
-		t.Fatalf("insert persisted window snapshot: %v", err)
+	cachedSignal := UpDownSignal{
+		Slug:                  live.Slug,
+		ReferenceStartPrice:   &cachedStart,
+		ReferenceCurrentPrice: &cachedCurrent,
+		ReferenceUpdatedAt:    &signalTimestamp,
+	}
+	payload, err := json.Marshal(cachedSignal)
+	if err != nil {
+		t.Fatalf("marshal cached signal: %v", err)
+	}
+	if err := rdb.Set(ctx, upDownSignalCachePref+live.Slug, payload, time.Minute).Err(); err != nil {
+		t.Fatalf("seed cached signal: %v", err)
 	}
 
 	svc := &UpDownService{
@@ -1487,14 +1474,14 @@ func TestBuildSignalClosedMarketUsesPersistedReferenceSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build signal: %v", err)
 	}
-	if signal.ReferenceCurrentPrice == nil || *signal.ReferenceCurrentPrice != persistedCurrent {
-		t.Fatalf("expected reference current price from persisted snapshot, got %+v", signal.ReferenceCurrentPrice)
+	if signal.ReferenceCurrentPrice == nil || *signal.ReferenceCurrentPrice != cachedCurrent {
+		t.Fatalf("expected reference current price from redis snapshot, got %+v", signal.ReferenceCurrentPrice)
 	}
-	if signal.ReferenceEndPrice == nil || *signal.ReferenceEndPrice != persistedCurrent {
-		t.Fatalf("expected reference end price from persisted snapshot fallback, got %+v", signal.ReferenceEndPrice)
+	if signal.ReferenceEndPrice == nil || *signal.ReferenceEndPrice != cachedCurrent {
+		t.Fatalf("expected reference end price from redis snapshot fallback, got %+v", signal.ReferenceEndPrice)
 	}
 	if outcome, _ := resolveUpDownOutcome(signal); outcome == upDownOutcomePending {
-		t.Fatalf("expected closed signal to resolve with persisted reference snapshot")
+		t.Fatalf("expected closed signal to resolve with redis reference snapshot")
 	}
 }
 
@@ -2608,5 +2595,143 @@ func TestLockRecommendationAtMidWindowReleasesLockAfterWindowClose(t *testing.T)
 	}
 	if got.ID != current.ID || got.Decision != current.Decision {
 		t.Fatalf("expected current recommendation after close, got id=%s decision=%s", got.ID, got.Decision)
+	}
+}
+
+func TestLoadCachedSignalReferenceMiss(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	svc := &UpDownService{redis: rdb}
+
+	if _, ok := svc.loadCachedSignalReference(context.Background(), "btc-updown-5m-missing"); ok {
+		t.Fatalf("expected cache miss to return false")
+	}
+}
+
+func TestLoadCachedSignalReferenceHit(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	svc := &UpDownService{redis: rdb}
+
+	start := 70500.0
+	current := 70600.0
+	end := 70580.0
+	signal := UpDownSignal{
+		Slug:                  "btc-updown-5m-hit",
+		ReferenceStartPrice:   &start,
+		ReferenceCurrentPrice: &current,
+		ReferenceEndPrice:     &end,
+	}
+	payload, err := json.Marshal(signal)
+	if err != nil {
+		t.Fatalf("marshal signal: %v", err)
+	}
+	if err := rdb.Set(context.Background(), upDownSignalCachePref+signal.Slug, payload, time.Minute).Err(); err != nil {
+		t.Fatalf("seed redis signal: %v", err)
+	}
+
+	got, ok := svc.loadCachedSignalReference(context.Background(), signal.Slug)
+	if !ok {
+		t.Fatalf("expected cached signal reference hit")
+	}
+	if got.ReferenceStartPrice == nil || *got.ReferenceStartPrice != start {
+		t.Fatalf("expected start reference %f", start)
+	}
+	if got.ReferenceCurrentPrice == nil || *got.ReferenceCurrentPrice != current {
+		t.Fatalf("expected current reference %f", current)
+	}
+	if got.ReferenceEndPrice == nil || *got.ReferenceEndPrice != end {
+		t.Fatalf("expected end reference %f", end)
+	}
+}
+
+func TestLoadCachedSignalReferenceFallsBackToDurableReferenceSnapshot(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	svc := &UpDownService{redis: rdb}
+
+	slug := "btc-updown-5m-durable"
+	start := 70400.0
+	current := 70432.0
+	referenceTs := time.Now().UTC().Add(-10 * time.Second)
+	snapshot := upDownSignalReferenceSnapshot{
+		Slug:                  slug,
+		ConditionID:           "cond-durable",
+		ReferenceStartPrice:   &start,
+		ReferenceCurrentPrice: &current,
+		ReferenceUpdatedAt:    &referenceTs,
+		CapturedAt:            time.Now().UTC(),
+	}
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal durable snapshot: %v", err)
+	}
+	if err := rdb.Set(context.Background(), upDownSignalRefCachePref+slug, payload, time.Minute).Err(); err != nil {
+		t.Fatalf("seed durable redis snapshot: %v", err)
+	}
+
+	got, ok := svc.loadCachedSignalReference(context.Background(), slug)
+	if !ok {
+		t.Fatalf("expected durable reference snapshot fallback hit")
+	}
+	if got.ReferenceStartPrice == nil || *got.ReferenceStartPrice != start {
+		t.Fatalf("expected start reference %f", start)
+	}
+	if got.ReferenceCurrentPrice == nil || *got.ReferenceCurrentPrice != current {
+		t.Fatalf("expected current reference %f", current)
+	}
+	if got.ReferenceUpdatedAt == nil || !got.ReferenceUpdatedAt.Equal(referenceTs) {
+		t.Fatalf("expected reference updated at from durable snapshot")
+	}
+}
+
+func TestLoadCachedSignalReferenceFallsBackWhenPrimaryPayloadInvalid(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	svc := &UpDownService{redis: rdb}
+
+	slug := "btc-updown-5m-invalid-primary"
+	start := 70300.0
+	end := 70340.0
+	if err := rdb.Set(context.Background(), upDownSignalCachePref+slug, "{invalid-json", time.Minute).Err(); err != nil {
+		t.Fatalf("seed invalid hot cache payload: %v", err)
+	}
+	snapshot := upDownSignalReferenceSnapshot{
+		Slug:                slug,
+		ReferenceStartPrice: &start,
+		ReferenceEndPrice:   &end,
+		CapturedAt:          time.Now().UTC(),
+	}
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal durable snapshot: %v", err)
+	}
+	if err := rdb.Set(context.Background(), upDownSignalRefCachePref+slug, payload, time.Minute).Err(); err != nil {
+		t.Fatalf("seed durable redis snapshot: %v", err)
+	}
+
+	got, ok := svc.loadCachedSignalReference(context.Background(), slug)
+	if !ok {
+		t.Fatalf("expected fallback hit when primary payload is invalid")
+	}
+	if got.ReferenceStartPrice == nil || *got.ReferenceStartPrice != start {
+		t.Fatalf("expected start reference %f", start)
+	}
+	if got.ReferenceEndPrice == nil || *got.ReferenceEndPrice != end {
+		t.Fatalf("expected end reference %f", end)
+	}
+}
+
+func TestLoadCachedSignalReferenceRejectsInvalidPayload(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	svc := &UpDownService{redis: rdb}
+
+	slug := "btc-updown-5m-invalid"
+	if err := rdb.Set(context.Background(), upDownSignalCachePref+slug, "{invalid-json", time.Minute).Err(); err != nil {
+		t.Fatalf("seed invalid redis payload: %v", err)
+	}
+	if _, ok := svc.loadCachedSignalReference(context.Background(), slug); ok {
+		t.Fatalf("expected invalid payload to be rejected")
 	}
 }
