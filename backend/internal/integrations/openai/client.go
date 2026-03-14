@@ -53,12 +53,15 @@ type Client struct {
 }
 
 type ChatRequest struct {
-	Model          string           `json:"model"`
-	Messages       []Message        `json:"messages"`
-	Temperature    float64          `json:"temperature"`
-	MaxTokens      int              `json:"max_tokens,omitempty"`
-	ResponseFormat *ResponseFormat  `json:"response_format,omitempty"`
-	Reasoning      *ReasoningConfig `json:"reasoning,omitempty"`
+	Model            string           `json:"model"`
+	Messages         []Message        `json:"messages"`
+	Temperature      float64          `json:"temperature"`
+	TopP             *float64         `json:"top_p,omitempty"`
+	FrequencyPenalty *float64         `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64         `json:"presence_penalty,omitempty"`
+	MaxTokens        int              `json:"max_tokens,omitempty"`
+	ResponseFormat   *ResponseFormat  `json:"response_format,omitempty"`
+	Reasoning        *ReasoningConfig `json:"reasoning,omitempty"`
 }
 
 type ResponseFormat struct {
@@ -99,6 +102,21 @@ type Usage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+type AnalyzeOptions struct {
+	Temperature      *float64
+	TopP             *float64
+	FrequencyPenalty *float64
+	PresencePenalty  *float64
+	MaxTokens        int
+	ResponseFormat   *ResponseFormat
+	Reasoning        *ReasoningConfig
+}
+
+type AnalyzeResult struct {
+	Content string
+	Usage   Usage
+}
+
 func NewClient(cfg *config.Config) *Client {
 	baseURL := strings.TrimSpace(cfg.Services.OpenAIBaseURL)
 	if baseURL == "" {
@@ -131,14 +149,32 @@ func NewClient(cfg *config.Config) *Client {
 
 // Analyze sends a chat completion request and returns the first choice content.
 func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
+	result, err := c.AnalyzeWithOptions(ctx, systemPrompt, userPrompt, AnalyzeOptions{
+		Temperature: ptrFloat64(0.1),
+		ResponseFormat: &ResponseFormat{
+			Type: "json_object",
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	return result.Content, nil
+}
+
+func (c *Client) AnalyzeWithOptions(ctx context.Context, systemPrompt, userPrompt string, options AnalyzeOptions) (*AnalyzeResult, error) {
 	if c.apiKey == "" {
-		return "", fmt.Errorf("openai api key is not configured")
+		return nil, fmt.Errorf("openai api key is not configured")
 	}
 
 	systemPrompt = strings.TrimSpace(systemPrompt)
 	userPrompt = strings.TrimSpace(userPrompt)
 	if userPrompt == "" {
-		return "", fmt.Errorf("user prompt is required")
+		return nil, fmt.Errorf("user prompt is required")
+	}
+
+	temperature := 0.1
+	if options.Temperature != nil {
+		temperature = *options.Temperature
 	}
 
 	payload := ChatRequest{
@@ -147,13 +183,17 @@ func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},
 		},
-		Temperature: 0.1,
-		// Enforce JSON output format
-		ResponseFormat: &ResponseFormat{
-			Type: "json_object",
-		},
+		Temperature:      temperature,
+		TopP:             options.TopP,
+		FrequencyPenalty: options.FrequencyPenalty,
+		PresencePenalty:  options.PresencePenalty,
+		ResponseFormat:   options.ResponseFormat,
+		Reasoning:        options.Reasoning,
 	}
 	maxTokens := c.maxTokens
+	if options.MaxTokens > 0 {
+		maxTokens = options.MaxTokens
+	}
 	if maxTokens <= 0 {
 		maxTokens = defaultMaxTokens
 	}
@@ -172,7 +212,7 @@ func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (
 
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	var lastErr error
@@ -183,13 +223,13 @@ func (c *Client) Analyze(ctx context.Context, systemPrompt, userPrompt string) (
 		}
 		lastErr = err
 		if attempt >= maxAnalyzeTries || !isRetryableOpenAIError(err) {
-			return "", err
+			return nil, err
 		}
 		logger.Info("Retrying OpenAI request after error (attempt %d/%d): %v", attempt, maxAnalyzeTries, err)
 		time.Sleep(retryBaseDelay * time.Duration(attempt))
 	}
 
-	return "", lastErr
+	return nil, lastErr
 }
 
 // Model returns the model name being used by this client
@@ -206,43 +246,43 @@ func estimatePromptTokens(systemPrompt, userPrompt string) int {
 	return int(math.Ceil(float64(total) / 4.0))
 }
 
-func (c *Client) analyzeOnce(ctx context.Context, bodyBytes []byte) (string, error) {
+func (c *Client) analyzeOnce(ctx context.Context, bodyBytes []byte) (*AnalyzeResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewBuffer(bodyBytes))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("openai request failed: %w", err)
+		return nil, fmt.Errorf("openai request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
 		logger.Error("Failed to read OpenAI response body: %v | partial: %s", readErr, truncateForLog(string(respBody), 1000))
-		return "", fmt.Errorf("%w: %v", errOpenAIResponseRead, readErr)
+		return nil, fmt.Errorf("%w: %v", errOpenAIResponseRead, readErr)
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		logger.Error("OpenAI API error: %d - %s", resp.StatusCode, string(respBody))
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
-			return "", fmt.Errorf("%w: status %d", errOpenAIRetryable, resp.StatusCode)
+			return nil, fmt.Errorf("%w: status %d", errOpenAIRetryable, resp.StatusCode)
 		}
-		return "", fmt.Errorf("openai api returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("openai api returned status %d", resp.StatusCode)
 	}
 
 	var result ChatResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		logger.Error("Failed to decode OpenAI response: %v | raw: %s", err, string(respBody))
-		return "", fmt.Errorf("%w: %v", errOpenAIResponseDecode, err)
+		return nil, fmt.Errorf("%w: %v", errOpenAIResponseDecode, err)
 	}
 
 	if len(result.Choices) == 0 {
 		logger.Error("OpenAI response had no choices | raw: %s", string(respBody))
-		return "", fmt.Errorf("no choices returned from openai")
+		return nil, fmt.Errorf("no choices returned from openai")
 	}
 
 	// Extract ONLY the content field - never use reasoning tokens as content
@@ -271,12 +311,15 @@ func (c *Client) analyzeOnce(ctx context.Context, bodyBytes []byte) (string, err
 
 		// If truncated due to length, the model used all tokens for reasoning without generating content
 		if finishReason == "length" {
-			return "", fmt.Errorf("openai response truncated: model consumed all %d tokens in reasoning without generating content. Consider increasing max_tokens further", c.maxTokens)
+			return nil, fmt.Errorf("openai response truncated: model consumed all %d tokens in reasoning without generating content. Consider increasing max_tokens further", c.maxTokens)
 		}
-		return "", fmt.Errorf("openai response missing content (finish_reason: %s)", finishReason)
+		return nil, fmt.Errorf("openai response missing content (finish_reason: %s)", finishReason)
 	}
 
-	return content, nil
+	return &AnalyzeResult{
+		Content: content,
+		Usage:   result.Usage,
+	}, nil
 }
 
 func isRetryableOpenAIError(err error) bool {
@@ -313,4 +356,8 @@ func truncateForLog(s string, limit int) string {
 		return s
 	}
 	return string(runes[:limit]) + "...(truncated)"
+}
+
+func ptrFloat64(v float64) *float64 {
+	return &v
 }

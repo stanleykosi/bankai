@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   ArrowRight,
+  BrainCircuit,
   ChevronRight,
   Clock3,
   Gauge,
@@ -23,17 +24,26 @@ import { usePriceStream } from "@/hooks/usePriceStream";
 import { requestMarketStream } from "@/lib/market-data";
 import {
   createUpDownEventSource,
+  fetchUpDownLLMHealth,
+  fetchUpDownLLMPacket,
   fetchUpDownMarkets,
   fetchUpDownPerformance,
   fetchUpDownRecommendations,
   fetchUpDownSignal,
+  generateUpDownLLMPacket,
   logUpDownDecision,
 } from "@/lib/updown-api";
-import type { Recommendation, UpDownMarket, UpDownSignal } from "@/types";
+import type {
+  LLMTradePacket,
+  Recommendation,
+  UpDownMarket,
+  UpDownSignal,
+} from "@/types";
 import { cn } from "@/lib/utils";
 
 const ASSETS = ["ALL", "BTC", "ETH", "SOL", "XRP"] as const;
 const WINDOWS = ["all", "5m", "15m", "1h", "4h"] as const;
+const EXECUTION_SOURCES = ["llm", "deterministic"] as const;
 const PREFILL_DRIFT_BPS = 35;
 const STREAM_RETRY_BASE_MS = 3500;
 const STREAM_MAX_RETRIES = 5;
@@ -143,8 +153,6 @@ const isMarketActiveAt = (market: UpDownMarket, nowMs: number, anchorMs: number)
 };
 
 const formatRiskFlag = (value: string) => value.replaceAll("_", " ");
-const formatDiagCode = (value?: string) =>
-  !value ? "--" : value.replaceAll("_", " ");
 
 type RailLane = {
   key: string;
@@ -292,6 +300,7 @@ const impliedUpProbability = (up: number | undefined, down: number | undefined) 
 };
 
 export default function UpDownPage() {
+  const queryClient = useQueryClient();
   const [asset, setAsset] = useState<(typeof ASSETS)[number]>("ALL");
   const [windowType, setWindowType] = useState<(typeof WINDOWS)[number]>("all");
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
@@ -299,6 +308,8 @@ export default function UpDownPage() {
   const requestedStreamsRef = useRef<Set<string>>(new Set());
   const [prefill, setPrefill] = useState<TradeRecommendationPrefill | null>(null);
   const [prefillBlockReason, setPrefillBlockReason] = useState<string | null>(null);
+  const [executionSource, setExecutionSource] =
+    useState<(typeof EXECUTION_SOURCES)[number]>("llm");
   const [nowMs, setNowMs] = useState<number>(Date.now());
   const { augmentMarket } = usePriceStream();
 
@@ -339,6 +350,38 @@ export default function UpDownPage() {
     enabled: normalizedSelectedSlug !== null,
     refetchInterval: 2_500,
     staleTime: 2_000,
+  });
+
+  const llmPacketQuery = useQuery({
+    queryKey: ["updown-llm-packet", normalizedSelectedSlug],
+    queryFn: () => fetchUpDownLLMPacket(normalizedSelectedSlug as string),
+    enabled: normalizedSelectedSlug !== null,
+    refetchInterval: 5_000,
+    staleTime: 2_000,
+    retry: false,
+  });
+
+  const llmHealthQuery = useQuery({
+    queryKey: ["updown-llm-health"],
+    queryFn: () => fetchUpDownLLMHealth(),
+    refetchInterval: 30_000,
+    staleTime: 10_000,
+    retry: false,
+  });
+
+  const llmGenerateMutation = useMutation({
+    mutationFn: (payload: { slug: string; force_refresh?: boolean }) =>
+      generateUpDownLLMPacket(payload),
+    onSuccess: (packet: LLMTradePacket, variables) => {
+      const requestedSlug = normalizeSelectedSlug(variables.slug);
+      if (requestedSlug) {
+        queryClient.setQueryData(["updown-llm-packet", requestedSlug], packet);
+      }
+      const responseSlug = normalizeSelectedSlug(packet.slug);
+      if (responseSlug && responseSlug !== requestedSlug) {
+        queryClient.setQueryData(["updown-llm-packet", responseSlug], packet);
+      }
+    },
   });
 
   const markets = marketsQuery.data ?? [];
@@ -526,6 +569,13 @@ export default function UpDownPage() {
 
   const liveMarket = selectedMarket ? augmentMarket(selectedMarket.market) : null;
   const signalHasSynth = hasSynthProbabilities(selectedSignal);
+  const llmPacket = llmPacketQuery.data ?? null;
+  const llmPacketStale = useMemo(() => {
+    if (!llmPacket?.generated_at) return false;
+    const ts = toMillis(llmPacket.generated_at);
+    if (!ts) return true;
+    return nowMs - ts > 30_000;
+  }, [llmPacket?.generated_at, nowMs]);
   const livePMarketUp = useMemo(() => {
     if (!selectedMarket || !liveMarket) return selectedSignal?.p_market_up;
 
@@ -555,6 +605,113 @@ export default function UpDownPage() {
     !!prefillBlockReason;
 
   const [integrityFailure, setIntegrityFailure] = useState(false);
+
+  const llmUnsupportedReason = useMemo(() => {
+    if (!selectedMarket) return null;
+    const assetAllowed =
+      selectedMarket.asset.toUpperCase() === "BTC" ||
+      selectedMarket.asset.toUpperCase() === "ETH";
+    const windowAllowed =
+      selectedMarket.window_type === "5m" || selectedMarket.window_type === "15m";
+    if (!assetAllowed) return "LLM v1 supports BTC and ETH only.";
+    if (!windowAllowed) return "LLM v1 supports 5m and 15m windows only.";
+    return null;
+  }, [selectedMarket]);
+
+  const llmExecutionBlockedReason = useMemo(() => {
+    if (!selectedMarket || !selectedSignal) return "No active signal selected.";
+    if (llmUnsupportedReason) return llmUnsupportedReason;
+    if (!llmPacket) return "Generate LLM directional packet before execution.";
+    if (llmPacketStale) return "LLM packet is stale. Regenerate before execution.";
+    if (!llmPacket.entry) return "LLM entry gate missing. Regenerate packet.";
+    if (!llmPacket.entry.ready_to_bet) {
+      const reasons = (llmPacket.entry.gate_reasons ?? []).join(", ");
+      return reasons
+        ? `LLM entry gate blocked: ${reasons}`
+        : "LLM entry gate blocked for this window.";
+    }
+    if (llmPacket.effective_guard_blocks?.length) {
+      return `LLM guard blocks active: ${llmPacket.effective_guard_blocks.join(", ")}`;
+    }
+    if (llmPacket.decision === "NO_TRADE") {
+      return "LLM engine returned NO_TRADE for this window.";
+    }
+    return null;
+  }, [selectedMarket, selectedSignal, llmUnsupportedReason, llmPacket, llmPacketStale]);
+
+  const llmPrefill = useMemo((): TradeRecommendationPrefill | null => {
+    if (!selectedMarket || !llmPacket) return null;
+    const side = (llmPacket.recommended_side ?? "").toUpperCase();
+    if (llmPacket.decision === "NO_TRADE" || side === "NONE") return null;
+    if (side !== "UP" && side !== "DOWN") return null;
+    const outcomeIndex =
+      side === "UP" ? selectedMarket.outcome_index_up : selectedMarket.outcome_index_down;
+    const limitPrice = llmPacket.suggested_limit_price > 0 ? llmPacket.suggested_limit_price : undefined;
+    let sizeShares = llmPacket.suggested_size_shares > 0 ? llmPacket.suggested_size_shares : undefined;
+    if (
+      (!sizeShares || sizeShares <= 0) &&
+      llmPacket.suggested_notional > 0 &&
+      typeof limitPrice === "number" &&
+      limitPrice > 0
+    ) {
+      sizeShares = llmPacket.suggested_notional / limitPrice;
+    }
+    return {
+      side: "BUY",
+      outcomeIndex,
+      limitPrice,
+      sizeShares,
+      disabled: false,
+    };
+  }, [selectedMarket, llmPacket]);
+
+  const executionPolicy = llmHealthQuery.data?.execution_policy ?? "det_allowed";
+
+  const effectiveExecutionSource = useMemo<(typeof EXECUTION_SOURCES)[number]>(() => {
+    if (executionPolicy === "llm_only") {
+      return "llm";
+    }
+    if (executionSource === "deterministic" && !selectedRecommendation) {
+      return "llm";
+    }
+    return executionSource;
+  }, [executionPolicy, executionSource, selectedRecommendation]);
+
+  const executionBlockedReason = useMemo(() => {
+    if (executionPolicy === "llm_only" && effectiveExecutionSource === "deterministic") {
+      return "Backend policy enforces LLM-only execution.";
+    }
+    if (effectiveExecutionSource === "llm") {
+      return llmExecutionBlockedReason;
+    }
+    return null;
+  }, [executionPolicy, effectiveExecutionSource, llmExecutionBlockedReason]);
+
+  const executionDecision = useMemo(() => {
+    if (effectiveExecutionSource === "llm") {
+      return llmPacket?.decision ?? "NO_TRADE";
+    }
+    return selectedRecommendation?.decision ?? "NO_TRADE";
+  }, [effectiveExecutionSource, llmPacket?.decision, selectedRecommendation?.decision]);
+
+  const executionPreview = useMemo(() => {
+    if (effectiveExecutionSource === "llm") {
+      if (!llmPacket || !llmPrefill) return null;
+      return {
+        side: llmPacket.recommended_side,
+        limit: llmPrefill.limitPrice ?? llmPacket.suggested_limit_price,
+        size: llmPrefill.sizeShares ?? llmPacket.suggested_size_shares,
+      };
+    }
+    if (!selectedRecommendation || selectedRecommendation.prefill.disabled) {
+      return null;
+    }
+    return {
+      side: selectedRecommendation.recommended_side,
+      limit: selectedRecommendation.prefill.limit_price,
+      size: selectedRecommendation.prefill.size_shares,
+    };
+  }, [effectiveExecutionSource, llmPacket, llmPrefill, selectedRecommendation]);
 
   useEffect(() => {
     if (!rawIntegrityFailure) {
@@ -599,7 +756,7 @@ export default function UpDownPage() {
     setPrefillBlockReason(null);
   }, [selectedSlug]);
 
-  const applyRecommendation = (rec: Recommendation | null) => {
+  const applyDeterministicRecommendation = (rec: Recommendation | null) => {
     if (!rec || rec.prefill.disabled) return;
     setPrefillBlockReason(null);
     setPrefill({
@@ -618,13 +775,50 @@ export default function UpDownPage() {
     }).catch(() => undefined);
   };
 
-  const rejectRecommendation = (rec: Recommendation | null) => {
-    if (!rec) return;
+  const applyExecutionPrefill = () => {
+    if (!selectedMarket) return;
+    if (executionBlockedReason) return;
+
+    if (effectiveExecutionSource === "llm") {
+      if (!llmPacket || !llmPrefill) return;
+      setPrefillBlockReason(null);
+      setPrefill({
+        side: "BUY",
+        outcomeIndex: llmPrefill.outcomeIndex,
+        limitPrice: llmPrefill.limitPrice,
+        sizeShares: llmPrefill.sizeShares,
+        disabled: false,
+        applyToken: String(Date.now()),
+      });
+      void logUpDownDecision({
+        slug: selectedMarket.slug,
+        action: "manual_override",
+        chosen_side: llmPacket.recommended_side,
+        notes: `llm_prefill:${llmPacket.trace?.prompt_hash?.slice(0, 12) ?? "na"}`,
+      }).catch(() => undefined);
+      return;
+    }
+
+    applyDeterministicRecommendation(selectedRecommendation);
+  };
+
+  const rejectExecutionPrefill = () => {
+    if (!selectedMarket) return;
+    if (effectiveExecutionSource === "llm") {
+      void logUpDownDecision({
+        slug: selectedMarket.slug,
+        action: "manual_override",
+        chosen_side: llmPacket?.recommended_side,
+        notes: "llm_prefill_rejected",
+      }).catch(() => undefined);
+      return;
+    }
+    if (!selectedRecommendation) return;
     void logUpDownDecision({
-      slug: rec.slug,
-      recommendation_id: rec.id,
+      slug: selectedRecommendation.slug,
+      recommendation_id: selectedRecommendation.id,
       action: "rejected",
-      chosen_side: rec.recommended_side,
+      chosen_side: selectedRecommendation.recommended_side,
     }).catch(() => undefined);
   };
 
@@ -653,15 +847,27 @@ export default function UpDownPage() {
 
       if (event.key.toLowerCase() === "p") {
         event.preventDefault();
-        if (selectedRecommendation && !selectedRecommendation.prefill.disabled) {
-          applyRecommendation(selectedRecommendation);
+        if (
+          (effectiveExecutionSource === "llm"
+            ? Boolean(llmPrefill)
+            : Boolean(selectedRecommendation && !selectedRecommendation.prefill.disabled)) &&
+          !executionBlockedReason
+        ) {
+          applyExecutionPrefill();
         }
       }
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [normalizedSelectedSlug, railActiveMarkets, selectedRecommendation]);
+  }, [
+    normalizedSelectedSlug,
+    railActiveMarkets,
+    selectedRecommendation,
+    executionBlockedReason,
+    effectiveExecutionSource,
+    llmPrefill,
+  ]);
 
   return (
     <div className="mx-auto flex w-full max-w-[1660px] flex-col gap-5 px-4 py-6">
@@ -712,6 +918,8 @@ export default function UpDownPage() {
             void marketsQuery.refetch();
             void signalQuery.refetch();
             void recommendationsQuery.refetch();
+            void llmPacketQuery.refetch();
+            void llmHealthQuery.refetch();
           }}
         >
           <RefreshCw className="mr-1 h-3 w-3" />
@@ -807,39 +1015,58 @@ export default function UpDownPage() {
                       </div>
                       <div className="text-right">
                         <span className="font-mono text-xs text-foreground">
-                          {selectedRecommendation?.decision ?? "NO_TRADE"}
+                          DET: {selectedRecommendation?.decision ?? "NO_TRADE"}
                         </span>
-                        {recommendationLockedAt ? (
-                          <div className="text-[10px] text-muted-foreground">
-                            Locked {recommendationLockedAt.toLocaleTimeString()}
-                          </div>
-                        ) : null}
+                        <div className="text-[10px] text-muted-foreground">
+                          LLM: {llmPacket?.decision ?? "NOT_GENERATED"}
+                        </div>
                       </div>
                     </div>
                     <div className="mt-2 text-sm font-semibold text-foreground">
                       {selectedMarket.market?.title || selectedMarket.slug}
                     </div>
-                    <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-3 2xl:grid-cols-5">
-                      <Metric label="P_Market" value={pct(livePMarketUp)} />
-                      <Metric label="P_Synth" value={pct(selectedSignal.p_synth_up)} />
-                      <Metric label="P_Model" value={pct(selectedSignal.p_model_up)} />
-                      <Metric label="P_LP" value={pct(selectedSignal.p_lp_up)} />
+                    <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-3">
                       <Metric
-                        label="P_Final"
-                        value={signalHasSynth ? pct(selectedSignal.p_final_up) : "--"}
-                        accent
+                        label="Start Price"
+                        value={price(selectedSignal.reference_start_price)}
+                        accent={startSnapshotMissing}
+                      />
+                      <Metric
+                        label="Current Price"
+                        value={price(selectedSignal.reference_current_price)}
+                      />
+                      <Metric
+                        label="End Price"
+                        value={
+                          typeof selectedSignal.reference_end_price === "number"
+                            ? price(selectedSignal.reference_end_price)
+                            : isMarketActiveAt(selectedMarket, nowMs, marketAnchorMs)
+                              ? "Pending"
+                              : "--"
+                        }
+                      />
+                      <Metric
+                        label="Window Start"
+                        value={formatClock(selectedMarket.event_start_time)}
+                      />
+                      <Metric
+                        label="Window End"
+                        value={formatClock(selectedMarket.event_end_time)}
+                      />
+                      <Metric
+                        label="Ref Age"
+                        value={
+                          referenceAgeSeconds === null
+                            ? "--"
+                            : referenceAgeSeconds < 1
+                              ? "<1s"
+                              : `${referenceAgeSeconds}s`
+                        }
                       />
                     </div>
-                    {typeof selectedSignal.p_model_up !== "number" ? (
+                    {startSnapshotMissing ? (
                       <p className="mt-2 text-[11px] text-amber-300">
-                        Model unavailable: {formatDiagCode(selectedSignal.model_diagnostic_code)}
-                        {selectedSignal.model_diagnostic_detail
-                          ? ` (${formatDiagCode(selectedSignal.model_diagnostic_detail)})`
-                          : ""}
-                      </p>
-                    ) : selectedSignal.model_diagnostic_detail ? (
-                      <p className="mt-2 text-[11px] text-muted-foreground">
-                        Model note: {formatDiagCode(selectedSignal.model_diagnostic_detail)}
+                        Start snapshot is missing after window open. Execution should stay guarded.
                       </p>
                     ) : null}
                   </div>
@@ -847,89 +1074,34 @@ export default function UpDownPage() {
                   <div className="grid gap-3 2xl:grid-cols-2">
                     <div className="space-y-3">
                       <div className="rounded-md border border-border/60 bg-background/40 p-3">
-                        <div className="mb-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-                          Edge + Confidence
-                        </div>
-                        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-                          <Metric label="EV Up" value={signalHasSynth ? money(selectedSignal.ev_up) : "--"} />
-                          <Metric
-                            label="EV Down"
-                            value={signalHasSynth ? money(selectedSignal.ev_down) : "--"}
-                          />
-                          <Metric label="EV Gate" value={money(selectedSignal.ev_min_threshold)} />
-                          <Metric label="Confidence" value={pct(selectedSignal.confidence)} />
-                        </div>
-                        <div className="mt-2 rounded border border-border/50 bg-background/30 px-2.5 py-2">
-                          <div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-                            Regime
-                          </div>
-                          <div className="mt-1 text-sm font-semibold text-foreground">
-                            {selectedSignal.regime || "--"}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="space-y-3">
-                      <div className="rounded-md border border-border/60 bg-background/40 p-3">
-                        <div className="mb-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-                          Oracle Reference
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <Metric
-                            label="Start Snapshot"
-                            value={price(selectedSignal.reference_start_price)}
-                            accent={startSnapshotMissing}
-                          />
-                          <Metric label="Oracle Now" value={price(selectedSignal.reference_current_price)} />
-                          <Metric
-                            label="End Price"
-                            value={
-                              typeof selectedSignal.reference_end_price === "number"
-                                ? price(selectedSignal.reference_end_price)
-                                : isMarketActiveAt(selectedMarket, nowMs, marketAnchorMs)
-                                  ? "Pending"
-                                  : "--"
-                            }
-                          />
-                          <Metric
-                            label="Ref Age"
-                            value={
-                              referenceAgeSeconds === null
-                                ? "--"
-                                : referenceAgeSeconds < 1
-                                  ? "<1s"
-                                  : `${referenceAgeSeconds}s`
-                            }
-                          />
-                          <Metric label="Window Start" value={formatClock(selectedMarket.event_start_time)} />
-                          <Metric label="Window End" value={formatClock(selectedMarket.event_end_time)} />
-                        </div>
-                        {startSnapshotMissing ? (
-                          <p className="mt-2 text-[11px] text-amber-300">
-                            Start snapshot is missing after window open. Execution should stay guarded.
-                          </p>
-                        ) : null}
-                      </div>
-
-                      <div className="rounded-md border border-border/60 bg-background/40 p-3 text-xs">
                         <div className="mb-2 flex items-center justify-between">
-                          <span className="font-mono uppercase tracking-wide text-muted-foreground">
-                            Recommendation
+                          <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                            Deterministic Engine
                           </span>
-                          <span className="font-mono text-foreground">
+                          <span className="font-mono text-[11px] text-foreground">
                             {selectedRecommendation?.decision ?? "NO_TRADE"}
                           </span>
                         </div>
-                        {recommendationLockedAt ? (
-                          <p className="mb-2 text-[11px] text-primary">
-                            Mid-window recommendation locked for execution stability.
-                          </p>
-                        ) : null}
-                        <p className="text-muted-foreground">
-                          {selectedRecommendation?.reason_codes?.join(" · ") ||
+                        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+                          <Metric label="P_Market" value={pct(livePMarketUp)} />
+                          <Metric
+                            label="P_Final"
+                            value={signalHasSynth ? pct(selectedSignal.p_final_up) : "--"}
+                            accent
+                          />
+                          <Metric
+                            label="EV"
+                            value={money(selectedRecommendation?.expected_value)}
+                          />
+                          <Metric
+                            label="Confidence"
+                            value={pct(selectedRecommendation?.confidence)}
+                          />
+                        </div>
+                        <div className="mt-2 rounded border border-border/50 bg-background/30 p-2 text-[11px] text-muted-foreground">
+                          {(selectedRecommendation?.reason_codes ?? []).join(" · ") ||
                             "No reason codes available."}
-                        </p>
+                        </div>
                         <div className="mt-2 flex flex-wrap gap-1">
                           {activeRiskFlags.length ? (
                             activeRiskFlags.map((flag) => (
@@ -946,6 +1118,200 @@ export default function UpDownPage() {
                             </span>
                           )}
                         </div>
+                        {recommendationLockedAt ? (
+                          <p className="mt-2 text-[11px] text-primary">
+                            Mid-window recommendation locked for execution stability.
+                          </p>
+                        ) : null}
+                        <div className="mt-2 rounded border border-border/50 bg-background/30 px-2.5 py-2">
+                          <div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                            Regime
+                          </div>
+                          <div className="mt-1 text-sm font-semibold text-foreground">
+                            {selectedSignal.regime || "--"}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="rounded-md border border-border/60 bg-background/40 p-3">
+                        <div className="mb-2 flex items-center justify-between">
+                          <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                            LLM Engine
+                          </span>
+                          <span className="font-mono text-[11px] text-foreground">
+                            {llmPacket?.decision ?? "NOT_GENERATED"}
+                          </span>
+                        </div>
+                        <div className="mb-2 flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            className="h-7 px-3 font-mono text-[10px]"
+                            disabled={
+                              !normalizedSelectedSlug ||
+                              llmGenerateMutation.isPending ||
+                              Boolean(llmUnsupportedReason)
+                            }
+                            onClick={() => {
+                              if (!normalizedSelectedSlug) return;
+                              llmGenerateMutation.mutate({
+                                slug: normalizedSelectedSlug,
+                                force_refresh: false,
+                              });
+                            }}
+                          >
+                            <BrainCircuit className="mr-1 h-3.5 w-3.5" />
+                            {llmGenerateMutation.isPending ? "Generating..." : "Generate"}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-3 font-mono text-[10px]"
+                            disabled={
+                              !normalizedSelectedSlug ||
+                              llmGenerateMutation.isPending ||
+                              Boolean(llmUnsupportedReason)
+                            }
+                            onClick={() => {
+                              if (!normalizedSelectedSlug) return;
+                              llmGenerateMutation.mutate({
+                                slug: normalizedSelectedSlug,
+                                force_refresh: true,
+                              });
+                            }}
+                          >
+                            Force Refresh
+                          </Button>
+                        </div>
+                        {llmGenerateMutation.isError ? (
+                          <p className="mb-2 text-[11px] text-destructive">
+                            {llmGenerateMutation.error instanceof Error
+                              ? llmGenerateMutation.error.message
+                              : "Failed to generate LLM packet."}
+                          </p>
+                        ) : null}
+                        {llmUnsupportedReason ? (
+                          <p className="mb-2 text-[11px] text-amber-300">{llmUnsupportedReason}</p>
+                        ) : null}
+                        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+                          <Metric label="Side" value={llmPacket?.recommended_side ?? "--"} />
+                          <Metric label="Confidence" value={pct(llmPacket?.confidence)} />
+                          <Metric label="EV" value={money(llmPacket?.expected_value)} />
+                          <Metric
+                            label="Allora"
+                            value={
+                              llmPacket?.allora_proxy?.proxy_status
+                                ? llmPacket.allora_proxy.proxy_status.toUpperCase()
+                                : "--"
+                            }
+                          />
+                        </div>
+                        <div className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-4">
+                          <Metric
+                            label="Ready"
+                            value={
+                              llmPacket?.entry
+                                ? llmPacket.entry.ready_to_bet
+                                  ? "YES"
+                                  : "NO"
+                                : "--"
+                            }
+                            accent={Boolean(llmPacket?.entry?.ready_to_bet)}
+                          />
+                          <Metric
+                            label="Entry Score"
+                            value={
+                              typeof llmPacket?.entry?.entry_score === "number"
+                                ? pct(llmPacket.entry.entry_score)
+                                : "--"
+                            }
+                          />
+                          <Metric
+                            label="LB90"
+                            value={
+                              typeof llmPacket?.entry?.confidence_lb90 === "number"
+                                ? pct(llmPacket.entry.confidence_lb90)
+                                : "--"
+                            }
+                          />
+                          <Metric
+                            label="LB95"
+                            value={
+                              typeof llmPacket?.entry?.confidence_lb95 === "number"
+                                ? pct(llmPacket.entry.confidence_lb95)
+                                : "--"
+                            }
+                          />
+                        </div>
+                        <div className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-4">
+                          <Metric
+                            label="Sharpe (Side)"
+                            value={
+                              typeof llmPacket?.entry?.sharpe_chosen_side === "number"
+                                ? llmPacket.entry.sharpe_chosen_side.toFixed(3)
+                                : "--"
+                            }
+                          />
+                          <Metric
+                            label="Sharpe UP"
+                            value={
+                              typeof llmPacket?.entry?.sharpe_up === "number"
+                                ? llmPacket.entry.sharpe_up.toFixed(3)
+                                : "--"
+                            }
+                          />
+                          <Metric
+                            label="Sharpe DOWN"
+                            value={
+                              typeof llmPacket?.entry?.sharpe_down === "number"
+                                ? llmPacket.entry.sharpe_down.toFixed(3)
+                                : "--"
+                            }
+                          />
+                          <Metric
+                            label="Edge (Side)"
+                            value={
+                              typeof llmPacket?.entry?.edge_chosen_side === "number"
+                                ? pct(llmPacket.entry.edge_chosen_side)
+                                : "--"
+                            }
+                          />
+                        </div>
+                        {llmPacket?.entry?.gate_reasons?.length ? (
+                          <div className="mt-2 rounded border border-border/50 bg-background/30 p-2 text-[11px] text-muted-foreground">
+                            {llmPacket.entry.gate_reasons.join(" · ")}
+                          </div>
+                        ) : null}
+                        <div className="mt-2 rounded border border-border/50 bg-background/30 p-2 text-[11px] text-muted-foreground">
+                          {(llmPacket?.reason_codes ?? []).join(" · ") ||
+                            "No LLM packet generated yet."}
+                        </div>
+                        <div className="mt-2 grid grid-cols-2 gap-2">
+                          <Metric
+                            label="Context Hash"
+                            value={llmPacket?.freshness?.context_hash?.slice(0, 10) ?? "--"}
+                          />
+                          <Metric
+                            label="Allora Age"
+                            value={
+                              typeof llmPacket?.freshness?.allora_age_seconds === "number"
+                                ? `${llmPacket.freshness.allora_age_seconds}s`
+                                : "--"
+                            }
+                          />
+                        </div>
+                        {llmExecutionBlockedReason ? (
+                          <p className="mt-2 text-[11px] text-amber-300">
+                            {llmExecutionBlockedReason}
+                          </p>
+                        ) : null}
+                        <p className="mt-2 text-[10px] text-muted-foreground">
+                          LLM health:{" "}
+                        {llmHealthQuery.data?.enabled
+                            ? `online · cache ${llmHealthQuery.data.cache_ttl_seconds}s · policy ${executionPolicy}`
+                            : "offline"}
+                        </p>
                       </div>
                     </div>
                   </div>
@@ -1004,15 +1370,51 @@ export default function UpDownPage() {
                       Strategy Action
                     </span>
                     <span className="font-semibold">
-                      {selectedRecommendation?.decision ?? "NO_TRADE"}
+                      {executionDecision}
                     </span>
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Source
+                    </span>
+                    <div className="inline-flex rounded border border-border/60 bg-background/30 p-0.5">
+                      <Button
+                        size="sm"
+                        variant={executionSource === "llm" ? "default" : "ghost"}
+                        className="h-6 px-2 font-mono text-[10px]"
+                        onClick={() => setExecutionSource("llm")}
+                      >
+                        LLM
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={executionSource === "deterministic" ? "default" : "ghost"}
+                        className="h-6 px-2 font-mono text-[10px]"
+                        onClick={() => setExecutionSource("deterministic")}
+                        disabled={!selectedRecommendation || executionPolicy === "llm_only"}
+                      >
+                        DET
+                      </Button>
+                    </div>
+                    {executionSource !== effectiveExecutionSource ? (
+                      <span className="text-[10px] text-amber-300">
+                        {executionPolicy === "llm_only"
+                          ? "Backend policy set to LLM-only."
+                          : "DET unavailable, using LLM."}
+                      </span>
+                    ) : null}
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <Button
                       size="sm"
                       className="h-7 px-3 font-mono text-[10px]"
-                      onClick={() => applyRecommendation(selectedRecommendation)}
-                      disabled={!selectedRecommendation || selectedRecommendation.prefill.disabled}
+                      onClick={applyExecutionPrefill}
+                      disabled={
+                        (effectiveExecutionSource === "llm"
+                          ? !llmPrefill
+                          : !selectedRecommendation || selectedRecommendation.prefill.disabled) ||
+                        Boolean(executionBlockedReason)
+                      }
                     >
                       Apply Prefill
                       <ArrowRight className="ml-1 h-3 w-3" />
@@ -1021,12 +1423,20 @@ export default function UpDownPage() {
                       size="sm"
                       variant="outline"
                       className="h-7 px-3 font-mono text-[10px]"
-                      onClick={() => rejectRecommendation(selectedRecommendation)}
-                      disabled={!selectedRecommendation}
+                      onClick={rejectExecutionPrefill}
+                      disabled={
+                        effectiveExecutionSource === "llm"
+                          ? !llmPacket
+                          : !selectedRecommendation
+                      }
                     >
                       Reject
                     </Button>
-                    {selectedRecommendation?.prefill?.disabled_why ? (
+                    {executionBlockedReason ? (
+                      <span className="text-[11px] text-amber-300">{executionBlockedReason}</span>
+                    ) : null}
+                    {effectiveExecutionSource === "deterministic" &&
+                    selectedRecommendation?.prefill?.disabled_why ? (
                       <span className="text-[11px] text-amber-300">
                         {selectedRecommendation.prefill.disabled_why}
                       </span>
@@ -1037,16 +1447,16 @@ export default function UpDownPage() {
                       </span>
                     ) : null}
                   </div>
-                  {selectedRecommendation && !selectedRecommendation.prefill.disabled ? (
+                  {executionPreview ? (
                     <div className="mt-2 grid grid-cols-3 gap-2 rounded border border-border/50 bg-background/50 p-2 text-[10px] font-mono text-muted-foreground">
                       <span>
-                        Side: {selectedRecommendation.recommended_side}
+                        Side: {executionPreview.side}
                       </span>
                       <span>
-                        Limit: {selectedRecommendation.prefill.limit_price.toFixed(3)}
+                        Limit: {typeof executionPreview.limit === "number" ? executionPreview.limit.toFixed(3) : "--"}
                       </span>
                       <span>
-                        Size: {selectedRecommendation.prefill.size_shares.toFixed(2)}
+                        Size: {typeof executionPreview.size === "number" ? executionPreview.size.toFixed(2) : "--"}
                       </span>
                     </div>
                   ) : null}
@@ -1058,6 +1468,7 @@ export default function UpDownPage() {
                   recommendationPrefill={prefill}
                   externalBlockReason={
                     prefillBlockReason ??
+                    executionBlockedReason ??
                     (staleSignal
                       ? "Signal feed is stale. Trading is disabled until a fresh signal arrives."
                       : selectedSignal?.risk_flags?.kill_switch

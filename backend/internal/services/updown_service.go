@@ -1115,6 +1115,15 @@ func (s *UpDownService) LogDecision(ctx context.Context, userID string, req UpDo
 	default:
 		return nil, fmt.Errorf("%w: invalid action", ErrInvalidUpDownDecisionRequest)
 	}
+	if upDownExecutionSourcePolicy(s.cfg) == "llm_only" {
+		recID := strings.TrimSpace(req.RecommendationID)
+		if recID != "" && (req.Action == "accepted" || req.Action == "placed") {
+			notes := strings.ToLower(strings.TrimSpace(req.Notes))
+			if !strings.Contains(notes, "llm_prefill") {
+				return nil, fmt.Errorf("%w: deterministic execution is disabled by backend policy", ErrInvalidUpDownDecisionRequest)
+			}
+		}
+	}
 
 	var row UpDownDecisionLog
 	err := s.db.WithContext(ctx).Raw(`
@@ -2739,6 +2748,11 @@ func buildRecommendation(
 		}
 		prefill.DisabledWhy = disabledReason
 	}
+	if upDownExecutionSourcePolicy(cfg) == "llm_only" {
+		prefill.Disabled = true
+		prefill.DisabledWhy = "Backend execution policy is llm_only; deterministic prefill is disabled."
+		reasonCodes = append(reasonCodes, "execution_policy_llm_only")
+	}
 	if flags.ReadOnly {
 		prefill.Disabled = true
 		prefill.DisabledWhy = "Read-only mode enabled."
@@ -2796,6 +2810,20 @@ func noTradeCutoffForWindow(window UpDownWindowType, cfg *config.Config) int {
 		return maxInt(cfg.Services.UpDownNoTradeCutoff4hSeconds, 0)
 	default:
 		return 60
+	}
+}
+
+func upDownExecutionSourcePolicy(cfg *config.Config) string {
+	if cfg == nil {
+		return "det_allowed"
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Services.UpDownExecutionSourcePolicy)) {
+	case "llm_only":
+		return "llm_only"
+	case "llm_preferred":
+		return "llm_preferred"
+	default:
+		return "det_allowed"
 	}
 }
 

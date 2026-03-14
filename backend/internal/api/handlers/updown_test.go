@@ -20,7 +20,7 @@ func TestUpDownStreamDisabledReturnsNotFound(t *testing.T) {
 		nil,
 		nil,
 	)
-	handler := NewUpDownHandler(svc)
+	handler := NewUpDownHandler(svc, nil)
 
 	app := fiber.New()
 	app.Get("/api/v1/updown/stream", handler.Stream)
@@ -43,7 +43,7 @@ func TestUpDownLogDecisionDatabaseErrorReturnsServerError(t *testing.T) {
 		nil,
 		nil,
 	)
-	handler := NewUpDownHandler(svc)
+	handler := NewUpDownHandler(svc, nil)
 
 	app := fiber.New()
 	app.Post("/api/v1/updown/decisions", func(c *fiber.Ctx) error {
@@ -75,7 +75,7 @@ func TestUpDownLogDecisionValidationErrorReturnsBadRequest(t *testing.T) {
 		nil,
 		nil,
 	)
-	handler := NewUpDownHandler(svc)
+	handler := NewUpDownHandler(svc, nil)
 
 	app := fiber.New()
 	app.Post("/api/v1/updown/decisions", func(c *fiber.Ctx) error {

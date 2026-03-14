@@ -1,0 +1,220 @@
+package services
+
+import (
+	"testing"
+	"time"
+
+	"github.com/bankai-project/backend/internal/config"
+	"github.com/bankai-project/backend/internal/integrations/allora"
+)
+
+func TestProxyAlloraProbability15mStatusTransitions(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		Services: config.ServicesConfig{
+			UpDownLLMAlloraSoftLagSeconds: 380,
+			UpDownLLMAlloraHardLagSeconds: 440,
+		},
+	}
+	svc := &UpDownLLMService{cfg: cfg}
+
+	now := time.Now().UTC()
+	market := &UpDownMarket{
+		WindowType:     Window15m,
+		EventStartTime: now.Add(-6 * time.Minute),
+		EventEndTime:   now.Add(9 * time.Minute),
+	}
+
+	fresh := svc.proxyAlloraProbability(market, 0.61, 45, now)
+	if fresh.ProxyStatus != "fresh" {
+		t.Fatalf("expected fresh, got %s", fresh.ProxyStatus)
+	}
+	soft := svc.proxyAlloraProbability(market, 0.61, 400, now)
+	if soft.ProxyStatus != "stale_soft" {
+		t.Fatalf("expected stale_soft, got %s", soft.ProxyStatus)
+	}
+	hard := svc.proxyAlloraProbability(market, 0.61, 500, now)
+	if hard.ProxyStatus != "stale_hard" {
+		t.Fatalf("expected stale_hard, got %s", hard.ProxyStatus)
+	}
+	if fresh.ProxyP15 < 0.01 || fresh.ProxyP15 > 0.99 {
+		t.Fatalf("proxy probability out of bounds: %.4f", fresh.ProxyP15)
+	}
+}
+
+func TestBuildLLMContextHashDeterministic(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		Services: config.ServicesConfig{
+			UpDownLLMContextDecimals: 6,
+		},
+	}
+	svc := &UpDownLLMService{cfg: cfg}
+	now := time.Now().UTC()
+	start := now.Add(-2 * time.Minute)
+	end := start.Add(5 * time.Minute)
+	refStart := 3000.1234567
+	refNow := 3001.998877
+	pMarket := 0.58
+	pSynth := 0.61
+	pModel := 0.6
+	pLP := 0.57
+
+	market := UpDownMarket{
+		Slug:                 "eth-updown-5m-1",
+		ConditionID:          "0xabc",
+		Asset:                "ETH",
+		WindowType:           Window5m,
+		ResolutionSourceType: ResolutionSourceChainlink,
+		EventStartTime:       start,
+		EventEndTime:         end,
+		TimeToEndSeconds:     180,
+	}
+	snapshot := llmIndependentSnapshot{
+		Timestamp:             now,
+		MarketAgeSeconds:      5,
+		SynthAgeSeconds:       7,
+		ReferenceStartPrice:   &refStart,
+		ReferenceCurrentPrice: &refNow,
+		ReferenceSource:       "synth",
+		PMarketUp:             &pMarket,
+		PSynthUp:              &pSynth,
+		PModelUp:              &pModel,
+		PLPUp:                 &pLP,
+		EVUp:                  0.01234,
+		EVDown:                0.0012,
+		EVMinThreshold:        0.01,
+		Confidence:            0.74,
+		Regime:                "volatile",
+		ExecutableAskUp:       0.51,
+		ExecutableAskDown:     0.49,
+		ExecutableBidUp:       0.5,
+		ExecutableBidDown:     0.48,
+		SpreadUp:              0.01,
+		SpreadDown:            0.01,
+		ExpectedSlippage:      0.003,
+		DepthImbalance:        0.12,
+		UpBuyDepth: llmDepthEstimate{
+			RequestedSize:         15,
+			FillableSize:          12,
+			EstimatedAveragePrice: 0.51,
+			EstimatedTotalValue:   6.12,
+		},
+		DownBuyDepth: llmDepthEstimate{
+			RequestedSize:         15,
+			FillableSize:          13,
+			EstimatedAveragePrice: 0.49,
+			EstimatedTotalValue:   6.37,
+		},
+		VolatilityAverageForecast: 78,
+		VolatilityAveragePast:     66,
+		RiskFlags: UpDownRiskFlags{
+			HighVolatility: true,
+		},
+		Retrieval: llmRetrievalBundle{
+			StrategyVersion:  "rag-v1.3",
+			RankingPolicy:    "freshness_weighted_reliability_rank",
+			CorrectiveAction: "none",
+			QualityScore:     0.8,
+			Evidence: []llmRetrievalEvidence{
+				{Source: "market_microstructure", Status: "fresh", AgeSeconds: 5, Reliability: 0.9, Coverage: 0.9, RetrievalScore: 0.81, FreshnessWeight: 0.95},
+			},
+		},
+	}
+	alloraInf := &allora.PriceInference{
+		TopicID:   "13",
+		Timestamp: now.Add(-20 * time.Second),
+	}
+	meta := AlloraProxyMeta{
+		RawP5:       0.59,
+		SmoothedP5:  0.59,
+		ProxyP15:    0.59,
+		AgeSeconds:  20,
+		ProxyStatus: "fresh",
+	}
+	stability := LLMSnapshotStability{
+		SampleCount:      2,
+		Stable:           true,
+		UpVotes:          2,
+		DirectionSummary: "UP",
+	}
+
+	_, _, hashA := svc.buildLLMContext(market, snapshot, alloraInf, meta, stability)
+	_, _, hashB := svc.buildLLMContext(market, snapshot, alloraInf, meta, stability)
+	if hashA == "" || hashB == "" {
+		t.Fatalf("expected non-empty hashes")
+	}
+	if hashA != hashB {
+		t.Fatalf("expected deterministic context hash, got %s != %s", hashA, hashB)
+	}
+}
+
+func TestDecodeStrictLLMResponseRejectsUnknownField(t *testing.T) {
+	t.Parallel()
+
+	_, err := decodeStrictLLMResponse(`{
+		"decision":"NO_TRADE",
+		"recommended_side":"NONE",
+		"confidence":0.1,
+		"expected_value":0,
+		"suggested_limit_price":0,
+		"suggested_size_shares":0,
+		"suggested_notional":0,
+		"reason_codes":["staleness_guard","confidence_guard"],
+		"invalidation_conditions":["recheck"],
+		"extra":"not-allowed"
+	}`)
+	if err == nil {
+		t.Fatalf("expected strict decode error for unknown field")
+	}
+}
+
+func TestValidateLLMResponseRawRejectsTradeWithInvalidPrice(t *testing.T) {
+	t.Parallel()
+
+	err := validateLLMResponseRaw(llmResponseRaw{
+		Decision:               "BUY_UP",
+		RecommendedSide:        "UP",
+		Confidence:             0.82,
+		ExpectedValue:          0.01,
+		SuggestedLimitPrice:    1.25,
+		SuggestedSizeShares:    10,
+		SuggestedNotional:      7,
+		ReasonCodes:            []string{"edge_up_positive", "microstructure_support_up", "allora_proxy_fresh"},
+		InvalidationConditions: []string{"Cancel if spread widens.", "Cancel if edge decays."},
+	})
+	if err == nil {
+		t.Fatalf("expected validation failure for out-of-range suggested_limit_price")
+	}
+}
+
+func TestEvaluateSnapshotStabilityMixedVotesUnstable(t *testing.T) {
+	t.Parallel()
+
+	out := evaluateSnapshotStability([]llmIndependentSnapshot{
+		{
+			ConsensusUp:       0.61,
+			ExecutableAskUp:   0.52,
+			ExecutableAskDown: 0.48,
+			EVUp:              0.02,
+			EVDown:            0.001,
+			EVMinThreshold:    0.01,
+		},
+		{
+			ConsensusUp:       0.44,
+			ExecutableAskUp:   0.50,
+			ExecutableAskDown: 0.50,
+			EVUp:              0.001,
+			EVDown:            0.02,
+			EVMinThreshold:    0.01,
+		},
+	})
+	if out.Stable {
+		t.Fatalf("expected mixed directional votes to be unstable")
+	}
+	if out.DirectionSummary != "MIXED" {
+		t.Fatalf("expected MIXED direction summary, got %s", out.DirectionSummary)
+	}
+}

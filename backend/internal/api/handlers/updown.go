@@ -14,11 +14,15 @@ import (
 )
 
 type UpDownHandler struct {
-	Service *services.UpDownService
+	Service    *services.UpDownService
+	LLMService *services.UpDownLLMService
 }
 
-func NewUpDownHandler(service *services.UpDownService) *UpDownHandler {
-	return &UpDownHandler{Service: service}
+func NewUpDownHandler(service *services.UpDownService, llmService *services.UpDownLLMService) *UpDownHandler {
+	return &UpDownHandler{
+		Service:    service,
+		LLMService: llmService,
+	}
 }
 
 // GET /api/v1/updown/markets?asset=BTC&window=5m|15m|1h|4h
@@ -172,4 +176,44 @@ func (h *UpDownHandler) GetPerformance(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(summary)
+}
+
+// POST /api/v1/updown/llm/generate
+func (h *UpDownHandler) GenerateLLMPacket(c *fiber.Ctx) error {
+	if h.LLMService == nil || !h.LLMService.Enabled() {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "updown llm service unavailable"})
+	}
+	var req services.UpDownLLMGenerateRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+	}
+	packet, err := h.LLMService.Generate(c.Context(), req)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(packet)
+}
+
+// GET /api/v1/updown/llm/packet/:slug
+func (h *UpDownHandler) GetLLMPacket(c *fiber.Ctx) error {
+	if h.LLMService == nil || !h.LLMService.Enabled() {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "updown llm service unavailable"})
+	}
+	slug := strings.TrimSpace(c.Params("slug"))
+	packet, err := h.LLMService.GetPacket(c.Context(), slug)
+	if err != nil {
+		if errors.Is(err, services.ErrUpDownLLMNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "llm packet not found"})
+		}
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(packet)
+}
+
+// GET /api/v1/updown/llm/health
+func (h *UpDownHandler) LLMHealth(c *fiber.Ctx) error {
+	if h.LLMService == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "updown llm service unavailable"})
+	}
+	return c.JSON(h.LLMService.Health())
 }

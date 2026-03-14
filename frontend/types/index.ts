@@ -602,3 +602,104 @@ export interface PerformanceSummary {
   by_window: PerformanceSlice[];
   updated_at: string;
 }
+
+export interface LLMContextFreshness {
+  synth_age_seconds: number;
+  allora_age_seconds: number;
+  market_age_seconds: number;
+  context_hash: string;
+}
+
+export interface LLMTraceMeta {
+  prompt_hash: string;
+  model: string;
+  latency_ms: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  generated_at: string;
+  cache_hit: boolean;
+  snapshot_count?: number;
+  snapshot_stable?: boolean;
+}
+
+export interface AlloraProxyMeta {
+  raw_p5: number;
+  smoothed_p5?: number;
+  proxy_p15: number;
+  age_seconds: number;
+  proxy_status: "fresh" | "stale_soft" | "stale_hard" | string;
+  used_cached?: boolean;
+}
+
+export interface LLMEntryMeta {
+  ready_to_bet: boolean;
+  entry_score: number;
+  confidence_lb90: number;
+  confidence_lb95: number;
+  probability_chosen_side: number;
+  edge_chosen_side: number;
+  sharpe_chosen_side: number;
+  sharpe_up: number;
+  sharpe_down: number;
+  deviation_ratio: number;
+  deviation_zscore: number;
+  confidence_threshold_used: number;
+  calibration_samples?: number;
+  calibration_llm_brier?: number;
+  calibration_det_brier?: number;
+  calibration_confidence_scale?: number;
+  calibration_edge_buffer?: number;
+  gate_reasons: string[];
+}
+
+export interface LLMSnapshotStability {
+  sample_count: number;
+  stable: boolean;
+  up_votes: number;
+  down_votes: number;
+  no_trade_votes: number;
+  consensus_drift: number;
+  ask_up_drift: number;
+  ask_down_drift: number;
+  best_ev_drift: number;
+  direction_summary: string;
+}
+
+export interface LLMTradePacket {
+  slug: string;
+  condition_id: string;
+  asset: string;
+  window_type: "5m" | "15m" | "1h" | "4h" | "unknown";
+  decision: "BUY_UP" | "BUY_DOWN" | "NO_TRADE";
+  recommended_side: "UP" | "DOWN" | "NONE";
+  confidence: number;
+  expected_value: number;
+  suggested_limit_price: number;
+  suggested_size_shares: number;
+  suggested_notional: number;
+  reason_codes: string[];
+  invalidation_conditions: string[];
+  effective_guard_blocks: string[];
+  risk_flags: RiskFlags;
+  freshness: LLMContextFreshness;
+  trace: LLMTraceMeta;
+  allora_proxy: AlloraProxyMeta;
+  snapshot_stability?: LLMSnapshotStability;
+  entry: LLMEntryMeta;
+  generated_at: string;
+}
+
+export interface UpDownLLMHealth {
+  enabled: boolean;
+  shadow_mode: boolean;
+  openai_configured: boolean;
+  synth_configured: boolean;
+  allora_configured: boolean;
+  cache_ttl_seconds: number;
+  timeout_seconds: number;
+  max_tokens: number;
+  execution_policy?: "llm_only" | "llm_preferred" | "det_allowed" | string;
+  last_allora_fetch_at?: string;
+  last_allora_error?: string;
+}

@@ -21,6 +21,7 @@ import (
 	"github.com/bankai-project/backend/internal/api/handlers"
 	"github.com/bankai-project/backend/internal/api/middleware"
 	"github.com/bankai-project/backend/internal/config"
+	"github.com/bankai-project/backend/internal/integrations/allora"
 	"github.com/bankai-project/backend/internal/integrations/openai"
 	"github.com/bankai-project/backend/internal/integrations/synthdata"
 	"github.com/bankai-project/backend/internal/integrations/tavily"
@@ -66,6 +67,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	tavilyClient := tavily.NewClient(cfg)
 	openaiClient := openai.NewClient(cfg)
 	synthClient := synthdata.NewClient(cfg)
+	alloraClient := allora.NewClient(cfg)
 	dataAPIClient := data_api.NewClient(cfg)
 	subgraphClient := polymarket.NewSubgraphClient(cfg)
 
@@ -86,6 +88,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	alphaHubService := services.NewAlphaHubService(marketService, profileService, clobClient, tavilyClient, openaiClient, dataAPIClient, subgraphClient, cfg.Services.AIPicksMarketLimit, rdb)
 	tpslService := services.NewTPSLService(rdb, clobClient, notificationService)
 	upDownService := services.NewUpDownService(db, rdb, cfg, marketService, synthClient)
+	upDownLLMService := services.NewUpDownLLMService(db, rdb, cfg, upDownService, openaiClient, synthClient, alloraClient)
 
 	// Initialize Blockchain Service
 	blockchainService, err := services.NewBlockchainService(cfg)
@@ -112,7 +115,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	settingsHandler := handlers.NewSettingsHandler(db, settingsService)
 	tpslHandler := handlers.NewTPSLHandler(tpslService)
 	adminHandler := handlers.NewAdminHandler(adminService, jobQueue)
-	upDownHandler := handlers.NewUpDownHandler(upDownService)
+	upDownHandler := handlers.NewUpDownHandler(upDownService, upDownLLMService)
 
 	// 5. Define Routes
 	// Root route for easy health checks
@@ -197,6 +200,9 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, rdb *redis.Client, cfg *config.Con
 	updown.Get("/stream", upDownHandler.Stream)
 	updown.Get("/performance", upDownHandler.GetPerformance)
 	updown.Post("/decisions", middleware.Protected(), middleware.AccountGuard(rdb, db), upDownHandler.LogDecision)
+	updown.Post("/llm/generate", upDownHandler.GenerateLLMPacket)
+	updown.Get("/llm/packet/:slug", upDownHandler.GetLLMPacket)
+	updown.Get("/llm/health", upDownHandler.LLMHealth)
 
 	// Profile Routes (Public - trader profiles are public)
 	profile := v1.Group("/profile")

@@ -1,8 +1,10 @@
 import { API_BASE_URL, api } from "@/lib/api";
 import type {
   DecisionLog,
+  LLMTradePacket,
   PerformanceSummary,
   Recommendation,
+  UpDownLLMHealth,
   UpDownMarket,
   UpDownSignal,
 } from "@/types";
@@ -20,6 +22,11 @@ export type DecisionPayload = {
   override_price?: number;
   override_size?: number;
   notes?: string;
+};
+
+export type LLMGeneratePayload = {
+  slug: string;
+  force_refresh?: boolean;
 };
 
 const sanitizeUpDownSlug = (value: string): string => {
@@ -86,4 +93,43 @@ export const fetchUpDownPerformance = async (params: {
 
 export const createUpDownEventSource = (): EventSource => {
   return new EventSource(`${API_BASE_URL}/api/v1/updown/stream`);
+};
+
+export const generateUpDownLLMPacket = async (
+  payload: LLMGeneratePayload
+): Promise<LLMTradePacket> => {
+  const normalizedSlug = sanitizeUpDownSlug(payload.slug);
+  const { data } = await api.post<LLMTradePacket>("/updown/llm/generate", {
+    slug: normalizedSlug,
+    force_refresh: Boolean(payload.force_refresh),
+  });
+  return data;
+};
+
+export const fetchUpDownLLMPacket = async (
+  slug: string
+): Promise<LLMTradePacket | null> => {
+  const normalizedSlug = sanitizeUpDownSlug(slug);
+  try {
+    const { data } = await api.get<LLMTradePacket>(
+      `/updown/llm/packet/${encodeURIComponent(normalizedSlug)}`
+    );
+    return data;
+  } catch (error: unknown) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "response" in error &&
+      typeof (error as { response?: { status?: number } }).response?.status === "number" &&
+      (error as { response?: { status?: number } }).response?.status === 404
+    ) {
+      return null;
+    }
+    throw error;
+  }
+};
+
+export const fetchUpDownLLMHealth = async (): Promise<UpDownLLMHealth> => {
+  const { data } = await api.get<UpDownLLMHealth>("/updown/llm/health");
+  return data;
 };

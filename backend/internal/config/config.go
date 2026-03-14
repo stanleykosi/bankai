@@ -71,6 +71,9 @@ type ServicesConfig struct {
 	OpenAIBaseURL                  string
 	SynthDataAPIKey                string
 	SynthDataBaseURL               string
+	AlloraAPIKey                   string
+	AlloraBaseURL                  string
+	AlloraSignatureFormat          string
 	OpenAIModel                    string
 	OpenAIMaxTokens                int
 	OpenAIMaxContext               int
@@ -124,6 +127,16 @@ type ServicesConfig struct {
 	UpDownNoTradeCutoff4hSeconds   int
 	UpDownMaxMarkets               int
 	UpDownSynthMonthlyCreditCap    int
+	UpDownLLMEnabled               bool
+	UpDownLLMShadowMode            bool
+	UpDownLLMCacheTTLSeconds       int
+	UpDownLLMTimeoutSeconds        int
+	UpDownLLMMaxTokens             int
+	UpDownLLMAlloraFreshMaxSeconds int
+	UpDownLLMAlloraSoftLagSeconds  int
+	UpDownLLMAlloraHardLagSeconds  int
+	UpDownLLMContextDecimals       int
+	UpDownExecutionSourcePolicy    string
 }
 
 // AuthConfig holds wallet-only auth configuration
@@ -185,6 +198,9 @@ func Load() (*Config, error) {
 			OpenAIBaseURL:                  getEnv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"),
 			SynthDataAPIKey:                getEnv("SYNTHDATA_API_KEY", ""),
 			SynthDataBaseURL:               getEnv("SYNTHDATA_BASE_URL", "https://api.synthdata.co"),
+			AlloraAPIKey:                   getEnv("ALLORA_API_KEY", ""),
+			AlloraBaseURL:                  getEnv("ALLORA_BASE_URL", "https://api.allora.network"),
+			AlloraSignatureFormat:          getEnv("ALLORA_SIGNATURE_FORMAT", "ethereum-11155111"),
 			OpenAIModel:                    getEnv("OPENAI_MODEL", "minimax/minimax-m2.1"),
 			OpenAIMaxTokens:                getEnvAsInt("OPENAI_MAX_TOKENS", 10000),
 			OpenAIMaxContext:               getEnvAsInt("OPENAI_MAX_CONTEXT_TOKENS", 204800),
@@ -238,6 +254,16 @@ func Load() (*Config, error) {
 			UpDownNoTradeCutoff4hSeconds:   getEnvAsInt("UPDOWN_NO_TRADE_CUTOFF_4H_SECONDS", 300),
 			UpDownMaxMarkets:               getEnvAsInt("UPDOWN_MAX_MARKETS", 64),
 			UpDownSynthMonthlyCreditCap:    getEnvAsInt("UPDOWN_SYNTH_MONTHLY_CREDIT_CAP", 18000),
+			UpDownLLMEnabled:               getEnvAsBool("UPDOWN_LLM_ENABLED", true),
+			UpDownLLMShadowMode:            getEnvAsBool("UPDOWN_LLM_SHADOW_MODE", false),
+			UpDownLLMCacheTTLSeconds:       getEnvAsInt("UPDOWN_LLM_CACHE_TTL_SECONDS", 15),
+			UpDownLLMTimeoutSeconds:        getEnvAsInt("UPDOWN_LLM_TIMEOUT_SECONDS", 8),
+			UpDownLLMMaxTokens:             getEnvAsInt("UPDOWN_LLM_MAX_TOKENS", 20000),
+			UpDownLLMAlloraFreshMaxSeconds: getEnvAsInt("UPDOWN_LLM_ALLORA_FRESH_MAX_SECONDS", 60),
+			UpDownLLMAlloraSoftLagSeconds:  getEnvAsInt("UPDOWN_LLM_ALLORA_SOFT_LAG_SECONDS", 380),
+			UpDownLLMAlloraHardLagSeconds:  getEnvAsInt("UPDOWN_LLM_ALLORA_HARD_LAG_SECONDS", 440),
+			UpDownLLMContextDecimals:       getEnvAsInt("UPDOWN_LLM_CONTEXT_DECIMALS", 6),
+			UpDownExecutionSourcePolicy:    normalizeUpDownExecutionSourcePolicy(getEnv("UPDOWN_EXECUTION_SOURCE_POLICY", "det_allowed")),
 		},
 	}
 
@@ -380,4 +406,17 @@ func normalizeAddresses(items []string) []string {
 		out = append(out, addr)
 	}
 	return out
+}
+
+func normalizeUpDownExecutionSourcePolicy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "llm_only":
+		return "llm_only"
+	case "llm_preferred":
+		return "llm_preferred"
+	case "det_allowed", "deterministic_allowed", "deterministic":
+		return "det_allowed"
+	default:
+		return "det_allowed"
+	}
 }
