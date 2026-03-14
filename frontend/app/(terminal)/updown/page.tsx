@@ -570,12 +570,34 @@ export default function UpDownPage() {
   const liveMarket = selectedMarket ? augmentMarket(selectedMarket.market) : null;
   const signalHasSynth = hasSynthProbabilities(selectedSignal);
   const llmPacket = llmPacketQuery.data ?? null;
+  const llmPacketCacheTtlSeconds = useMemo(() => {
+    const ttl = llmHealthQuery.data?.cache_ttl_seconds;
+    if (typeof ttl !== "number" || ttl <= 0) return 30;
+    return ttl;
+  }, [llmHealthQuery.data?.cache_ttl_seconds]);
   const llmPacketStale = useMemo(() => {
     if (!llmPacket?.generated_at) return false;
     const ts = toMillis(llmPacket.generated_at);
     if (!ts) return true;
-    return nowMs - ts > 30_000;
-  }, [llmPacket?.generated_at, nowMs]);
+    return nowMs - ts > llmPacketCacheTtlSeconds * 1000;
+  }, [llmPacket?.generated_at, llmPacketCacheTtlSeconds, nowMs]);
+  const llmGenerateCooldownRemainingSeconds = useMemo(() => {
+    if (!llmPacket?.generated_at) return 0;
+    const ts = toMillis(llmPacket.generated_at);
+    if (!ts) return 0;
+    const elapsedSeconds = Math.floor((nowMs - ts) / 1000);
+    return Math.max(0, llmPacketCacheTtlSeconds - elapsedSeconds);
+  }, [llmPacket?.generated_at, llmPacketCacheTtlSeconds, nowMs]);
+  const llmGenerateLocked = llmGenerateCooldownRemainingSeconds > 0;
+  const llmGenerateButtonLabel = useMemo(() => {
+    if (llmGenerateMutation.isPending) return "Generating...";
+    if (llmGenerateLocked) return `Generate (${llmGenerateCooldownRemainingSeconds}s)`;
+    return "Generate";
+  }, [
+    llmGenerateCooldownRemainingSeconds,
+    llmGenerateLocked,
+    llmGenerateMutation.isPending,
+  ]);
   const livePMarketUp = useMemo(() => {
     if (!selectedMarket || !liveMarket) return selectedSignal?.p_market_up;
 
@@ -1151,6 +1173,7 @@ export default function UpDownPage() {
                             disabled={
                               !normalizedSelectedSlug ||
                               llmGenerateMutation.isPending ||
+                              llmGenerateLocked ||
                               Boolean(llmUnsupportedReason)
                             }
                             onClick={() => {
@@ -1162,7 +1185,7 @@ export default function UpDownPage() {
                             }}
                           >
                             <BrainCircuit className="mr-1 h-3.5 w-3.5" />
-                            {llmGenerateMutation.isPending ? "Generating..." : "Generate"}
+                            {llmGenerateButtonLabel}
                           </Button>
                           <Button
                             size="sm"
@@ -1184,6 +1207,11 @@ export default function UpDownPage() {
                             Force Refresh
                           </Button>
                         </div>
+                        {llmGenerateLocked && !llmGenerateMutation.isPending ? (
+                          <p className="mb-2 text-[11px] text-muted-foreground">
+                            Generate available in {llmGenerateCooldownRemainingSeconds}s.
+                          </p>
+                        ) : null}
                         {llmGenerateMutation.isError ? (
                           <p className="mb-2 text-[11px] text-destructive">
                             {llmGenerateMutation.error instanceof Error

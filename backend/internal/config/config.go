@@ -256,7 +256,7 @@ func Load() (*Config, error) {
 			UpDownSynthMonthlyCreditCap:    getEnvAsInt("UPDOWN_SYNTH_MONTHLY_CREDIT_CAP", 18000),
 			UpDownLLMEnabled:               getEnvAsBool("UPDOWN_LLM_ENABLED", true),
 			UpDownLLMShadowMode:            getEnvAsBool("UPDOWN_LLM_SHADOW_MODE", false),
-			UpDownLLMCacheTTLSeconds:       getEnvAsInt("UPDOWN_LLM_CACHE_TTL_SECONDS", 15),
+			UpDownLLMCacheTTLSeconds:       getEnvAsInt("UPDOWN_LLM_CACHE_TTL_SECONDS", 30),
 			UpDownLLMTimeoutSeconds:        getEnvAsInt("UPDOWN_LLM_TIMEOUT_SECONDS", 45),
 			UpDownLLMMaxTokens:             getEnvAsInt("UPDOWN_LLM_MAX_TOKENS", 20000),
 			UpDownLLMAlloraFreshMaxSeconds: getEnvAsInt("UPDOWN_LLM_ALLORA_FRESH_MAX_SECONDS", 60),

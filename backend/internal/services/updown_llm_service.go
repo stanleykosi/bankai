@@ -525,7 +525,7 @@ func (s *UpDownLLMService) Health() *UpDownLLMHealth {
 		OpenAIConfigured:  s.openai != nil && strings.TrimSpace(s.cfg.Services.OpenAIAPIKey) != "",
 		SynthConfigured:   s.synth != nil && s.synth.Enabled(),
 		AlloraConfigured:  s.allora != nil && s.allora.Enabled(),
-		CacheTTLSeconds:   maxInt(s.cfg.Services.UpDownLLMCacheTTLSeconds, 15),
+		CacheTTLSeconds:   maxInt(s.cfg.Services.UpDownLLMCacheTTLSeconds, 30),
 		TimeoutSeconds:    maxInt(s.cfg.Services.UpDownLLMTimeoutSeconds, 8),
 		MaxTokens:         maxInt(s.cfg.Services.UpDownLLMMaxTokens, 20000),
 		ExecutionPolicy:   upDownExecutionSourcePolicy(s.cfg),
@@ -591,7 +591,7 @@ func (s *UpDownLLMService) Generate(ctx context.Context, req UpDownLLMGenerateRe
 	alloraMeta.SmoothedP5 = upDownClamp(smoothedP5, 0.01, 0.99)
 	alloraMeta.UsedCached = usedCachedAllora
 
-	snapshot.Retrieval = buildLLMRetrievalBundle(now, *snapshot, alloraMeta)
+	snapshot.Retrieval = buildLLMRetrievalBundle(now, market.WindowType, *snapshot, alloraMeta)
 	contextData, contextJSON, contextHash := s.buildLLMContext(*market, *snapshot, alloraInference, alloraMeta, stability)
 	cacheKey := s.packetCacheKey(*market, contextHash)
 
@@ -893,7 +893,7 @@ func (s *UpDownLLMService) collectIndependentSnapshot(ctx context.Context, marke
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				reqCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+				reqCtx, cancel := context.WithTimeout(ctx, synthRequestTimeoutForWindow(marketCopy.WindowType))
 				defer cancel()
 				synthResp, _ = s.synth.GetPolymarketUpDown(reqCtx, marketCopy.Asset, synthWindow, horizon, 14, 10)
 			}()
@@ -901,21 +901,21 @@ func (s *UpDownLLMService) collectIndependentSnapshot(ctx context.Context, marke
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			reqCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+			reqCtx, cancel := context.WithTimeout(ctx, synthRequestTimeoutForWindow(marketCopy.WindowType))
 			defer cancel()
 			volSummary, _ = s.synth.GetVolatility(reqCtx, marketCopy.Asset, horizon, 14, 10)
 		}()
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			reqCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+			reqCtx, cancel := context.WithTimeout(ctx, synthRequestTimeoutForWindow(marketCopy.WindowType))
 			defer cancel()
 			percentile, _ = s.synth.GetPredictionPercentiles(reqCtx, marketCopy.Asset, horizon, 14, 10)
 		}()
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			reqCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+			reqCtx, cancel := context.WithTimeout(ctx, synthRequestTimeoutForWindow(marketCopy.WindowType))
 			defer cancel()
 			lpSummary, _ = s.synth.GetLPProbabilities(reqCtx, marketCopy.Asset, horizon, 14, 10)
 		}()
@@ -1491,11 +1491,9 @@ func mergeSnapshotSeries(samples []llmIndependentSnapshot) *llmIndependentSnapsh
 		return nil
 	}
 	out := samples[len(samples)-1]
-	reasons := make([]string, 0, 16)
+	reasons := append([]string{}, out.ReasonCodes...)
 	for i := range samples {
 		sample := samples[i]
-		out.RiskFlags = mergeRiskFlags(out.RiskFlags, sample.RiskFlags)
-		reasons = append(reasons, sample.ReasonCodes...)
 		if out.ReferenceStartPrice == nil && sample.ReferenceStartPrice != nil {
 			v := *sample.ReferenceStartPrice
 			out.ReferenceStartPrice = &v
@@ -1512,32 +1510,53 @@ func mergeSnapshotSeries(samples []llmIndependentSnapshot) *llmIndependentSnapsh
 			ts := sample.ReferenceUpdatedAt.UTC()
 			out.ReferenceUpdatedAt = &ts
 		}
-		if sample.MarketAgeSeconds > out.MarketAgeSeconds {
+		if out.MarketAgeSeconds <= 0 && sample.MarketAgeSeconds > out.MarketAgeSeconds {
 			out.MarketAgeSeconds = sample.MarketAgeSeconds
 		}
-		if sample.SynthAgeSeconds > out.SynthAgeSeconds {
+		if out.SynthAgeSeconds <= 0 && sample.SynthAgeSeconds > out.SynthAgeSeconds {
 			out.SynthAgeSeconds = sample.SynthAgeSeconds
 		}
 	}
+	out.RiskFlags = mergeRiskFlagsByVotes(samples)
 	out.ReasonCodes = dedupeStrings(reasons)
 	return &out
 }
 
-func mergeRiskFlags(a UpDownRiskFlags, b UpDownRiskFlags) UpDownRiskFlags {
+func mergeRiskFlagsByVotes(samples []llmIndependentSnapshot) UpDownRiskFlags {
+	if len(samples) == 0 {
+		return UpDownRiskFlags{}
+	}
+	majority := len(samples)/2 + 1
+	trueCount := func(selector func(UpDownRiskFlags) bool) int {
+		count := 0
+		for _, sample := range samples {
+			if selector(sample.RiskFlags) {
+				count++
+			}
+		}
+		return count
+	}
+	any := func(selector func(UpDownRiskFlags) bool) bool {
+		return trueCount(selector) > 0
+	}
+	majorityOn := func(selector func(UpDownRiskFlags) bool) bool {
+		return trueCount(selector) >= majority
+	}
+
 	return UpDownRiskFlags{
-		ReadOnly:            a.ReadOnly || b.ReadOnly,
-		KillSwitch:          a.KillSwitch || b.KillSwitch,
-		SynthMissing:        a.SynthMissing || b.SynthMissing,
-		SynthStale:          a.SynthStale || b.SynthStale,
-		MarketStale:         a.MarketStale || b.MarketStale,
-		DepthMissing:        a.DepthMissing || b.DepthMissing,
-		WideSpread:          a.WideSpread || b.WideSpread,
-		StatusBoundary:      a.StatusBoundary || b.StatusBoundary,
-		SourceMismatch:      a.SourceMismatch || b.SourceMismatch,
-		ClockDrift:          a.ClockDrift || b.ClockDrift,
-		LowLiquidity:        a.LowLiquidity || b.LowLiquidity,
-		HighVolatility:      a.HighVolatility || b.HighVolatility,
-		DataIntegrityFailed: a.DataIntegrityFailed || b.DataIntegrityFailed,
+		ReadOnly:            any(func(f UpDownRiskFlags) bool { return f.ReadOnly }),
+		KillSwitch:          any(func(f UpDownRiskFlags) bool { return f.KillSwitch }),
+		StatusBoundary:      any(func(f UpDownRiskFlags) bool { return f.StatusBoundary }),
+		DataIntegrityFailed: any(func(f UpDownRiskFlags) bool { return f.DataIntegrityFailed }),
+		SynthMissing:        majorityOn(func(f UpDownRiskFlags) bool { return f.SynthMissing }),
+		SynthStale:          majorityOn(func(f UpDownRiskFlags) bool { return f.SynthStale }),
+		MarketStale:         majorityOn(func(f UpDownRiskFlags) bool { return f.MarketStale }),
+		DepthMissing:        majorityOn(func(f UpDownRiskFlags) bool { return f.DepthMissing }),
+		WideSpread:          majorityOn(func(f UpDownRiskFlags) bool { return f.WideSpread }),
+		SourceMismatch:      majorityOn(func(f UpDownRiskFlags) bool { return f.SourceMismatch }),
+		ClockDrift:          majorityOn(func(f UpDownRiskFlags) bool { return f.ClockDrift }),
+		LowLiquidity:        majorityOn(func(f UpDownRiskFlags) bool { return f.LowLiquidity }),
+		HighVolatility:      majorityOn(func(f UpDownRiskFlags) bool { return f.HighVolatility }),
 	}
 }
 
@@ -1599,15 +1618,21 @@ func defaultLLMInvalidations(market UpDownMarket, side string) []string {
 	return dedupeStrings(out)
 }
 
-func buildLLMRetrievalBundle(now time.Time, snapshot llmIndependentSnapshot, alloraMeta AlloraProxyMeta) llmRetrievalBundle {
+func buildLLMRetrievalBundle(now time.Time, window UpDownWindowType, snapshot llmIndependentSnapshot, alloraMeta AlloraProxyMeta) llmRetrievalBundle {
 	retrieval := llmRetrievalBundle{
 		StrategyVersion:  "rag-v1.3",
 		RankingPolicy:    "freshness_weighted_reliability_rank",
 		CorrectiveAction: "none",
 		Evidence:         make([]llmRetrievalEvidence, 0, 10),
 	}
-	appendEvidence := func(source, status string, age int64, reliability, coverage float64, notes ...string) {
-		freshness := 1.0 / (1.0 + float64(maxInt64(age, 0))/90.0)
+	marketFreshMax := llmRetrievalMarketFreshMax(window)
+	synthFreshMax := llmRetrievalSynthFreshMax(window)
+	chainlinkFreshMax := llmRetrievalChainlinkFreshMax(window)
+	alloraFreshMax := llmRetrievalAlloraFreshMax(window)
+
+	appendEvidence := func(source, status string, age int64, reliability, coverage float64, freshnessScale int64, notes ...string) {
+		scale := float64(maxInt64(freshnessScale, 30))
+		freshness := 1.0 / (1.0 + float64(maxInt64(age, 0))/scale)
 		score := upDownClamp(reliability, 0, 1) * upDownClamp(coverage, 0, 1) * upDownClamp(freshness, 0, 1)
 		retrieval.Evidence = append(retrieval.Evidence, llmRetrievalEvidence{
 			Source:          source,
@@ -1621,19 +1646,19 @@ func buildLLMRetrievalBundle(now time.Time, snapshot llmIndependentSnapshot, all
 		})
 	}
 
-	appendEvidence("market_microstructure", statusForAge(snapshot.MarketAgeSeconds, 25), snapshot.MarketAgeSeconds, 0.96, coverageFromValues(snapshot.ExecutableAskUp, snapshot.ExecutableAskDown, snapshot.ExecutableBidUp, snapshot.ExecutableBidDown))
-	appendEvidence("order_book_depth_buy", statusForDepth(snapshot.UpBuyDepth, snapshot.DownBuyDepth), snapshot.MarketAgeSeconds, 0.92, coverageFromValues(snapshot.UpBuyDepth.FillableSize, snapshot.DownBuyDepth.FillableSize))
-	appendEvidence("order_book_depth_sell", statusForDepth(snapshot.UpSellDepth, snapshot.DownSellDepth), snapshot.MarketAgeSeconds, 0.88, coverageFromValues(snapshot.UpSellDepth.FillableSize, snapshot.DownSellDepth.FillableSize))
-	appendEvidence("synth_probabilities", statusForAge(snapshot.SynthAgeSeconds, 90), snapshot.SynthAgeSeconds, 0.90, coverageFromPointers(snapshot.PSynthUp, snapshot.PModelUp, snapshot.PLPUp))
-	appendEvidence("synth_volatility", statusForAge(snapshot.SynthAgeSeconds, 90), snapshot.SynthAgeSeconds, 0.94, coverageFromValues(snapshot.VolatilityAverageForecast, snapshot.VolatilityAveragePast))
-	appendEvidence("synth_reference_prices", statusForReference(snapshot.ReferenceStartPrice, snapshot.ReferenceCurrentPrice), snapshot.SynthAgeSeconds, 0.89, coverageFromPointers(snapshot.ReferenceStartPrice, snapshot.ReferenceCurrentPrice, snapshot.ReferenceEndPrice))
-	appendEvidence("allora_5m", alloraMeta.ProxyStatus, alloraMeta.AgeSeconds, 0.93, coverageFromValues(alloraMeta.RawP5, alloraMeta.ProxyP15))
+	appendEvidence("market_microstructure", statusForAge(snapshot.MarketAgeSeconds, marketFreshMax), snapshot.MarketAgeSeconds, 0.96, coverageFromValues(snapshot.ExecutableAskUp, snapshot.ExecutableAskDown, snapshot.ExecutableBidUp, snapshot.ExecutableBidDown), marketFreshMax)
+	appendEvidence("order_book_depth_buy", statusForDepth(snapshot.UpBuyDepth, snapshot.DownBuyDepth), snapshot.MarketAgeSeconds, 0.92, coverageFromValues(snapshot.UpBuyDepth.FillableSize, snapshot.DownBuyDepth.FillableSize), marketFreshMax)
+	appendEvidence("order_book_depth_sell", statusForDepth(snapshot.UpSellDepth, snapshot.DownSellDepth), snapshot.MarketAgeSeconds, 0.88, coverageFromValues(snapshot.UpSellDepth.FillableSize, snapshot.DownSellDepth.FillableSize), marketFreshMax)
+	appendEvidence("synth_probabilities", statusForAge(snapshot.SynthAgeSeconds, synthFreshMax), snapshot.SynthAgeSeconds, 0.90, coverageFromPointers(snapshot.PSynthUp, snapshot.PModelUp, snapshot.PLPUp), synthFreshMax)
+	appendEvidence("synth_volatility", statusForAge(snapshot.SynthAgeSeconds, synthFreshMax), snapshot.SynthAgeSeconds, 0.94, coverageFromValues(snapshot.VolatilityAverageForecast, snapshot.VolatilityAveragePast), synthFreshMax)
+	appendEvidence("synth_reference_prices", statusForReference(snapshot.ReferenceStartPrice, snapshot.ReferenceCurrentPrice), snapshot.SynthAgeSeconds, 0.89, coverageFromPointers(snapshot.ReferenceStartPrice, snapshot.ReferenceCurrentPrice, snapshot.ReferenceEndPrice), synthFreshMax)
+	appendEvidence("allora_5m", alloraMeta.ProxyStatus, alloraMeta.AgeSeconds, 0.93, coverageFromValues(alloraMeta.RawP5, alloraMeta.ProxyP15), alloraFreshMax)
 	if strings.EqualFold(snapshot.ReferenceSource, "chainlink") {
 		refAge := int64(0)
 		if snapshot.ReferenceUpdatedAt != nil && !snapshot.ReferenceUpdatedAt.IsZero() {
 			refAge = maxInt64(int64(math.Round(now.Sub(snapshot.ReferenceUpdatedAt.UTC()).Seconds())), 0)
 		}
-		appendEvidence("chainlink_reference", statusForAge(refAge, 120), refAge, 0.98, coverageFromPointers(snapshot.ReferenceStartPrice, snapshot.ReferenceCurrentPrice, snapshot.ReferenceEndPrice))
+		appendEvidence("chainlink_reference", statusForAge(refAge, chainlinkFreshMax), refAge, 0.98, coverageFromPointers(snapshot.ReferenceStartPrice, snapshot.ReferenceCurrentPrice, snapshot.ReferenceEndPrice), chainlinkFreshMax)
 	}
 
 	sort.SliceStable(retrieval.Evidence, func(i, j int) bool {
@@ -1653,14 +1678,62 @@ func buildLLMRetrievalBundle(now time.Time, snapshot llmIndependentSnapshot, all
 	}
 
 	switch {
-	case retrieval.QualityScore < 0.45:
+	case retrieval.QualityScore < 0.42:
 		retrieval.CorrectiveAction = "force_no_trade"
-	case retrieval.QualityScore < 0.65:
+	case retrieval.QualityScore < 0.58:
 		retrieval.CorrectiveAction = "degrade_confidence"
 	default:
 		retrieval.CorrectiveAction = "none"
 	}
 	return retrieval
+}
+
+func llmRetrievalMarketFreshMax(window UpDownWindowType) int64 {
+	switch window {
+	case Window5m:
+		return 45
+	case Window15m:
+		return 75
+	case Window1h:
+		return 120
+	default:
+		return 150
+	}
+}
+
+func llmRetrievalSynthFreshMax(window UpDownWindowType) int64 {
+	switch window {
+	case Window5m:
+		return 180
+	case Window15m:
+		return 240
+	case Window1h:
+		return 420
+	default:
+		return 600
+	}
+}
+
+func llmRetrievalChainlinkFreshMax(window UpDownWindowType) int64 {
+	switch window {
+	case Window5m:
+		return 90
+	case Window15m:
+		return 120
+	default:
+		return 180
+	}
+}
+
+func llmRetrievalAlloraFreshMax(window UpDownWindowType) int64 {
+	switch window {
+	case Window5m:
+		return 60
+	case Window15m:
+		return 380
+	default:
+		return 380
+	}
 }
 
 func coverageFromValues(values ...float64) float64 {
@@ -1750,6 +1823,7 @@ func (s *UpDownLLMService) buildLLMContext(
 	fresh5m := int64(maxInt(s.cfg.Services.UpDownLLMAlloraFreshMaxSeconds, 60))
 	soft15m := int64(maxInt(s.cfg.Services.UpDownLLMAlloraSoftLagSeconds, 380))
 	hard15m := int64(maxInt(s.cfg.Services.UpDownLLMAlloraHardLagSeconds, 440))
+	synthFreshMax := llmRetrievalSynthFreshMax(market.WindowType)
 	if hard15m <= soft15m {
 		hard15m = soft15m + 30
 	}
@@ -1760,8 +1834,8 @@ func (s *UpDownLLMService) buildLLMContext(
 	}
 	ctxData.Query.GeneratedUnix = snapshot.Timestamp.UTC().Unix()
 	ctxData.DataSemantics.Synth.Role = "native probabilistic and volatility analytics for this market window"
-	ctxData.DataSemantics.Synth.FreshMaxSeconds = 90
-	ctxData.DataSemantics.Synth.StaleSoftSeconds = 180
+	ctxData.DataSemantics.Synth.FreshMaxSeconds = synthFreshMax
+	ctxData.DataSemantics.Synth.StaleSoftSeconds = synthFreshMax * 2
 	ctxData.DataSemantics.Synth.WindowNote = "5m and 15m windows must use their matching synth up/down endpoints; cross-window payloads are rejected"
 	ctxData.DataSemantics.Synth.VolatilityNote = "volatility features are first-class priors and can override weak directional edges"
 	ctxData.DataSemantics.Synth.ProbabilityNote = "p_synth/p_model/p_lp/p_market are calibrated directional estimates, not guaranteed truths"
@@ -2505,7 +2579,7 @@ func (s *UpDownLLMService) writePacketCache(ctx context.Context, key string, lat
 	if s.redis == nil || key == "" || latestKey == "" {
 		return
 	}
-	ttl := time.Duration(maxInt(s.cfg.Services.UpDownLLMCacheTTLSeconds, 15)) * time.Second
+	ttl := time.Duration(maxInt(s.cfg.Services.UpDownLLMCacheTTLSeconds, 30)) * time.Second
 	payload, err := json.Marshal(packet)
 	if err != nil {
 		return
@@ -2563,7 +2637,7 @@ func (s *UpDownLLMService) persistPacket(ctx context.Context, market UpDownMarke
 		toJSONString(packet.Trace),
 		string(packetPayload),
 		string(contextPayload),
-		fmt.Sprintf("%d", maxInt(s.cfg.Services.UpDownLLMCacheTTLSeconds, 15)),
+		fmt.Sprintf("%d", maxInt(s.cfg.Services.UpDownLLMCacheTTLSeconds, 30)),
 	).Error; err != nil {
 		return err
 	}

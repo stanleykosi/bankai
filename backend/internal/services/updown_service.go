@@ -2955,7 +2955,7 @@ func (s *UpDownService) getSynthUpDownCached(
 		return fallbackResp
 	}
 
-	fetchCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	fetchCtx, cancel := context.WithTimeout(context.Background(), synthRequestTimeoutForWindow(market.WindowType))
 	defer cancel()
 	resp, err := s.synth.GetPolymarketUpDown(fetchCtx, market.Asset, window, horizon, 14, 10)
 	if err != nil {
@@ -3104,7 +3104,7 @@ func (s *UpDownService) getSynthPercentilesCached(
 		return fallback
 	}
 
-	fetchCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	fetchCtx, cancel := context.WithTimeout(context.Background(), synthRequestTimeoutForWindow(market.WindowType))
 	defer cancel()
 	resp, err := s.synth.GetPredictionPercentiles(fetchCtx, market.Asset, horizonForWindow(market.WindowType), 14, 10)
 	if err != nil {
@@ -3154,7 +3154,7 @@ func (s *UpDownService) getSynthVolatilityCached(
 		return fallback
 	}
 
-	fetchCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	fetchCtx, cancel := context.WithTimeout(context.Background(), synthRequestTimeoutForWindow(market.WindowType))
 	defer cancel()
 	resp, err := s.synth.GetVolatility(fetchCtx, market.Asset, horizonForWindow(market.WindowType), 14, 10)
 	if err != nil {
@@ -3204,7 +3204,7 @@ func (s *UpDownService) getSynthLPProbabilitiesCached(
 		return fallback
 	}
 
-	fetchCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	fetchCtx, cancel := context.WithTimeout(context.Background(), synthRequestTimeoutForWindow(market.WindowType))
 	defer cancel()
 	resp, err := s.synth.GetLPProbabilities(fetchCtx, market.Asset, horizonForWindow(market.WindowType), 14, 10)
 	if err != nil {
@@ -3417,7 +3417,7 @@ func (s *UpDownService) computeModelProbability(
 		return 0, "budget_exhausted_no_proxy"
 	}
 
-	fetchCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	fetchCtx, cancel := context.WithTimeout(context.Background(), synthRequestTimeoutForWindow(market.WindowType))
 	defer cancel()
 	prob, err := s.synth.GetEnterpriseProbabilityUp(fetchCtx, market.Asset, timeIncrement, timeLength, targetStep, thresholdBucket)
 	if err == nil && prob != nil && prob.ProbabilityUp >= 0 && prob.ProbabilityUp <= 1 {
@@ -3841,6 +3841,19 @@ func synthRefreshIntervalForWindow(window UpDownWindowType) time.Duration {
 		return 2 * time.Hour
 	default:
 		return 4 * time.Hour
+	}
+}
+
+func synthRequestTimeoutForWindow(window UpDownWindowType) time.Duration {
+	switch window {
+	case Window5m:
+		return 5 * time.Second
+	case Window15m:
+		return 6 * time.Second
+	case Window1h:
+		return 7 * time.Second
+	default:
+		return 8 * time.Second
 	}
 }
 
