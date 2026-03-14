@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bankai-project/backend/internal/api/middleware"
+	"github.com/bankai-project/backend/internal/logger"
 	"github.com/bankai-project/backend/internal/services"
 	"github.com/gofiber/fiber/v2"
 )
@@ -189,6 +190,7 @@ func (h *UpDownHandler) GenerateLLMPacket(c *fiber.Ctx) error {
 	}
 	packet, err := h.LLMService.Generate(c.Context(), req)
 	if err != nil {
+		logger.Error("updown llm generate failed slug=%s force_refresh=%t err=%v", strings.TrimSpace(req.Slug), req.ForceRefresh, err)
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(packet)

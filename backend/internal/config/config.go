@@ -194,8 +194,8 @@ func Load() (*Config, error) {
 		},
 		Services: ServicesConfig{
 			TavilyAPIKey:                   getEnv("TAVILY_API_KEY", ""),
-			OpenAIAPIKey:                   getEnv("OPENAI_API_KEY", ""),
 			OpenAIBaseURL:                  getEnv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"),
+			OpenAIAPIKey:                   resolveLLMAPIKey(getEnv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")),
 			SynthDataAPIKey:                getEnv("SYNTHDATA_API_KEY", ""),
 			SynthDataBaseURL:               getEnv("SYNTHDATA_BASE_URL", "https://api.synthdata.co"),
 			AlloraAPIKey:                   getEnv("ALLORA_API_KEY", ""),
@@ -336,6 +336,21 @@ func sanitizeCredential(value string) string {
 	return strings.Trim(trimmed, "\"")
 }
 
+func firstNonEmptyEnv(keys ...string) string {
+	for _, key := range keys {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		if value, exists := os.LookupEnv(key); exists {
+			clean := strings.TrimSpace(value)
+			if clean != "" {
+				return clean
+			}
+		}
+	}
+	return ""
+}
+
 // Helper to get env var as int
 func getEnvAsInt(key string, fallback int) int {
 	valueStr := getEnv(key, "")
@@ -419,4 +434,24 @@ func normalizeUpDownExecutionSourcePolicy(value string) string {
 	default:
 		return "det_allowed"
 	}
+}
+
+func resolveLLMAPIKey(baseURL string) string {
+	openAIKey := sanitizeCredential(getEnv("OPENAI_API_KEY", ""))
+	openRouterKey := sanitizeCredential(getEnv("OPENROUTER_API_KEY", ""))
+	base := strings.ToLower(strings.TrimSpace(baseURL))
+
+	// For OpenRouter endpoints, prefer OPENROUTER_API_KEY so stale OPENAI_API_KEY
+	// cannot shadow the intended credential.
+	if strings.Contains(base, "openrouter.ai") {
+		if openRouterKey != "" {
+			return openRouterKey
+		}
+		return openAIKey
+	}
+
+	if openAIKey != "" {
+		return openAIKey
+	}
+	return ""
 }

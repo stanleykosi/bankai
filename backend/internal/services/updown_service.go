@@ -905,6 +905,7 @@ func (s *UpDownService) Refresh(ctx context.Context) error {
 		}
 		return recs[i].GeneratedAt.After(recs[j].GeneratedAt)
 	})
+	signalsCacheSnapshot := cloneSignalMap(signals)
 
 	s.mu.Lock()
 	s.marketsBySlug = make(map[string]UpDownMarket, len(markets))
@@ -943,7 +944,7 @@ func (s *UpDownService) Refresh(ctx context.Context) error {
 	s.lastErr = ""
 	s.mu.Unlock()
 
-	s.persistCaches(ctx, markets, recs, signals)
+	s.persistCaches(ctx, markets, recs, signalsCacheSnapshot)
 	return nil
 }
 
@@ -1265,6 +1266,14 @@ func (s *UpDownService) persistCaches(ctx context.Context, markets []UpDownMarke
 			_ = s.redis.Set(ctx, upDownSignalCachePref+slug, payload, upDownCacheTTL).Err()
 		}
 	}
+}
+
+func cloneSignalMap(in map[string]UpDownSignal) map[string]UpDownSignal {
+	out := make(map[string]UpDownSignal, len(in))
+	for slug, signal := range in {
+		out[slug] = signal
+	}
+	return out
 }
 
 func (s *UpDownService) publishSignal(ctx context.Context, market UpDownMarket, signal UpDownSignal) {
