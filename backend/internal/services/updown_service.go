@@ -2995,9 +2995,9 @@ func synthWindowAnalyticsCacheKey(market UpDownMarket, metric string) string {
 	if base == "" {
 		return ""
 	}
-	if !market.EventStartTime.IsZero() {
-		return base + "|" + metric + "|" + strconv.FormatInt(market.EventStartTime.UTC().Unix(), 10)
-	}
+	// Analytics endpoints are window-class specific (asset + timeframe + horizon),
+	// not per-event-window specific. Keeping event_start in the cache key causes
+	// forced cold-cache fetches every rollover and recurrent synth_missing churn.
 	return base + "|" + metric
 }
 

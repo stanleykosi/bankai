@@ -239,6 +239,40 @@ func TestSynthUpDownCacheKeyScopesByWindowStart(t *testing.T) {
 	}
 }
 
+func TestSynthAnalyticsCacheKeyUsesWindowClassNotEventStart(t *testing.T) {
+	startA := time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)
+	startB := startA.Add(5 * time.Minute)
+
+	key5mA := synthWindowAnalyticsCacheKey(UpDownMarket{
+		Asset:          "BTC",
+		WindowType:     Window5m,
+		EventStartTime: startA,
+	}, "percentiles")
+	key5mB := synthWindowAnalyticsCacheKey(UpDownMarket{
+		Asset:          "BTC",
+		WindowType:     Window5m,
+		EventStartTime: startB,
+	}, "percentiles")
+	if key5mA == "" || key5mB == "" {
+		t.Fatalf("expected non-empty synth analytics cache keys")
+	}
+	if key5mA != key5mB {
+		t.Fatalf("expected identical 5m analytics cache keys across window rollovers; got %q vs %q", key5mA, key5mB)
+	}
+
+	key15m := synthWindowAnalyticsCacheKey(UpDownMarket{
+		Asset:          "BTC",
+		WindowType:     Window15m,
+		EventStartTime: startA,
+	}, "percentiles")
+	if key15m == "" {
+		t.Fatalf("expected non-empty 15m synth analytics cache key")
+	}
+	if key15m == key5mA {
+		t.Fatalf("expected 15m analytics cache key to differ from 5m key; got %q", key15m)
+	}
+}
+
 func TestBuildSignalUsesLiveMarketQuotesForPMarket(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
 	if err != nil {
