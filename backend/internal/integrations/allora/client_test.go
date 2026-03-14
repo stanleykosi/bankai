@@ -131,3 +131,43 @@ func TestGetPriceInferenceRetriesRetryableStatus(t *testing.T) {
 		t.Fatalf("expected 3 attempts, got %d", got)
 	}
 }
+
+func TestGetPriceInferenceParsesNumericTimestamp(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"request_id":"numeric-ts",
+			"status":true,
+			"data":{
+				"signature":"0xbeef",
+				"inference_data":{
+					"network_inference":"3000000000000000000000",
+					"confidence_interval_percentiles":["50000000000000000000"],
+					"confidence_interval_values":["3000000000000000000000"],
+					"topic_id":"14",
+					"timestamp":1719866777
+				}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		Services: config.ServicesConfig{
+			AlloraAPIKey:          "test-key",
+			AlloraBaseURL:         server.URL,
+			AlloraSignatureFormat: "ethereum-11155111",
+		},
+	}
+	client := NewClient(cfg)
+
+	out, err := client.GetPriceInference(context.Background(), "BTC", Timeframe5m)
+	if err != nil {
+		t.Fatalf("GetPriceInference() error = %v", err)
+	}
+	if out.Timestamp.Unix() != 1719866777 {
+		t.Fatalf("expected timestamp 1719866777, got %d", out.Timestamp.Unix())
+	}
+}

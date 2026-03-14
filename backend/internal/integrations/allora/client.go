@@ -1,6 +1,7 @@
 package allora
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -60,11 +61,11 @@ type priceInferenceAPIResponse struct {
 	Data      struct {
 		Signature     string `json:"signature"`
 		InferenceData struct {
-			NetworkInference              string   `json:"network_inference"`
-			ConfidenceIntervalPercentiles []string `json:"confidence_interval_percentiles"`
-			ConfidenceIntervalValues      []string `json:"confidence_interval_values"`
-			TopicID                       string   `json:"topic_id"`
-			Timestamp                     string   `json:"timestamp"`
+			NetworkInference              string          `json:"network_inference"`
+			ConfidenceIntervalPercentiles []string        `json:"confidence_interval_percentiles"`
+			ConfidenceIntervalValues      []string        `json:"confidence_interval_values"`
+			TopicID                       string          `json:"topic_id"`
+			Timestamp                     json.RawMessage `json:"timestamp"`
 		} `json:"inference_data"`
 	} `json:"data"`
 }
@@ -183,7 +184,7 @@ func (c *Client) GetPriceInference(ctx context.Context, asset string, timeframe 
 		return nil, fmt.Errorf("invalid network_inference: %w", err)
 	}
 
-	ts, err := parseUnixSeconds(payload.Data.InferenceData.Timestamp)
+	ts, err := parseUnixSecondsRaw(payload.Data.InferenceData.Timestamp)
 	if err != nil {
 		return nil, fmt.Errorf("invalid inference timestamp: %w", err)
 	}
@@ -269,4 +270,25 @@ func parseUnixSeconds(raw string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("invalid timestamp %q", raw)
 	}
 	return time.Unix(sec.Int64(), 0).UTC(), nil
+}
+
+func parseUnixSecondsRaw(raw json.RawMessage) (time.Time, error) {
+	data := bytes.TrimSpace(raw)
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
+		return time.Time{}, fmt.Errorf("empty timestamp")
+	}
+	if data[0] == '"' {
+		var value string
+		if err := json.Unmarshal(data, &value); err != nil {
+			return time.Time{}, err
+		}
+		return parseUnixSeconds(value)
+	}
+	var value json.Number
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return time.Time{}, fmt.Errorf("invalid timestamp %q", string(data))
+	}
+	return parseUnixSeconds(value.String())
 }
