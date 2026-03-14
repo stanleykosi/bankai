@@ -28,7 +28,9 @@ const (
 	upDownLLMSnapshotCountDefault = 2
 	upDownLLMSnapshotSpacing5m    = 250 * time.Millisecond
 	upDownLLMSnapshotSpacing15m   = 450 * time.Millisecond
-	upDownLLMSnapshotDriftMax     = 0.035
+	upDownLLMSnapshotDriftSoftMax = 0.035
+	upDownLLMSnapshotDriftHardMax = 0.085
+	upDownLLMSnapshotEVHardMin    = 0.015
 	upDownLLMCalibrationTTL       = 5 * time.Minute
 	upDownLLMAlloraLastGoodMaxAge = 12 * time.Minute
 )
@@ -397,14 +399,19 @@ type llmStructuredContext struct {
 		ReasonCodes []string        `json:"reason_codes"`
 	} `json:"guards"`
 	Allora struct {
-		RawP5      float64 `json:"raw_p5"`
-		SmoothedP5 float64 `json:"smoothed_p5"`
-		ProxyP15   float64 `json:"proxy_p15"`
-		AgeSeconds int64   `json:"age_seconds"`
-		Status     string  `json:"status"`
-		UsedCached bool    `json:"used_cached"`
-		TopicID    string  `json:"topic_id"`
-		Timestamp  int64   `json:"timestamp_unix"`
+		Asset                         string    `json:"asset"`
+		Timeframe                     string    `json:"timeframe"`
+		RawP5                         float64   `json:"raw_p5"`
+		SmoothedP5                    float64   `json:"smoothed_p5"`
+		ProxyP15                      float64   `json:"proxy_p15"`
+		AgeSeconds                    int64     `json:"age_seconds"`
+		Status                        string    `json:"status"`
+		UsedCached                    bool      `json:"used_cached"`
+		TopicID                       string    `json:"topic_id"`
+		Timestamp                     int64     `json:"timestamp_unix"`
+		NetworkInference              *float64  `json:"network_inference,omitempty"`
+		ConfidenceIntervalPercentiles []float64 `json:"confidence_interval_percentiles,omitempty"`
+		ConfidenceIntervalValues      []float64 `json:"confidence_interval_values,omitempty"`
 	} `json:"allora"`
 	SnapshotStability LLMSnapshotStability        `json:"snapshot_stability"`
 	Deterministic     llmDeterministicFormulaMeta `json:"deterministic_baseline"`
@@ -585,8 +592,9 @@ func (s *UpDownLLMService) Generate(ctx context.Context, req UpDownLLMGenerateRe
 		}
 	}
 	calibration := s.getClosedLoopCalibration(ctx, *market)
+	stabilityHardBlock := snapshotStabilityHardBlock(stability)
 
-	if !stability.Stable {
+	if stabilityHardBlock {
 		packet := LLMTradePacket{
 			Slug:            market.Slug,
 			ConditionID:     market.ConditionID,
@@ -600,6 +608,7 @@ func (s *UpDownLLMService) Generate(ctx context.Context, req UpDownLLMGenerateRe
 				"snapshot_instability_guard",
 				"single_snapshot_risk_reduced",
 				"multi_snapshot_disagreement",
+				"snapshot_instability_hard_block",
 			}),
 			InvalidationConditions: defaultLLMInvalidations(*market, "NONE"),
 			EffectiveGuardBlocks: dedupeStrings(append(
@@ -721,6 +730,10 @@ func (s *UpDownLLMService) Generate(ctx context.Context, req UpDownLLMGenerateRe
 		packet.SuggestedNotional = 0
 		packet.EffectiveGuardBlocks = dedupeStrings(append(packet.EffectiveGuardBlocks, "retrieval_quality_low"))
 		packet.ReasonCodes = dedupeStrings(append(packet.ReasonCodes, "retrieval_quality_low"))
+	}
+	if !stability.Stable {
+		packet.Confidence = upDownClamp(packet.Confidence*0.92, 0, 1)
+		packet.ReasonCodes = dedupeStrings(append(packet.ReasonCodes, "snapshot_instability_soft"))
 	}
 	packet.Confidence = upDownClamp(packet.Confidence, 0, 1)
 
@@ -892,78 +905,71 @@ func (s *UpDownLLMService) collectIndependentSnapshot(ctx context.Context, marke
 	var volSummary *synthdata.VolatilityResponse
 	var percentile *synthdata.PredictionPercentilesResponse
 	var lpSummary *synthdata.LPProbabilitiesResponse
-	var synthErrs []string
-	synthWindow := synthWindowForMarket(marketCopy.WindowType)
 	horizon := horizonForWindow(marketCopy.WindowType)
-	if s.synth != nil && s.synth.Enabled() && supportsSynthAnalyticsForWindow(marketCopy.WindowType) && synthWindow != "" {
+	if s.updown != nil {
 		var wg sync.WaitGroup
-		var errMu sync.Mutex
-		appendErr := func(source string, err error) {
-			if err == nil {
-				return
-			}
-			errMu.Lock()
-			synthErrs = append(synthErrs, source+": "+err.Error())
-			errMu.Unlock()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			synthResp = s.updown.getSynthUpDownCached(ctx, marketCopy, map[string]*synthdata.PolymarketUpDownResponse{}, true)
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			volSummary = s.updown.getSynthVolatilityCached(ctx, marketCopy, map[string]*synthdata.VolatilityResponse{}, true)
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			percentile = s.updown.getSynthPercentilesCached(ctx, marketCopy, map[string]*synthdata.PredictionPercentilesResponse{}, true)
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			lpSummary = s.updown.getSynthLPProbabilitiesCached(ctx, marketCopy, map[string]*synthdata.LPProbabilitiesResponse{}, true)
+		}()
+		wg.Wait()
+	} else if s.synth != nil && s.synth.Enabled() && supportsSynthAnalyticsForWindow(marketCopy.WindowType) {
+		var wg sync.WaitGroup
+		synthWindow := synthWindowForMarket(marketCopy.WindowType)
+		if synthWindow != "" {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				reqCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+				defer cancel()
+				synthResp, _ = s.synth.GetPolymarketUpDown(reqCtx, marketCopy.Asset, synthWindow, horizon, 14, 10)
+			}()
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			reqCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 			defer cancel()
-			var reqErr error
-			synthResp, reqErr = s.synth.GetPolymarketUpDown(reqCtx, marketCopy.Asset, synthWindow, horizon, 14, 10)
-			appendErr("synth_updown", reqErr)
+			volSummary, _ = s.synth.GetVolatility(reqCtx, marketCopy.Asset, horizon, 14, 10)
 		}()
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			reqCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 			defer cancel()
-			var reqErr error
-			volSummary, reqErr = s.synth.GetVolatility(reqCtx, marketCopy.Asset, horizon, 14, 10)
-			appendErr("synth_volatility", reqErr)
+			percentile, _ = s.synth.GetPredictionPercentiles(reqCtx, marketCopy.Asset, horizon, 14, 10)
 		}()
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			reqCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 			defer cancel()
-			var reqErr error
-			percentile, reqErr = s.synth.GetPredictionPercentiles(reqCtx, marketCopy.Asset, horizon, 14, 10)
-			appendErr("synth_percentiles", reqErr)
-		}()
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			reqCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
-			defer cancel()
-			var reqErr error
-			lpSummary, reqErr = s.synth.GetLPProbabilities(reqCtx, marketCopy.Asset, horizon, 14, 10)
-			appendErr("synth_lp", reqErr)
+			lpSummary, _ = s.synth.GetLPProbabilities(reqCtx, marketCopy.Asset, horizon, 14, 10)
 		}()
 		wg.Wait()
 	}
-	for _, note := range synthErrs {
-		reasons = append(reasons, "synth_fetch_"+sanitizeReasonCode(note))
-	}
 
-	directSynthProbabilityAllowed := true
 	proxySynthWindow := false
 	if synthResp != nil && !synthUpDownResponseMatchesMarket(marketCopy, synthResp) {
-		if synthUpDownResponseNearMarketWindow(marketCopy, synthResp) {
-			proxySynthWindow = true
-			directSynthProbabilityAllowed = false
-			reasons = append(reasons, "synth_window_proxy")
-			if marketCopy.WindowType != Window5m {
-				flags.SourceMismatch = true
-				reasons = append(reasons, "synth_market_window_mismatch")
-			}
-		} else {
-			flags.SourceMismatch = true
-			reasons = append(reasons, "synth_market_window_mismatch")
-			synthResp = nil
-		}
+		flags.SourceMismatch = true
+		reasons = append(reasons, "synth_market_window_mismatch")
+		synthResp = nil
 	}
 
 	var synthClock time.Time
@@ -1013,7 +1019,7 @@ func (s *UpDownLLMService) collectIndependentSnapshot(ctx context.Context, marke
 	var pSynthDirectPtr *float64
 	var pSynthPercentilePtr *float64
 	var pSynthPtr *float64
-	if synthResp != nil && directSynthProbabilityAllowed && synthResp.SynthProbabilityUp >= 0 && synthResp.SynthProbabilityUp <= 1 {
+	if synthResp != nil && synthResp.SynthProbabilityUp >= 0 && synthResp.SynthProbabilityUp <= 1 {
 		v := upDownClamp(synthResp.SynthProbabilityUp, 0.01, 0.99)
 		pSynthDirectPtr = &v
 		pSynthPtr = &v
@@ -1048,53 +1054,54 @@ func (s *UpDownLLMService) collectIndependentSnapshot(ctx context.Context, marke
 	modelDiagnosticCode := "not_requested"
 	modelDiagnosticDetail := ""
 	var pModelPtr *float64
+	var pSynthPrevSignalPtr *float64
+	if s.updown != nil {
+		s.updown.mu.RLock()
+		if prevSignal, ok := s.updown.signalsBySlug[marketCopy.Slug]; ok && prevSignal.PSynthUp != nil && now.Sub(prevSignal.Timestamp) <= upDownSignalHistoryTTL {
+			v := upDownClamp(*prevSignal.PSynthUp, 0.01, 0.99)
+			pSynthPrevSignalPtr = &v
+		}
+		s.updown.mu.RUnlock()
+	}
 	if thresholdPrice <= 0 {
 		modelDiagnosticCode = "threshold_missing"
 	} else if s.synth == nil || !s.synth.Enabled() {
 		modelDiagnosticCode = "synth_disabled"
-	} else {
-		timeToExpiry := marketCopy.EventEndTime.Sub(now)
-		stepSeconds := synthSamplingInterval(horizonForWindow(marketCopy.WindowType))
-		targetStep := int(math.Ceil(math.Max(1, timeToExpiry.Seconds()) / math.Max(stepSeconds.Seconds(), 1)))
-		if targetStep < 1 {
-			targetStep = 1
+	} else if s.updown != nil {
+		percentileCache := map[string]*synthdata.PredictionPercentilesResponse{}
+		if percentile != nil {
+			if key := synthWindowAnalyticsCacheKey(marketCopy, "percentiles"); key != "" {
+				percentileCache[key] = percentile
+			}
 		}
+		allowModelFetch := !now.Before(marketCopy.EventStartTime) && now.Before(marketCopy.EventEndTime)
+		pModel, code := s.updown.computeModelProbability(ctx, marketCopy, thresholdPrice, percentileCache, allowModelFetch)
+		if code != "" {
+			modelDiagnosticCode = code
+		}
+		if pModel > 0 {
+			v := upDownClamp(pModel, 0.01, 0.99)
+			pModelPtr = &v
+		}
+		if strings.HasPrefix(modelDiagnosticCode, "enterprise_failed") {
+			reasons = append(reasons, "enterprise_failed")
+		}
+	} else {
 		if pSynthPercentilePtr != nil {
 			v := *pSynthPercentilePtr
 			pModelPtr = &v
 			modelDiagnosticCode = "percentile_proxy"
-		}
-		if s.cfg.Services.UpDownEnterpriseEnabled {
-			timeIncrement, timeLength := synthPredictionShapeForWindow(marketCopy.WindowType)
-			if timeIncrement <= 0 {
-				timeIncrement = int(math.Max(stepSeconds.Seconds(), 300))
-			}
-			if timeLength <= 0 {
-				timeLength = maxInt(timeIncrement*targetStep, timeIncrement)
-			}
-			maxStep := int(math.Ceil(float64(timeLength) / float64(timeIncrement)))
-			if maxStep > 0 && targetStep > maxStep {
-				targetStep = maxStep
-			}
-			thresholdBucket := quantizeThreshold(thresholdPrice)
-			reqCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
-			enterprise, enterpriseErr := s.synth.GetEnterpriseProbabilityUp(reqCtx, marketCopy.Asset, timeIncrement, timeLength, targetStep, thresholdBucket)
-			cancel()
-			if enterpriseErr == nil && enterprise != nil && enterprise.ProbabilityUp >= 0 && enterprise.ProbabilityUp <= 1 {
-				v := upDownClamp(enterprise.ProbabilityUp, 0.01, 0.99)
-				pModelPtr = &v
-				modelDiagnosticCode = "enterprise_ok"
-				modelDiagnosticDetail = sanitizeReasonCode(enterprise.Source)
-			} else if enterpriseErr != nil {
-				modelDiagnosticCode = "enterprise_failed_percentile_proxy"
-				reasons = append(reasons, "enterprise_failed")
-			}
 		}
 	}
 	if pSynthPtr == nil && pModelPtr != nil {
 		v := *pModelPtr
 		pSynthPtr = &v
 		reasons = append(reasons, "synth_fallback_model")
+	}
+	if pSynthPtr == nil && pSynthPrevSignalPtr != nil {
+		v := *pSynthPrevSignalPtr
+		pSynthPtr = &v
+		reasons = append(reasons, "synth_fallback_previous_signal")
 	}
 	if pSynthPtr == nil {
 		flags.SynthMissing = true
@@ -1437,24 +1444,47 @@ func evaluateSnapshotStability(samples []llmIndependentSnapshot) LLMSnapshotStab
 		out.DirectionSummary = "MIXED"
 	}
 
-	needsMajority := 1
-	if out.SampleCount >= 2 {
-		needsMajority = 2
-	}
 	winnerVotes := maxInt(out.UpVotes, out.DownVotes)
-	if winnerVotes < needsMajority {
+	if winnerVotes == 0 {
 		out.Stable = false
 	}
 	if out.UpVotes > 0 && out.DownVotes > 0 {
 		out.Stable = false
 	}
-	if out.ConsensusDrift > upDownLLMSnapshotDriftMax {
+	if out.ConsensusDrift > upDownLLMSnapshotDriftSoftMax {
 		out.Stable = false
 	}
-	if out.AskUpDrift > upDownLLMSnapshotDriftMax || out.AskDownDrift > upDownLLMSnapshotDriftMax {
+	if out.AskUpDrift > upDownLLMSnapshotDriftSoftMax || out.AskDownDrift > upDownLLMSnapshotDriftSoftMax {
 		out.Stable = false
 	}
 	return out
+}
+
+func snapshotStabilityHardBlock(stability LLMSnapshotStability) bool {
+	if stability.SampleCount <= 0 {
+		return true
+	}
+	if stability.UpVotes == 0 && stability.DownVotes == 0 {
+		return true
+	}
+	if stability.ConsensusDrift > upDownLLMSnapshotDriftHardMax {
+		return true
+	}
+	if stability.AskUpDrift > upDownLLMSnapshotDriftHardMax || stability.AskDownDrift > upDownLLMSnapshotDriftHardMax {
+		return true
+	}
+	if stability.UpVotes > 0 && stability.DownVotes > 0 {
+		if stability.BestEVDrift >= upDownLLMSnapshotEVHardMin {
+			return true
+		}
+		if stability.ConsensusDrift >= upDownLLMSnapshotDriftSoftMax {
+			return true
+		}
+		if stability.AskUpDrift >= upDownLLMSnapshotDriftSoftMax || stability.AskDownDrift >= upDownLLMSnapshotDriftSoftMax {
+			return true
+		}
+	}
+	return false
 }
 
 func mergeSnapshotSeries(samples []llmIndependentSnapshot) *llmIndependentSnapshot {
@@ -1733,7 +1763,7 @@ func (s *UpDownLLMService) buildLLMContext(
 	ctxData.DataSemantics.Synth.Role = "native probabilistic and volatility analytics for this market window"
 	ctxData.DataSemantics.Synth.FreshMaxSeconds = 90
 	ctxData.DataSemantics.Synth.StaleSoftSeconds = 180
-	ctxData.DataSemantics.Synth.WindowNote = "5m and 15m windows may use different synth endpoints/horizons; window mismatches reduce trust"
+	ctxData.DataSemantics.Synth.WindowNote = "5m and 15m windows must use their matching synth up/down endpoints; cross-window payloads are rejected"
 	ctxData.DataSemantics.Synth.VolatilityNote = "volatility features are first-class priors and can override weak directional edges"
 	ctxData.DataSemantics.Synth.ProbabilityNote = "p_synth/p_model/p_lp/p_market are calibrated directional estimates, not guaranteed truths"
 	ctxData.DataSemantics.Synth.ReliabilityPolicy = "use retrieval evidence age, coverage, and score before trusting any synth field"
@@ -1815,6 +1845,8 @@ func (s *UpDownLLMService) buildLLMContext(
 	ctxData.Guards.RiskFlags = snapshot.RiskFlags
 	ctxData.Guards.ReasonCodes = dedupeStrings(snapshot.ReasonCodes)
 
+	ctxData.Allora.Asset = strings.ToUpper(strings.TrimSpace(market.Asset))
+	ctxData.Allora.Timeframe = string(allora.Timeframe5m)
 	ctxData.Allora.RawP5 = roundFloat(alloraMeta.RawP5, decimals)
 	ctxData.Allora.SmoothedP5 = roundFloat(alloraMeta.SmoothedP5, decimals)
 	ctxData.Allora.ProxyP15 = roundFloat(alloraMeta.ProxyP15, decimals)
@@ -1824,6 +1856,10 @@ func (s *UpDownLLMService) buildLLMContext(
 	if alloraInference != nil {
 		ctxData.Allora.TopicID = strings.TrimSpace(alloraInference.TopicID)
 		ctxData.Allora.Timestamp = alloraInference.Timestamp.UTC().Unix()
+		v := roundFloat(alloraInference.NetworkInference, decimals)
+		ctxData.Allora.NetworkInference = &v
+		ctxData.Allora.ConfidenceIntervalPercentiles = roundFloatSlice(alloraInference.ConfidenceIntervalPercentiles, decimals, 16)
+		ctxData.Allora.ConfidenceIntervalValues = roundFloatSlice(alloraInference.ConfidenceIntervalValues, decimals, 16)
 	}
 	ctxData.SnapshotStability = LLMSnapshotStability{
 		SampleCount:      stability.SampleCount,
@@ -2159,8 +2195,8 @@ func computeEffectiveGuardBlocks(
 	if retrieval.CorrectiveAction == "force_no_trade" {
 		blocks = append(blocks, "retrieval_quality_low")
 	}
-	if !stability.Stable {
-		blocks = append(blocks, "snapshot_instability")
+	if snapshotStabilityHardBlock(stability) {
+		blocks = append(blocks, "snapshot_instability_hard")
 	}
 	return dedupeStrings(blocks)
 }
@@ -3127,7 +3163,7 @@ Synth interpretation rules:
 - p_synth_up / p_model_up / p_lp_up / p_market_up are directional estimates for this exact window context.
 - volatility_average_forecast / volatility_average_past are volatility priors and must be used before selecting size/confidence.
 - In high volatility, require stronger edge and better microstructure before trading.
-- If synth window mismatch/proxy notes or stale signals appear, reduce confidence or abstain.
+- If synth window mismatch or stale signals appear, abstain.
 
 Allora interpretation rules:
 - allora.raw_p5 is a short-horizon prior from 5m topic inference.

@@ -1203,7 +1203,7 @@ func TestSynthWindowModelCacheKeyStableWithinWindow(t *testing.T) {
 	}
 }
 
-func TestShouldAllowSynthFetchForMarketActiveOnly(t *testing.T) {
+func TestShouldAllowSynthFetchForMarketWindowPrefetch(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 
 	active := UpDownMarket{
@@ -1214,12 +1214,20 @@ func TestShouldAllowSynthFetchForMarketActiveOnly(t *testing.T) {
 		t.Fatalf("expected active market to allow synth fetch")
 	}
 
-	upcoming := UpDownMarket{
+	nearStart := UpDownMarket{
 		EventStartTime: now.Add(10 * time.Second),
 		EventEndTime:   now.Add(5*time.Minute + 10*time.Second),
 	}
-	if shouldAllowSynthFetchForMarket(now, upcoming) {
-		t.Fatalf("expected upcoming market to deny synth fetch")
+	if !shouldAllowSynthFetchForMarket(now, nearStart) {
+		t.Fatalf("expected near-start market to allow synth prefetch")
+	}
+
+	farUpcoming := UpDownMarket{
+		EventStartTime: now.Add(3 * time.Minute),
+		EventEndTime:   now.Add(8 * time.Minute),
+	}
+	if shouldAllowSynthFetchForMarket(now, farUpcoming) {
+		t.Fatalf("expected far-upcoming market to deny synth fetch")
 	}
 
 	closed := UpDownMarket{
@@ -1490,7 +1498,7 @@ func TestBuildSignalClosedMarketUsesPersistedReferenceSnapshot(t *testing.T) {
 	}
 }
 
-func TestBuildSignalIgnoresProxySynthProbabilityFor5m(t *testing.T) {
+func TestBuildSignalRejectsMismatchedSynthWindowFor5m(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
@@ -1509,15 +1517,15 @@ func TestBuildSignalIgnoresProxySynthProbabilityFor5m(t *testing.T) {
 	synthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/insights/polymarket/up-down/15min":
+		case "/insights/polymarket/up-down/5min":
 			_, _ = w.Write([]byte(`{
-				"slug":"btc-updown-proxy",
+				"slug":"btc-updown-mismatch",
 				"start_price":68000,
 				"current_time":"` + now.Format(time.RFC3339Nano) + `",
 				"current_price":68110,
 				"synth_probability_up":0.99,
 				"event_start_time":"` + start.Add(-5*time.Minute).Format(time.RFC3339Nano) + `",
-				"event_end_time":"` + end.Add(10*time.Minute).Format(time.RFC3339Nano) + `",
+				"event_end_time":"` + end.Add(5*time.Minute).Format(time.RFC3339Nano) + `",
 				"best_bid_size":300,
 				"best_ask_size":280
 			}`))
@@ -1617,14 +1625,14 @@ func TestBuildSignalIgnoresProxySynthProbabilityFor5m(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build signal: %v", err)
 	}
-	if signal.RiskFlags.SourceMismatch {
-		t.Fatalf("expected proxy synth window for 5m not to trigger source mismatch")
+	if !signal.RiskFlags.SourceMismatch {
+		t.Fatalf("expected strict synth window mismatch to trigger source mismatch")
 	}
 	if signal.PSynthUp == nil {
 		t.Fatalf("expected synth probability via fallback path")
 	}
 	if *signal.PSynthUp >= 0.95 {
-		t.Fatalf("expected proxy direct synth probability to be ignored, got %.4f", *signal.PSynthUp)
+		t.Fatalf("expected mismatched synth direct probability to be rejected, got %.4f", *signal.PSynthUp)
 	}
 
 	foundMismatchReason := false
@@ -1634,8 +1642,8 @@ func TestBuildSignalIgnoresProxySynthProbabilityFor5m(t *testing.T) {
 			break
 		}
 	}
-	if foundMismatchReason {
-		t.Fatalf("did not expect synth_market_window_mismatch when using native 5m endpoint")
+	if !foundMismatchReason {
+		t.Fatalf("expected synth_market_window_mismatch reason code")
 	}
 }
 
@@ -2096,6 +2104,25 @@ func TestSynthUpDownResponseMatchesMarketByWindowTimes(t *testing.T) {
 
 	if !synthUpDownResponseMatchesMarket(market, resp) {
 		t.Fatalf("expected synth response to match market by event window")
+	}
+}
+
+func TestSynthUpDownResponseMatchesMarketRejectsWindowSpanMismatch(t *testing.T) {
+	start := time.Date(2026, 3, 6, 8, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	market := UpDownMarket{
+		Slug:           "btc-updown-5m-1772860800",
+		EventStartTime: start,
+		EventEndTime:   end,
+	}
+	resp := &synthdata.PolymarketUpDownResponse{
+		Slug:           "btc-updown-15m-proxy",
+		EventStartTime: start.Add(-5 * time.Minute).Format(time.RFC3339),
+		EventEndTime:   end.Add(5 * time.Minute).Format(time.RFC3339),
+	}
+
+	if synthUpDownResponseMatchesMarket(market, resp) {
+		t.Fatalf("expected strict matcher to reject cross-window synth payload")
 	}
 }
 

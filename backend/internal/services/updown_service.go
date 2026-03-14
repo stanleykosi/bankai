@@ -41,6 +41,7 @@ const (
 	upDownGammaEndLookahead = 5 * time.Hour
 	upDownCloseFinalizeTTL  = 4 * time.Minute
 	upDownSignalHistoryTTL  = 20 * time.Second
+	upDownSynthPrefetchLead = 75 * time.Second
 
 	upDownSynthMonthlyCreditCapDefault = 18000
 	upDownSynthFailureBackoff          = 2 * time.Minute
@@ -983,7 +984,7 @@ func (s *UpDownService) pickSignalCandidates(markets []UpDownMarket) []UpDownMar
 }
 
 func shouldAllowSynthFetchForMarket(now time.Time, market UpDownMarket) bool {
-	return !now.Before(market.EventStartTime) && now.Before(market.EventEndTime)
+	return !now.Before(market.EventStartTime.Add(-upDownSynthPrefetchLead)) && now.Before(market.EventEndTime)
 }
 
 func (s *UpDownService) ListMarkets(ctx context.Context, asset string, window string) ([]UpDownMarket, error) {
@@ -1892,23 +1893,11 @@ func (s *UpDownService) buildSignalWithOptions(
 	}
 
 	synthResp := s.getSynthUpDownCached(ctx, market, synthCache, options.allowSynthFetch)
-	proxySynthWindow := false
-	directSynthProbabilityAllowed := true
 	var synthClock time.Time
 	if synthResp != nil && !synthUpDownResponseMatchesMarket(market, synthResp) {
-		if synthUpDownResponseNearMarketWindow(market, synthResp) {
-			proxySynthWindow = true
-			directSynthProbabilityAllowed = false
-			reasons = append(reasons, "synth_window_proxy")
-			if market.WindowType != Window5m {
-				flags.SourceMismatch = true
-				reasons = append(reasons, "synth_market_window_mismatch")
-			}
-		} else {
-			flags.SourceMismatch = true
-			reasons = append(reasons, "synth_market_window_mismatch")
-			synthResp = nil
-		}
+		flags.SourceMismatch = true
+		reasons = append(reasons, "synth_market_window_mismatch")
+		synthResp = nil
 	}
 	if synthResp != nil {
 		if synthResp.StartPrice > 0 {
@@ -1923,7 +1912,7 @@ func (s *UpDownService) buildSignalWithOptions(
 				referenceCurrentPrice = &v
 			}
 		}
-		if directSynthProbabilityAllowed && synthResp.SynthProbabilityUp >= 0 && synthResp.SynthProbabilityUp <= 1 {
+		if synthResp.SynthProbabilityUp >= 0 && synthResp.SynthProbabilityUp <= 1 {
 			v := synthResp.SynthProbabilityUp
 			pSynthPtr = &v
 		}
@@ -2031,7 +2020,7 @@ func (s *UpDownService) buildSignalWithOptions(
 	if thresholdPrice > 0 && supportsSynthAnalyticsForWindow(market.WindowType) && s.synth != nil && s.synth.Enabled() {
 		percentileSynthEstimate = s.estimateProbabilityFromPercentiles(ctx, market, thresholdPrice, percentileCache, options.allowSynthFetch)
 	}
-	if thresholdPrice > 0 && supportsSynthAnalyticsForWindow(market.WindowType) && s.synth != nil && s.synth.Enabled() && !proxySynthWindow {
+	if thresholdPrice > 0 && supportsSynthAnalyticsForWindow(market.WindowType) && s.synth != nil && s.synth.Enabled() {
 		lp := s.getSynthLPProbabilitiesCached(ctx, market, lpCache, options.allowSynthFetch)
 		if p, ok := lpProbabilityAtThreshold(lp, horizon, thresholdPrice); ok {
 			v := upDownClamp(p, 0.01, 0.99)
@@ -2073,7 +2062,7 @@ func (s *UpDownService) buildSignalWithOptions(
 					modelDiagnosticDetail = "deduped_in_blend"
 				}
 			}
-		} else if !proxySynthWindow && prevSignal != nil && prevSignal.PSynthUp != nil && now.Sub(prevSignal.Timestamp) <= upDownSignalHistoryTTL {
+		} else if prevSignal != nil && prevSignal.PSynthUp != nil && now.Sub(prevSignal.Timestamp) <= upDownSignalHistoryTTL {
 			v := upDownClamp(*prevSignal.PSynthUp, 0.01, 0.99)
 			pSynthPtr = &v
 			reasons = append(reasons, "synth_fallback_previous")
@@ -3496,44 +3485,31 @@ func synthUpDownResponseMatchesMarket(market UpDownMarket, resp *synthdata.Polym
 	if resp == nil {
 		return false
 	}
-	if slug := strings.TrimSpace(resp.Slug); slug != "" && strings.EqualFold(slug, strings.TrimSpace(market.Slug)) {
-		return true
-	}
-
 	start, startOK := parseSynthTimestamp(resp.EventStartTime)
 	end, endOK := parseSynthTimestamp(resp.EventEndTime)
 	if !startOK || !endOK {
 		return false
 	}
 
-	windowSpan := market.EventEndTime.Sub(market.EventStartTime)
-	tolerance := maxDuration(2*time.Minute, windowSpan/2)
-	if tolerance > 20*time.Minute {
-		tolerance = 20 * time.Minute
+	marketSpan := market.EventEndTime.Sub(market.EventStartTime)
+	respSpan := end.Sub(start)
+	if marketSpan <= 0 || respSpan <= 0 {
+		return false
 	}
-	startDelta := absDuration(market.EventStartTime.Sub(start))
-	endDelta := absDuration(market.EventEndTime.Sub(end))
-	return startDelta <= tolerance && endDelta <= tolerance
-}
 
-func synthUpDownResponseNearMarketWindow(market UpDownMarket, resp *synthdata.PolymarketUpDownResponse) bool {
-	if resp == nil {
+	spanTolerance := time.Minute
+	if marketSpan > 30*time.Minute {
+		spanTolerance = 2 * time.Minute
+	}
+	if absDuration(marketSpan-respSpan) > spanTolerance {
 		return false
 	}
-	start, startOK := parseSynthTimestamp(resp.EventStartTime)
-	end, endOK := parseSynthTimestamp(resp.EventEndTime)
-	if !startOK || !endOK {
-		return false
+
+	tolerance := time.Minute
+	if marketSpan > 30*time.Minute {
+		tolerance = 2 * time.Minute
 	}
-	windowSpan := market.EventEndTime.Sub(market.EventStartTime)
-	if windowSpan <= 0 {
-		windowSpan = 5 * time.Minute
-	}
-	tolerance := maxDuration(2*time.Minute, windowSpan)
-	if market.WindowType == Window5m {
-		// 5m markets can use SynthData 15m proxy windows.
-		tolerance = maxDuration(tolerance, 12*time.Minute)
-	}
+
 	startDelta := absDuration(market.EventStartTime.Sub(start))
 	endDelta := absDuration(market.EventEndTime.Sub(end))
 	return startDelta <= tolerance && endDelta <= tolerance

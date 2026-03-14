@@ -151,6 +151,78 @@ func TestBuildLLMContextHashDeterministic(t *testing.T) {
 	}
 }
 
+func TestBuildLLMContextIncludesAllora5mInferencePayload(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		Services: config.ServicesConfig{
+			UpDownLLMContextDecimals: 6,
+		},
+	}
+	svc := &UpDownLLMService{cfg: cfg}
+	now := time.Now().UTC()
+	start := now.Add(-2 * time.Minute)
+	end := start.Add(5 * time.Minute)
+	refStart := 3000.1234567
+	refNow := 3001.998877
+
+	market := UpDownMarket{
+		Slug:                 "eth-updown-5m-2",
+		ConditionID:          "0xdef",
+		Asset:                "ETH",
+		WindowType:           Window5m,
+		ResolutionSourceType: ResolutionSourceChainlink,
+		EventStartTime:       start,
+		EventEndTime:         end,
+		TimeToEndSeconds:     180,
+	}
+	snapshot := llmIndependentSnapshot{
+		Timestamp:             now,
+		ReferenceStartPrice:   &refStart,
+		ReferenceCurrentPrice: &refNow,
+		ReferenceSource:       "synth",
+	}
+	alloraInf := &allora.PriceInference{
+		Asset:                         "ETH",
+		Timeframe:                     "5m",
+		TopicID:                       "13",
+		Timestamp:                     now.Add(-20 * time.Second),
+		NetworkInference:              3012.551234,
+		ConfidenceIntervalPercentiles: []float64{0.1, 0.5, 0.9},
+		ConfidenceIntervalValues:      []float64{2988.1, 3012.5, 3041.8},
+	}
+	meta := AlloraProxyMeta{
+		RawP5:       0.59,
+		SmoothedP5:  0.58,
+		ProxyP15:    0.57,
+		AgeSeconds:  20,
+		ProxyStatus: "fresh",
+	}
+	stability := LLMSnapshotStability{
+		SampleCount:      2,
+		Stable:           true,
+		UpVotes:          2,
+		DirectionSummary: "UP",
+	}
+
+	ctxData, _, _ := svc.buildLLMContext(market, snapshot, alloraInf, meta, stability)
+	if ctxData.Allora.Asset != "ETH" {
+		t.Fatalf("expected allora asset ETH, got %q", ctxData.Allora.Asset)
+	}
+	if ctxData.Allora.Timeframe != "5m" {
+		t.Fatalf("expected allora timeframe 5m, got %q", ctxData.Allora.Timeframe)
+	}
+	if ctxData.Allora.NetworkInference == nil {
+		t.Fatalf("expected allora network inference to be present")
+	}
+	if len(ctxData.Allora.ConfidenceIntervalPercentiles) != 3 {
+		t.Fatalf("expected 3 allora confidence percentiles, got %d", len(ctxData.Allora.ConfidenceIntervalPercentiles))
+	}
+	if len(ctxData.Allora.ConfidenceIntervalValues) != 3 {
+		t.Fatalf("expected 3 allora confidence values, got %d", len(ctxData.Allora.ConfidenceIntervalValues))
+	}
+}
+
 func TestDecodeStrictLLMResponseRejectsUnknownField(t *testing.T) {
 	t.Parallel()
 
@@ -216,5 +288,60 @@ func TestEvaluateSnapshotStabilityMixedVotesUnstable(t *testing.T) {
 	}
 	if out.DirectionSummary != "MIXED" {
 		t.Fatalf("expected MIXED direction summary, got %s", out.DirectionSummary)
+	}
+}
+
+func TestSnapshotStabilityHardBlockMixedLowDriftAllowsLLM(t *testing.T) {
+	t.Parallel()
+
+	stability := LLMSnapshotStability{
+		SampleCount:    2,
+		Stable:         false,
+		UpVotes:        1,
+		DownVotes:      1,
+		ConsensusDrift: 0.02,
+		AskUpDrift:     0.01,
+		AskDownDrift:   0.012,
+		BestEVDrift:    0.008,
+	}
+	if snapshotStabilityHardBlock(stability) {
+		t.Fatalf("expected mixed low-drift stability to avoid hard block")
+	}
+}
+
+func TestSnapshotStabilityHardBlockNoDirectionalVotes(t *testing.T) {
+	t.Parallel()
+
+	stability := LLMSnapshotStability{
+		SampleCount:    2,
+		Stable:         false,
+		UpVotes:        0,
+		DownVotes:      0,
+		NoTradeVotes:   2,
+		ConsensusDrift: 0.01,
+		AskUpDrift:     0.008,
+		AskDownDrift:   0.007,
+		BestEVDrift:    0.004,
+	}
+	if !snapshotStabilityHardBlock(stability) {
+		t.Fatalf("expected no-direction snapshot set to hard block")
+	}
+}
+
+func TestSnapshotStabilityHardBlockTriggersOnHighDrift(t *testing.T) {
+	t.Parallel()
+
+	stability := LLMSnapshotStability{
+		SampleCount:    2,
+		Stable:         false,
+		UpVotes:        1,
+		DownVotes:      1,
+		ConsensusDrift: 0.09,
+		AskUpDrift:     0.02,
+		AskDownDrift:   0.02,
+		BestEVDrift:    0.02,
+	}
+	if !snapshotStabilityHardBlock(stability) {
+		t.Fatalf("expected high-drift mixed stability to hard block")
 	}
 }
