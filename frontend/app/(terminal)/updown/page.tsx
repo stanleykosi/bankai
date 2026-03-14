@@ -49,6 +49,7 @@ const STREAM_RETRY_BASE_MS = 1200;
 const STREAM_RETRY_MAX_MS = 15000;
 const STREAM_REQUEST_RETRY_BASE_MS = 1000;
 const STREAM_REQUEST_RETRY_MAX_MS = 12000;
+const LLM_PACKET_REQUIRED_WARNING = "Generate LLM directional packet before autofill.";
 
 const pct = (value?: number) => {
   if (typeof value !== "number" || Number.isNaN(value)) return "--";
@@ -153,8 +154,6 @@ const isMarketActiveAt = (market: UpDownMarket, nowMs: number, anchorMs: number)
   }
   return Boolean(market.is_active_window);
 };
-
-const formatRiskFlag = (value: string) => value.replaceAll("_", " ");
 
 type RailLane = {
   key: string;
@@ -633,23 +632,10 @@ export default function UpDownPage() {
     return nowMs - ts > 30_000;
   }, [selectedSignal?.timestamp, nowMs]);
 
-  const activeRiskFlags = useMemo(() => {
-    if (!selectedSignal) return [];
-    return Object.entries(selectedSignal.risk_flags ?? {})
-      .filter(([, enabled]) => Boolean(enabled))
-      .map(([flag]) => flag);
-  }, [selectedSignal]);
-
   const activeCountdown = useMemo(() => {
     if (!selectedMarket) return "--";
     return marketCountdown(selectedMarket, nowMs, marketAnchorMs);
   }, [nowMs, selectedMarket, marketAnchorMs]);
-
-  const referenceAgeSeconds = useMemo(() => {
-    const ts = toMillis(selectedSignal?.reference_updated_at ?? selectedSignal?.timestamp);
-    if (!ts) return null;
-    return Math.max(0, Math.floor((nowMs - ts) / 1000));
-  }, [selectedSignal?.reference_updated_at, selectedSignal?.timestamp, nowMs]);
 
   const startSnapshotMissing = useMemo(() => {
     if (!selectedMarket || !selectedSignal) return false;
@@ -734,7 +720,7 @@ export default function UpDownPage() {
   const llmExecutionBlockedReason = useMemo(() => {
     if (!selectedMarket || !selectedSignal) return "No active signal selected.";
     if (llmUnsupportedReason) return llmUnsupportedReason;
-    if (!llmPacket) return "Generate LLM directional packet before execution.";
+    if (!llmPacket) return LLM_PACKET_REQUIRED_WARNING;
     if (llmPacketStale) return "LLM packet is stale. Regenerate before execution.";
     if (!llmPacket.entry) return "LLM entry gate missing. Regenerate packet.";
     if (!llmPacket.entry.ready_to_bet) {
@@ -1102,7 +1088,7 @@ export default function UpDownPage() {
               ) : (
                 <>
                   <div className="rounded-md border border-border/60 bg-background/40 p-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="rounded bg-primary/15 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-primary">
                           {selectedMarket.asset} {selectedMarket.window_type.toUpperCase()}
@@ -1126,19 +1112,11 @@ export default function UpDownPage() {
                           </span>
                         ) : null}
                       </div>
-                      <div className="text-right">
-                        <span className="font-mono text-xs text-foreground">
-                          DET: {selectedRecommendation?.decision ?? "NO_TRADE"}
-                        </span>
-                        <div className="text-[10px] text-muted-foreground">
-                          LLM: {llmPacket?.decision ?? "NOT_GENERATED"}
-                        </div>
-                      </div>
                     </div>
                     <div className="mt-2 text-sm font-semibold text-foreground">
                       {selectedMarket.market?.title || selectedMarket.slug}
                     </div>
-                    <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-3">
+                    <div className="mt-3 grid grid-cols-2 gap-2 xl:grid-cols-4">
                       <Metric
                         label="Start Price"
                         value={price(selectedSignal.reference_start_price)}
@@ -1149,32 +1127,12 @@ export default function UpDownPage() {
                         value={price(selectedSignal.reference_current_price)}
                       />
                       <Metric
-                        label="End Price"
-                        value={
-                          typeof selectedSignal.reference_end_price === "number"
-                            ? price(selectedSignal.reference_end_price)
-                            : isMarketActiveAt(selectedMarket, nowMs, marketAnchorMs)
-                              ? "Pending"
-                              : "--"
-                        }
-                      />
-                      <Metric
                         label="Window Start"
                         value={formatClock(selectedMarket.event_start_time)}
                       />
                       <Metric
                         label="Window End"
                         value={formatClock(selectedMarket.event_end_time)}
-                      />
-                      <Metric
-                        label="Ref Age"
-                        value={
-                          referenceAgeSeconds === null
-                            ? "--"
-                            : referenceAgeSeconds < 1
-                              ? "<1s"
-                              : `${referenceAgeSeconds}s`
-                        }
                       />
                     </div>
                     {startSnapshotMissing ? (
@@ -1185,252 +1143,110 @@ export default function UpDownPage() {
                   </div>
 
                   <div className="grid gap-3 2xl:grid-cols-2">
-                    <div className="space-y-3">
-                      <div className="rounded-md border border-border/60 bg-background/40 p-3">
-                        <div className="mb-2 flex items-center justify-between">
-                          <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-                            Deterministic Engine
-                          </span>
-                          <span className="font-mono text-[11px] text-foreground">
-                            {selectedRecommendation?.decision ?? "NO_TRADE"}
-                          </span>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-                          <Metric label="P_Market" value={pct(livePMarketUp)} />
-                          <Metric
-                            label="P_Final"
-                            value={signalHasSynth ? pct(selectedSignal.p_final_up) : "--"}
-                            accent
-                          />
-                          <Metric
-                            label="EV"
-                            value={money(selectedRecommendation?.expected_value)}
-                          />
-                          <Metric
-                            label="Confidence"
-                            value={pct(selectedRecommendation?.confidence)}
-                          />
-                        </div>
-                        <div className="mt-2 rounded border border-border/50 bg-background/30 p-2 text-[11px] text-muted-foreground">
-                          {(selectedRecommendation?.reason_codes ?? []).join(" · ") ||
-                            "No reason codes available."}
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-1">
-                          {activeRiskFlags.length ? (
-                            activeRiskFlags.map((flag) => (
-                              <span
-                                key={flag}
-                                className="rounded bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] text-amber-300"
-                              >
-                                {formatRiskFlag(flag)}
-                              </span>
-                            ))
-                          ) : (
-                            <span className="text-[11px] text-muted-foreground">
-                              No active risk flags.
-                            </span>
-                          )}
-                        </div>
-                        {recommendationLockedAt ? (
-                          <p className="mt-2 text-[11px] text-primary">
-                            Mid-window recommendation locked for execution stability.
-                          </p>
-                        ) : null}
-                        <div className="mt-2 rounded border border-border/50 bg-background/30 px-2.5 py-2">
-                          <div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-                            Regime
-                          </div>
-                          <div className="mt-1 text-sm font-semibold text-foreground">
-                            {selectedSignal.regime || "--"}
-                          </div>
-                        </div>
+                    <div className="h-full rounded-md border border-border/60 bg-background/40 p-3">
+                      <div className="mb-2 flex items-center justify-between">
+                        <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Deterministic Engine
+                        </span>
+                        <span className="font-mono text-[11px] text-foreground">
+                          {selectedRecommendation?.decision ?? "NO_TRADE"}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        <Metric label="P_Market" value={pct(livePMarketUp)} />
+                        <Metric
+                          label="P_Final"
+                          value={signalHasSynth ? pct(selectedSignal.p_final_up) : "--"}
+                          accent
+                        />
+                        <Metric
+                          label="EV"
+                          value={money(selectedRecommendation?.expected_value)}
+                        />
+                        <Metric
+                          label="Confidence"
+                          value={pct(selectedRecommendation?.confidence)}
+                        />
                       </div>
                     </div>
 
-                    <div className="space-y-3">
-                      <div className="rounded-md border border-border/60 bg-background/40 p-3">
-                        <div className="mb-2 flex items-center justify-between">
-                          <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-                            LLM Engine
-                          </span>
-                          <span className="font-mono text-[11px] text-foreground">
-                            {llmPacket?.decision ?? "NOT_GENERATED"}
-                          </span>
-                        </div>
-                        <div className="mb-2 flex items-center gap-2">
-                          <Button
-                            size="sm"
-                            className="h-7 px-3 font-mono text-[10px]"
-                            disabled={
-                              !normalizedSelectedSlug ||
-                              llmGenerateMutation.isPending ||
-                              llmGenerateLocked ||
-                              Boolean(llmUnsupportedReason)
-                            }
-                            onClick={() => {
-                              if (!normalizedSelectedSlug) return;
-                              llmGenerateMutation.mutate({
-                                slug: normalizedSelectedSlug,
-                                force_refresh: false,
-                              });
-                            }}
-                          >
-                            <BrainCircuit className="mr-1 h-3.5 w-3.5" />
-                            {llmGenerateButtonLabel}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-7 px-3 font-mono text-[10px]"
-                            disabled={
-                              !normalizedSelectedSlug ||
-                              llmGenerateMutation.isPending ||
-                              Boolean(llmUnsupportedReason)
-                            }
-                            onClick={() => {
-                              if (!normalizedSelectedSlug) return;
-                              llmGenerateMutation.mutate({
-                                slug: normalizedSelectedSlug,
-                                force_refresh: true,
-                              });
-                            }}
-                          >
-                            Force Refresh
-                          </Button>
-                        </div>
-                        {llmGenerateLocked && !llmGenerateMutation.isPending ? (
-                          <p className="mb-2 text-[11px] text-muted-foreground">
-                            Generate available in {llmGenerateCooldownRemainingSeconds}s.
-                          </p>
-                        ) : null}
-                        {llmGenerateMutation.isError ? (
-                          <p className="mb-2 text-[11px] text-destructive">
-                            {llmGenerateMutation.error instanceof Error
-                              ? llmGenerateMutation.error.message
-                              : "Failed to generate LLM packet."}
-                          </p>
-                        ) : null}
-                        {llmUnsupportedReason ? (
-                          <p className="mb-2 text-[11px] text-amber-300">{llmUnsupportedReason}</p>
-                        ) : null}
-                        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-                          <Metric label="Side" value={llmPacket?.recommended_side ?? "--"} />
-                          <Metric label="Confidence" value={pct(llmPacket?.confidence)} />
-                          <Metric label="EV" value={money(llmPacket?.expected_value)} />
-                          <Metric
-                            label="Allora"
-                            value={
-                              llmPacket?.allora_proxy?.proxy_status
-                                ? llmPacket.allora_proxy.proxy_status.toUpperCase()
-                                : "--"
-                            }
-                          />
-                        </div>
-                        <div className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-4">
-                          <Metric
-                            label="Ready"
-                            value={
-                              llmPacket?.entry
-                                ? llmPacket.entry.ready_to_bet
-                                  ? "YES"
-                                  : "NO"
-                                : "--"
-                            }
-                            accent={Boolean(llmPacket?.entry?.ready_to_bet)}
-                          />
-                          <Metric
-                            label="Entry Score"
-                            value={
-                              typeof llmPacket?.entry?.entry_score === "number"
-                                ? pct(llmPacket.entry.entry_score)
-                                : "--"
-                            }
-                          />
-                          <Metric
-                            label="LB90"
-                            value={
-                              typeof llmPacket?.entry?.confidence_lb90 === "number"
-                                ? pct(llmPacket.entry.confidence_lb90)
-                                : "--"
-                            }
-                          />
-                          <Metric
-                            label="LB95"
-                            value={
-                              typeof llmPacket?.entry?.confidence_lb95 === "number"
-                                ? pct(llmPacket.entry.confidence_lb95)
-                                : "--"
-                            }
-                          />
-                        </div>
-                        <div className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-4">
-                          <Metric
-                            label="Sharpe (Side)"
-                            value={
-                              typeof llmPacket?.entry?.sharpe_chosen_side === "number"
-                                ? llmPacket.entry.sharpe_chosen_side.toFixed(3)
-                                : "--"
-                            }
-                          />
-                          <Metric
-                            label="Sharpe UP"
-                            value={
-                              typeof llmPacket?.entry?.sharpe_up === "number"
-                                ? llmPacket.entry.sharpe_up.toFixed(3)
-                                : "--"
-                            }
-                          />
-                          <Metric
-                            label="Sharpe DOWN"
-                            value={
-                              typeof llmPacket?.entry?.sharpe_down === "number"
-                                ? llmPacket.entry.sharpe_down.toFixed(3)
-                                : "--"
-                            }
-                          />
-                          <Metric
-                            label="Edge (Side)"
-                            value={
-                              typeof llmPacket?.entry?.edge_chosen_side === "number"
-                                ? pct(llmPacket.entry.edge_chosen_side)
-                                : "--"
-                            }
-                          />
-                        </div>
-                        {llmPacket?.entry?.gate_reasons?.length ? (
-                          <div className="mt-2 rounded border border-border/50 bg-background/30 p-2 text-[11px] text-muted-foreground">
-                            {llmPacket.entry.gate_reasons.join(" · ")}
-                          </div>
-                        ) : null}
-                        <div className="mt-2 rounded border border-border/50 bg-background/30 p-2 text-[11px] text-muted-foreground">
-                          {(llmPacket?.reason_codes ?? []).join(" · ") ||
-                            "No LLM packet generated yet."}
-                        </div>
-                        <div className="mt-2 grid grid-cols-2 gap-2">
-                          <Metric
-                            label="Context Hash"
-                            value={llmPacket?.freshness?.context_hash?.slice(0, 10) ?? "--"}
-                          />
-                          <Metric
-                            label="Allora Age"
-                            value={
-                              typeof llmPacket?.freshness?.allora_age_seconds === "number"
-                                ? `${llmPacket.freshness.allora_age_seconds}s`
-                                : "--"
-                            }
-                          />
-                        </div>
-                        {llmExecutionBlockedReason ? (
-                          <p className="mt-2 text-[11px] text-amber-300">
-                            {llmExecutionBlockedReason}
-                          </p>
-                        ) : null}
-                        <p className="mt-2 text-[10px] text-muted-foreground">
-                          LLM health:{" "}
-                        {llmHealthQuery.data?.enabled
-                            ? `online · cache ${llmHealthQuery.data.cache_ttl_seconds}s · policy ${executionPolicy}`
-                            : "offline"}
+                    <div className="h-full rounded-md border border-border/60 bg-background/40 p-3">
+                      <div className="mb-2 flex items-center justify-between">
+                        <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                          LLM Engine
+                        </span>
+                        <span className="font-mono text-[11px] text-foreground">
+                          {llmPacket?.decision ?? "NOT_GENERATED"}
+                        </span>
+                      </div>
+                      <div className="mb-2 flex flex-wrap items-center gap-2">
+                        <Button
+                          size="sm"
+                          className="h-7 px-3 font-mono text-[10px]"
+                          disabled={
+                            !normalizedSelectedSlug ||
+                            llmGenerateMutation.isPending ||
+                            llmGenerateLocked ||
+                            Boolean(llmUnsupportedReason)
+                          }
+                          onClick={() => {
+                            if (!normalizedSelectedSlug) return;
+                            llmGenerateMutation.mutate({
+                              slug: normalizedSelectedSlug,
+                              force_refresh: false,
+                            });
+                          }}
+                        >
+                          <BrainCircuit className="mr-1 h-3.5 w-3.5" />
+                          {llmGenerateButtonLabel}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-3 font-mono text-[10px]"
+                          disabled={
+                            !normalizedSelectedSlug ||
+                            llmGenerateMutation.isPending ||
+                            Boolean(llmUnsupportedReason)
+                          }
+                          onClick={() => {
+                            if (!normalizedSelectedSlug) return;
+                            llmGenerateMutation.mutate({
+                              slug: normalizedSelectedSlug,
+                              force_refresh: true,
+                            });
+                          }}
+                        >
+                          Force Refresh
+                        </Button>
+                      </div>
+                      {llmGenerateLocked && !llmGenerateMutation.isPending ? (
+                        <p className="mb-2 text-[11px] text-muted-foreground">
+                          Generate available in {llmGenerateCooldownRemainingSeconds}s.
                         </p>
+                      ) : null}
+                      {llmGenerateMutation.isError ? (
+                        <p className="mb-2 text-[11px] text-destructive">
+                          {llmGenerateMutation.error instanceof Error
+                            ? llmGenerateMutation.error.message
+                            : "Failed to generate LLM packet."}
+                        </p>
+                      ) : null}
+                      {llmUnsupportedReason ? (
+                        <p className="mb-2 text-[11px] text-amber-300">{llmUnsupportedReason}</p>
+                      ) : null}
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        <Metric label="Side" value={llmPacket?.recommended_side ?? "--"} />
+                        <Metric label="Confidence" value={pct(llmPacket?.confidence)} />
+                        <Metric label="EV" value={money(llmPacket?.expected_value)} />
+                        <Metric
+                          label="Sharpe (Side)"
+                          value={
+                            typeof llmPacket?.entry?.sharpe_chosen_side === "number"
+                              ? llmPacket.entry.sharpe_chosen_side.toFixed(3)
+                              : "--"
+                          }
+                        />
                       </div>
                     </div>
                   </div>
@@ -1585,17 +1401,7 @@ export default function UpDownPage() {
                   market={liveMarket}
                   mode="compact"
                   recommendationPrefill={prefill}
-                  externalBlockReason={
-                    prefillBlockReason ??
-                    executionBlockedReason ??
-                    (staleSignal
-                      ? "Signal feed is stale. Trading is disabled until a fresh signal arrives."
-                      : selectedSignal?.risk_flags?.kill_switch
-                        ? "Up/Down kill switch is active."
-                        : selectedSignal?.risk_flags?.data_integrity_failed
-                          ? "Data integrity failure detected. Trading is disabled."
-                          : null)
-                  }
+                  externalBlockReason={null}
                 />
               </>
             )}
