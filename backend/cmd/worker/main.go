@@ -131,7 +131,7 @@ func main() {
 
 		first := true
 		// Initial sync (also persists to Postgres)
-		syncSubscriptions(ctx, marketService, wsClient, cfg, first)
+		syncSubscriptions(ctx, marketService, wsClient, cfg, cacheAllowlist, first)
 		first = false
 
 		for {
@@ -139,7 +139,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				syncSubscriptions(ctx, marketService, wsClient, cfg, first)
+				syncSubscriptions(ctx, marketService, wsClient, cfg, cacheAllowlist, first)
 			}
 		}
 	}()
@@ -171,7 +171,14 @@ func main() {
 
 // syncSubscriptions fetches active markets and subscribes to their tokens.
 // Optionally persists markets on the first run to avoid empty DB reads after restarts.
-func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds.Client, cfg *config.Config, persist bool) {
+func syncSubscriptions(
+	ctx context.Context,
+	ms *services.MarketService,
+	ws *rtds.Client,
+	cfg *config.Config,
+	allowlist *rtds.CacheAllowlist,
+	persist bool,
+) {
 	logger.Info("syncing market subscriptions")
 
 	// 1. Ensure our local DB has fresh data from Gamma
@@ -233,9 +240,19 @@ func syncSubscriptions(ctx context.Context, ms *services.MarketService, ws *rtds
 	logger.Info("Subscribing to %d assets...", len(assetIDs))
 
 	// 5. Subscribe via WebSocket (client batches internally)
-	if err := ws.ReplaceSubscriptions(assetIDs); err != nil {
+	if err := replaceTrackedSubscriptions(ws, allowlist, assetIDs); err != nil {
 		logger.Error("Failed to subscribe: %v", err)
 	}
+}
+
+func replaceTrackedSubscriptions(ws *rtds.Client, allowlist *rtds.CacheAllowlist, assetIDs []string) error {
+	if allowlist != nil {
+		allowlist.Allow(assetIDs)
+	}
+	if ws == nil {
+		return errors.New("market RTDS client is required")
+	}
+	return ws.ReplaceSubscriptions(assetIDs)
 }
 
 func watchStreamRequests(ctx context.Context, ms *services.MarketService, ws *rtds.Client, allowlist *rtds.CacheAllowlist) {
