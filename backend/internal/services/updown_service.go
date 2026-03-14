@@ -45,7 +45,8 @@ const (
 	upDownSignalHistoryTTL   = 20 * time.Second
 	upDownSynthPrefetchLead  = 75 * time.Second
 
-	upDownSynthMonthlyCreditCapDefault = 18000
+	// 0 means unlimited synth credits unless an explicit env cap is configured.
+	upDownSynthMonthlyCreditCapDefault = 0
 	upDownSynthFailureBackoff          = 2 * time.Minute
 	upDownSynthModelFailureBackoff     = 10 * time.Minute
 	upDownCalibrationFailureBackoff    = 10 * time.Minute

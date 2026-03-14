@@ -253,7 +253,8 @@ func Load() (*Config, error) {
 			UpDownNoTradeCutoff1hSeconds:   getEnvAsInt("UPDOWN_NO_TRADE_CUTOFF_1H_SECONDS", 120),
 			UpDownNoTradeCutoff4hSeconds:   getEnvAsInt("UPDOWN_NO_TRADE_CUTOFF_4H_SECONDS", 300),
 			UpDownMaxMarkets:               getEnvAsInt("UPDOWN_MAX_MARKETS", 64),
-			UpDownSynthMonthlyCreditCap:    getEnvAsInt("UPDOWN_SYNTH_MONTHLY_CREDIT_CAP", 18000),
+			// 0 means unlimited. Budget caps must be an explicit opt-in via env.
+			UpDownSynthMonthlyCreditCap:    getEnvAsInt("UPDOWN_SYNTH_MONTHLY_CREDIT_CAP", 0),
 			UpDownLLMEnabled:               getEnvAsBool("UPDOWN_LLM_ENABLED", true),
 			UpDownLLMShadowMode:            getEnvAsBool("UPDOWN_LLM_SHADOW_MODE", false),
 			UpDownLLMCacheTTLSeconds:       getEnvAsInt("UPDOWN_LLM_CACHE_TTL_SECONDS", 30),
