@@ -864,6 +864,205 @@ func TestGetSynthUpDownCachedRespectsFailureBackoff(t *testing.T) {
 	}
 }
 
+func TestGetSynthUpDownCachedDoesNotFallbackAcrossEventWindows(t *testing.T) {
+	var callCount atomic.Int32
+	start1 := time.Date(2026, 3, 14, 22, 5, 0, 0, time.UTC)
+	end1 := start1.Add(5 * time.Minute)
+	start2 := end1
+	end2 := start2.Add(5 * time.Minute)
+
+	synthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/insights/polymarket/up-down/5min" {
+			http.NotFound(w, r)
+			return
+		}
+		callCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"slug":"btc-updown-5m-1",
+			"start_price":70773.01,
+			"current_time":"` + start1.Add(20*time.Second).Format(time.RFC3339) + `",
+			"current_price":70763.69,
+			"synth_probability_up":0.41,
+			"event_start_time":"` + start1.Format(time.RFC3339) + `",
+			"event_end_time":"` + end1.Format(time.RFC3339) + `"
+		}`))
+	}))
+	defer synthSrv.Close()
+
+	cfg := &config.Config{
+		Services: config.ServicesConfig{
+			UpDownEnabled:    true,
+			SynthDataAPIKey:  "test-key",
+			SynthDataBaseURL: synthSrv.URL,
+		},
+	}
+	svc := &UpDownService{
+		cfg:                  cfg,
+		synth:                synthdata.NewClient(cfg),
+		synthUpDownCache:     make(map[string]cachedSynthUpDown),
+		synthPercentileCache: make(map[string]cachedSynthPercentile),
+		synthVolatilityCache: make(map[string]cachedSynthVolatility),
+		synthLPCache:         make(map[string]cachedSynthLP),
+		synthModelProbCache:  make(map[string]cachedSynthModelProb),
+	}
+
+	market1 := UpDownMarket{
+		Asset:          "BTC",
+		WindowType:     Window5m,
+		EventStartTime: start1,
+		EventEndTime:   end1,
+	}
+	market2 := UpDownMarket{
+		Asset:          "BTC",
+		WindowType:     Window5m,
+		EventStartTime: start2,
+		EventEndTime:   end2,
+	}
+
+	resp1 := svc.getSynthUpDownCached(context.Background(), market1, map[string]*synthdata.PolymarketUpDownResponse{}, true)
+	if resp1 == nil {
+		t.Fatalf("expected first window fetch to return a response")
+	}
+
+	resp2 := svc.getSynthUpDownCached(context.Background(), market2, map[string]*synthdata.PolymarketUpDownResponse{}, false)
+	if resp2 != nil {
+		t.Fatalf("expected second window not to reuse previous window synth payload")
+	}
+	if callCount.Load() != 1 {
+		t.Fatalf("expected exactly one network fetch, got %d", callCount.Load())
+	}
+}
+
+func TestGetSynthUpDownCachedDoesNotCacheMismatchedWindow(t *testing.T) {
+	var callCount atomic.Int32
+	start := time.Date(2026, 3, 14, 22, 5, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+
+	synthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/insights/polymarket/up-down/5min" {
+			http.NotFound(w, r)
+			return
+		}
+		n := callCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			_, _ = w.Write([]byte(`{
+				"slug":"btc-updown-5m-prev",
+				"start_price":70710.00,
+				"current_time":"` + start.Add(10*time.Second).Format(time.RFC3339) + `",
+				"current_price":70711.00,
+				"synth_probability_up":0.91,
+				"event_start_time":"` + start.Add(-5*time.Minute).Format(time.RFC3339) + `",
+				"event_end_time":"` + start.Format(time.RFC3339) + `"
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"slug":"btc-updown-5m-current",
+			"start_price":70773.01,
+			"current_time":"` + start.Add(25*time.Second).Format(time.RFC3339) + `",
+			"current_price":70763.69,
+			"synth_probability_up":0.41,
+			"event_start_time":"` + start.Format(time.RFC3339) + `",
+			"event_end_time":"` + end.Format(time.RFC3339) + `"
+		}`))
+	}))
+	defer synthSrv.Close()
+
+	cfg := &config.Config{
+		Services: config.ServicesConfig{
+			UpDownEnabled:    true,
+			SynthDataAPIKey:  "test-key",
+			SynthDataBaseURL: synthSrv.URL,
+		},
+	}
+	svc := &UpDownService{
+		cfg:                  cfg,
+		synth:                synthdata.NewClient(cfg),
+		synthUpDownCache:     make(map[string]cachedSynthUpDown),
+		synthPercentileCache: make(map[string]cachedSynthPercentile),
+		synthVolatilityCache: make(map[string]cachedSynthVolatility),
+		synthLPCache:         make(map[string]cachedSynthLP),
+		synthModelProbCache:  make(map[string]cachedSynthModelProb),
+	}
+
+	market := UpDownMarket{
+		Asset:          "BTC",
+		WindowType:     Window5m,
+		EventStartTime: start,
+		EventEndTime:   end,
+	}
+
+	resp1 := svc.getSynthUpDownCached(context.Background(), market, map[string]*synthdata.PolymarketUpDownResponse{}, true)
+	if resp1 == nil || synthUpDownResponseMatchesMarket(market, resp1) {
+		t.Fatalf("expected first fetch to return a mismatched payload")
+	}
+
+	resp2 := svc.getSynthUpDownCached(context.Background(), market, map[string]*synthdata.PolymarketUpDownResponse{}, true)
+	if resp2 == nil {
+		t.Fatalf("expected second fetch to retry and return a response")
+	}
+	if !synthUpDownResponseMatchesMarket(market, resp2) {
+		t.Fatalf("expected second fetch to return the matching market window")
+	}
+	if callCount.Load() != 2 {
+		t.Fatalf("expected mismatched payload not to be cached, got %d fetches", callCount.Load())
+	}
+}
+
+func TestGetSynthUpDownCachedHonorsCallerContextTimeout(t *testing.T) {
+	synthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(6 * time.Second):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer synthSrv.Close()
+
+	cfg := &config.Config{
+		Services: config.ServicesConfig{
+			UpDownEnabled:    true,
+			SynthDataAPIKey:  "test-key",
+			SynthDataBaseURL: synthSrv.URL,
+		},
+	}
+	svc := &UpDownService{
+		cfg:                  cfg,
+		synth:                synthdata.NewClient(cfg),
+		synthUpDownCache:     make(map[string]cachedSynthUpDown),
+		synthPercentileCache: make(map[string]cachedSynthPercentile),
+		synthVolatilityCache: make(map[string]cachedSynthVolatility),
+		synthLPCache:         make(map[string]cachedSynthLP),
+		synthModelProbCache:  make(map[string]cachedSynthModelProb),
+	}
+
+	start := time.Date(2026, 3, 14, 22, 5, 0, 0, time.UTC)
+	market := UpDownMarket{
+		Asset:          "BTC",
+		WindowType:     Window5m,
+		EventStartTime: start,
+		EventEndTime:   start.Add(5 * time.Minute),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+
+	begin := time.Now()
+	resp := svc.getSynthUpDownCached(ctx, market, map[string]*synthdata.PolymarketUpDownResponse{}, true)
+	elapsed := time.Since(begin)
+
+	if resp != nil {
+		t.Fatalf("expected timed out fetch to return fallback nil response")
+	}
+	if elapsed > time.Second {
+		t.Fatalf("expected synth fetch to honor caller timeout, took %s", elapsed)
+	}
+}
+
 func TestGetSynthUpDownCachedUsesShortFailureRetryForActiveWindow(t *testing.T) {
 	var callCount atomic.Int32
 	synthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

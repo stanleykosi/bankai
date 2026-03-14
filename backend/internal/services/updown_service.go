@@ -2902,12 +2902,8 @@ func (s *UpDownService) getSynthUpDownCached(
 	}
 	horizon := horizonForWindow(market.WindowType)
 	key := synthUpDownCacheKey(market)
-	baseKey := synthUpDownBaseCacheKey(market)
 	if key == "" {
-		key = baseKey
-	}
-	if baseKey == "" {
-		baseKey = key
+		key = synthUpDownBaseCacheKey(market)
 	}
 	if cached, ok := cache[key]; ok {
 		return cached
@@ -2925,14 +2921,6 @@ func (s *UpDownService) getSynthUpDownCached(
 				return cachedResp
 			}
 			if stale := s.getStaleSynthUpDown(key, now); stale != nil {
-				return stale
-			}
-		}
-		if baseKey != "" && baseKey != key {
-			if cachedResp, ok := s.getCachedSynthUpDown(baseKey, now, refreshInterval); ok {
-				return cachedResp
-			}
-			if stale := s.getStaleSynthUpDown(baseKey, now); stale != nil {
 				return stale
 			}
 		}
@@ -2956,7 +2944,7 @@ func (s *UpDownService) getSynthUpDownCached(
 		return fallbackResp
 	}
 
-	fetchCtx, cancel := context.WithTimeout(context.Background(), synthRequestTimeoutForWindow(market.WindowType))
+	fetchCtx, cancel := synthRequestContext(ctx, market.WindowType)
 	defer cancel()
 	resp, err := s.synth.GetPolymarketUpDown(fetchCtx, market.Asset, window, horizon, 14, 10)
 	if err != nil {
@@ -2966,10 +2954,14 @@ func (s *UpDownService) getSynthUpDownCached(
 		return fallbackResp
 	}
 
-	s.storeSynthUpDown(key, resp, now, refreshInterval)
-	if baseKey != "" && baseKey != key {
-		s.storeSynthUpDown(baseKey, resp, now, refreshInterval)
+	if !market.EventStartTime.IsZero() && !market.EventEndTime.IsZero() && !synthUpDownResponseMatchesMarket(market, resp) {
+		// The direct up/down endpoint is event-window specific. Never cache a
+		// mismatched payload or share it across windows, otherwise one rollover
+		// response can poison every subsequent active fetch for that timeframe.
+		return resp
 	}
+
+	s.storeSynthUpDown(key, resp, now, refreshInterval)
 	cache[key] = resp
 	return resp
 }
@@ -3105,7 +3097,7 @@ func (s *UpDownService) getSynthPercentilesCached(
 		return fallback
 	}
 
-	fetchCtx, cancel := context.WithTimeout(context.Background(), synthRequestTimeoutForWindow(market.WindowType))
+	fetchCtx, cancel := synthRequestContext(ctx, market.WindowType)
 	defer cancel()
 	resp, err := s.synth.GetPredictionPercentiles(fetchCtx, market.Asset, horizonForWindow(market.WindowType), 14, 10)
 	if err != nil {
@@ -3155,7 +3147,7 @@ func (s *UpDownService) getSynthVolatilityCached(
 		return fallback
 	}
 
-	fetchCtx, cancel := context.WithTimeout(context.Background(), synthRequestTimeoutForWindow(market.WindowType))
+	fetchCtx, cancel := synthRequestContext(ctx, market.WindowType)
 	defer cancel()
 	resp, err := s.synth.GetVolatility(fetchCtx, market.Asset, horizonForWindow(market.WindowType), 14, 10)
 	if err != nil {
@@ -3205,7 +3197,7 @@ func (s *UpDownService) getSynthLPProbabilitiesCached(
 		return fallback
 	}
 
-	fetchCtx, cancel := context.WithTimeout(context.Background(), synthRequestTimeoutForWindow(market.WindowType))
+	fetchCtx, cancel := synthRequestContext(ctx, market.WindowType)
 	defer cancel()
 	resp, err := s.synth.GetLPProbabilities(fetchCtx, market.Asset, horizonForWindow(market.WindowType), 14, 10)
 	if err != nil {
@@ -3418,7 +3410,7 @@ func (s *UpDownService) computeModelProbability(
 		return 0, "budget_exhausted_no_proxy"
 	}
 
-	fetchCtx, cancel := context.WithTimeout(context.Background(), synthRequestTimeoutForWindow(market.WindowType))
+	fetchCtx, cancel := synthRequestContext(ctx, market.WindowType)
 	defer cancel()
 	prob, err := s.synth.GetEnterpriseProbabilityUp(fetchCtx, market.Asset, timeIncrement, timeLength, targetStep, thresholdBucket)
 	if err == nil && prob != nil && prob.ProbabilityUp >= 0 && prob.ProbabilityUp <= 1 {
@@ -3435,6 +3427,13 @@ func (s *UpDownService) computeModelProbability(
 		return p, "enterprise_failed_percentile_proxy"
 	}
 	return 0, "enterprise_failed_no_proxy"
+}
+
+func synthRequestContext(parent context.Context, window UpDownWindowType) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(parent, synthRequestTimeoutForWindow(window))
 }
 
 func synthWindowForMarket(window UpDownWindowType) synthdata.UpDownWindow {
