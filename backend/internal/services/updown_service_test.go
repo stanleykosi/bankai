@@ -804,8 +804,8 @@ func TestBuildSignalUsesPercentilesWhenDirectSynthUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build signal: %v", err)
 	}
-	if signal.PSynthUp == nil {
-		t.Fatalf("expected p_synth to be derived from percentile fallback")
+	if signal.PSynthUp != nil {
+		t.Fatalf("expected p_synth to remain unset when direct synth up/down is unavailable")
 	}
 	if signal.PModelUp == nil {
 		t.Fatalf("expected p_model to be derived from percentile proxy when enterprise is disabled")
@@ -813,8 +813,8 @@ func TestBuildSignalUsesPercentilesWhenDirectSynthUnavailable(t *testing.T) {
 	if signal.ModelDiagnosticCode != "enterprise_disabled_percentile_proxy" {
 		t.Fatalf("expected enterprise_disabled_percentile_proxy diagnostic, got %s", signal.ModelDiagnosticCode)
 	}
-	if signal.RiskFlags.SynthMissing {
-		t.Fatalf("expected synth_missing to clear when percentile fallback is available")
+	if !signal.RiskFlags.SynthMissing {
+		t.Fatalf("expected synth_missing when direct synth up/down is unavailable")
 	}
 }
 
@@ -861,6 +861,64 @@ func TestGetSynthUpDownCachedRespectsFailureBackoff(t *testing.T) {
 
 	if got := callCount.Load(); got != 1 {
 		t.Fatalf("expected one synth fetch attempt during backoff window, got %d", got)
+	}
+}
+
+func TestGetSynthUpDownCachedRespectsMismatchBackoff(t *testing.T) {
+	var callCount atomic.Int32
+	now := time.Now().UTC().Truncate(time.Second)
+	start := now.Add(-2 * time.Minute)
+	end := now.Add(3 * time.Minute)
+
+	synthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/insights/polymarket/up-down/5min" {
+			http.NotFound(w, r)
+			return
+		}
+		callCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		// Deliberately return a neighboring window so strict matching rejects it.
+		_, _ = w.Write([]byte(`{
+			"slug":"btc-updown-5m-neighbor",
+			"start_price":68000,
+			"current_time":"` + now.Format(time.RFC3339Nano) + `",
+			"current_price":68015,
+			"synth_probability_up":0.55,
+			"event_start_time":"` + start.Add(-5*time.Minute).Format(time.RFC3339Nano) + `",
+			"event_end_time":"` + end.Add(-5*time.Minute).Format(time.RFC3339Nano) + `"
+		}`))
+	}))
+	defer synthSrv.Close()
+
+	cfg := &config.Config{
+		Services: config.ServicesConfig{
+			UpDownEnabled:    true,
+			SynthDataAPIKey:  "test-key",
+			SynthDataBaseURL: synthSrv.URL,
+		},
+	}
+	svc := &UpDownService{
+		cfg:                  cfg,
+		synth:                synthdata.NewClient(cfg),
+		synthUpDownCache:     make(map[string]cachedSynthUpDown),
+		synthPercentileCache: make(map[string]cachedSynthPercentile),
+		synthVolatilityCache: make(map[string]cachedSynthVolatility),
+		synthLPCache:         make(map[string]cachedSynthLP),
+		synthModelProbCache:  make(map[string]cachedSynthModelProb),
+	}
+
+	market := UpDownMarket{
+		Asset:          "BTC",
+		WindowType:     Window5m,
+		EventStartTime: start,
+		EventEndTime:   end,
+	}
+
+	_ = svc.getSynthUpDownCached(context.Background(), market, map[string]*synthdata.PolymarketUpDownResponse{}, true)
+	_ = svc.getSynthUpDownCached(context.Background(), market, map[string]*synthdata.PolymarketUpDownResponse{}, true)
+
+	if got := callCount.Load(); got != 1 {
+		t.Fatalf("expected one synth fetch attempt during mismatch backoff window, got %d", got)
 	}
 }
 
@@ -1000,14 +1058,30 @@ func TestGetSynthUpDownCachedDoesNotCacheMismatchedWindow(t *testing.T) {
 	}
 
 	resp2 := svc.getSynthUpDownCached(context.Background(), market, map[string]*synthdata.PolymarketUpDownResponse{}, true)
-	if resp2 == nil {
-		t.Fatalf("expected second fetch to retry and return a response")
+	if resp2 != nil {
+		t.Fatalf("expected second immediate fetch to be deferred by mismatch backoff")
 	}
-	if !synthUpDownResponseMatchesMarket(market, resp2) {
-		t.Fatalf("expected second fetch to return the matching market window")
+	if callCount.Load() != 1 {
+		t.Fatalf("expected mismatch backoff to suppress immediate refetch, got %d fetches", callCount.Load())
+	}
+
+	key := synthUpDownCacheKey(market)
+	svc.synthCacheMu.Lock()
+	entry := svc.synthUpDownCache[key]
+	entry.NextFetchAt = time.Now().UTC().Add(-time.Second)
+	entry.StaleUntil = time.Now().UTC().Add(-time.Second)
+	svc.synthUpDownCache[key] = entry
+	svc.synthCacheMu.Unlock()
+
+	resp3 := svc.getSynthUpDownCached(context.Background(), market, map[string]*synthdata.PolymarketUpDownResponse{}, true)
+	if resp3 == nil {
+		t.Fatalf("expected post-backoff retry to return a response")
+	}
+	if !synthUpDownResponseMatchesMarket(market, resp3) {
+		t.Fatalf("expected post-backoff retry to return the matching market window")
 	}
 	if callCount.Load() != 2 {
-		t.Fatalf("expected mismatched payload not to be cached, got %d fetches", callCount.Load())
+		t.Fatalf("expected one retry after backoff expiry, got %d fetches", callCount.Load())
 	}
 }
 
@@ -1447,12 +1521,22 @@ func TestShouldAllowSynthFetchForMarketWindowPrefetch(t *testing.T) {
 		t.Fatalf("expected active market to allow synth fetch")
 	}
 
-	nearStart := UpDownMarket{
+	nearStart15m := UpDownMarket{
 		EventStartTime: now.Add(10 * time.Second),
 		EventEndTime:   now.Add(5*time.Minute + 10*time.Second),
+		WindowType:     Window15m,
 	}
-	if !shouldAllowSynthFetchForMarket(now, nearStart) {
-		t.Fatalf("expected near-start market to allow synth prefetch")
+	if !shouldAllowSynthFetchForMarket(now, nearStart15m) {
+		t.Fatalf("expected near-start 15m market to allow synth prefetch")
+	}
+
+	nearStart5m := UpDownMarket{
+		EventStartTime: now.Add(10 * time.Second),
+		EventEndTime:   now.Add(5*time.Minute + 10*time.Second),
+		WindowType:     Window5m,
+	}
+	if shouldAllowSynthFetchForMarket(now, nearStart5m) {
+		t.Fatalf("expected near-start 5m market to deny synth prefetch")
 	}
 
 	farUpcoming := UpDownMarket{
@@ -1848,11 +1932,11 @@ func TestBuildSignalRejectsMismatchedSynthWindowFor5m(t *testing.T) {
 	if !signal.RiskFlags.SourceMismatch {
 		t.Fatalf("expected strict synth window mismatch to trigger source mismatch")
 	}
-	if signal.PSynthUp == nil {
-		t.Fatalf("expected synth probability via fallback path")
+	if signal.PSynthUp != nil {
+		t.Fatalf("expected synth probability to remain unset on window mismatch")
 	}
-	if *signal.PSynthUp >= 0.95 {
-		t.Fatalf("expected mismatched synth direct probability to be rejected, got %.4f", *signal.PSynthUp)
+	if !signal.RiskFlags.SynthMissing {
+		t.Fatalf("expected synth_missing when synth window mismatch occurs")
 	}
 
 	foundMismatchReason := false

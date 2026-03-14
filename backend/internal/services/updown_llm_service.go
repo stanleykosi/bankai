@@ -992,10 +992,6 @@ func (s *UpDownLLMService) collectIndependentSnapshot(ctx context.Context, marke
 		if p, pErr := synthdata.EstimateProbabilityUpFromPercentiles(percentile.ForecastFuture.Percentiles, targetStep, thresholdPrice); pErr == nil {
 			v := upDownClamp(p, 0.01, 0.99)
 			pSynthPercentilePtr = &v
-			if pSynthPtr == nil {
-				pSynthPtr = &v
-				reasons = append(reasons, "synth_fallback_percentiles")
-			}
 		}
 	}
 
@@ -1055,19 +1051,18 @@ func (s *UpDownLLMService) collectIndependentSnapshot(ctx context.Context, marke
 			modelDiagnosticCode = "percentile_proxy"
 		}
 	}
-	if pSynthPtr == nil && pModelPtr != nil {
-		v := *pModelPtr
-		pSynthPtr = &v
-		reasons = append(reasons, "synth_fallback_model")
-	}
-	if pSynthPtr == nil && pSynthPrevSignalPtr != nil {
-		v := *pSynthPrevSignalPtr
-		pSynthPtr = &v
-		reasons = append(reasons, "synth_fallback_previous_signal")
-	}
 	if pSynthPtr == nil {
 		flags.SynthMissing = true
 		reasons = append(reasons, "synth_missing")
+		if pSynthPercentilePtr != nil {
+			reasons = append(reasons, "synth_percentile_available_but_blocked")
+		}
+		if pModelPtr != nil {
+			reasons = append(reasons, "synth_model_available_but_blocked")
+		}
+		if pSynthPrevSignalPtr != nil {
+			reasons = append(reasons, "synth_previous_available_but_blocked")
+		}
 	}
 
 	spreadUp := positiveOrZero(upAsk - upBid)

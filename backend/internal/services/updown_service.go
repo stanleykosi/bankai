@@ -990,7 +990,18 @@ func (s *UpDownService) pickSignalCandidates(markets []UpDownMarket) []UpDownMar
 }
 
 func shouldAllowSynthFetchForMarket(now time.Time, market UpDownMarket) bool {
-	return !now.Before(market.EventStartTime.Add(-upDownSynthPrefetchLead)) && now.Before(market.EventEndTime)
+	prefetchLead := synthPrefetchLeadForWindow(market.WindowType)
+	return !now.Before(market.EventStartTime.Add(-prefetchLead)) && now.Before(market.EventEndTime)
+}
+
+func synthPrefetchLeadForWindow(window UpDownWindowType) time.Duration {
+	// 5m windows roll too quickly for the Synth up/down endpoint to reliably
+	// expose the next event ahead of start. Prefetching there frequently yields
+	// mismatched windows and churns request budgets.
+	if window == Window5m {
+		return 0
+	}
+	return upDownSynthPrefetchLead
 }
 
 func (s *UpDownService) ListMarkets(ctx context.Context, asset string, window string) ([]UpDownMarket, error) {
@@ -2056,31 +2067,23 @@ func (s *UpDownService) buildSignalWithOptions(
 		}
 	}
 	if supportsDirectSynthUpDownWindow(market.WindowType) && pSynthPtr == nil {
-		if percentileSynthEstimate > 0 {
-			v := upDownClamp(percentileSynthEstimate, 0.01, 0.99)
-			pSynthPtr = &v
-			reasons = append(reasons, "synth_fallback_percentiles")
-			if pModelBlendPtr != nil && math.Abs(*pModelBlendPtr-v) <= 0.015 {
-				// Avoid double-counting nearly identical synth/model estimates in blend,
-				// but keep raw model value visible to operators.
-				pModelBlendPtr = nil
-				reasons = append(reasons, "model_deduped_with_synth_fallback")
-				if modelDiagnosticCode == "ok" || strings.HasPrefix(modelDiagnosticCode, "enterprise_") {
-					modelDiagnosticDetail = "deduped_in_blend"
-				}
-			}
-		} else if prevSignal != nil && prevSignal.PSynthUp != nil && now.Sub(prevSignal.Timestamp) <= upDownSignalHistoryTTL {
-			v := upDownClamp(*prevSignal.PSynthUp, 0.01, 0.99)
-			pSynthPtr = &v
-			reasons = append(reasons, "synth_fallback_previous")
-		} else if pModelDisplayPtr != nil {
-			v := upDownClamp(*pModelDisplayPtr, 0.01, 0.99)
-			pSynthPtr = &v
+		// Direct synth up/down is the canonical source for these windows.
+		// Do not silently substitute percentiles/model/previous values.
+		flags.SynthMissing = true
+		reasons = append(reasons, "synth_missing")
+		if pModelBlendPtr != nil {
 			pModelBlendPtr = nil
-			reasons = append(reasons, "synth_fallback_model")
-		} else {
-			flags.SynthMissing = true
-			reasons = append(reasons, "synth_missing")
+			reasons = append(reasons, "model_blend_blocked_without_synth")
+		}
+		if pLPPtr != nil {
+			pLPPtr = nil
+			reasons = append(reasons, "lp_blend_blocked_without_synth")
+		}
+		if percentileSynthEstimate > 0 {
+			reasons = append(reasons, "synth_percentile_available_but_blocked")
+		}
+		if prevSignal != nil && prevSignal.PSynthUp != nil && now.Sub(prevSignal.Timestamp) <= upDownSignalHistoryTTL {
+			reasons = append(reasons, "synth_previous_available_but_blocked")
 		}
 	}
 
@@ -2754,6 +2757,13 @@ func buildRecommendation(
 		}
 		reasonCodes = append(reasonCodes, "staleness_guard")
 	}
+	if flags.SynthMissing {
+		decision = "NO_TRADE"
+		if disabledReason == "" {
+			disabledReason = "Synth up/down signal is unavailable for this window."
+		}
+		reasonCodes = append(reasonCodes, "synth_guard")
+	}
 	if confidence < upDownClamp(cfg.Services.UpDownMinConfidence, 0.05, 0.98) {
 		decision = "NO_TRADE"
 		if disabledReason == "" {
@@ -2958,6 +2968,7 @@ func (s *UpDownService) getSynthUpDownCached(
 		// The direct up/down endpoint is event-window specific. Never cache a
 		// mismatched payload or share it across windows, otherwise one rollover
 		// response can poison every subsequent active fetch for that timeframe.
+		s.markSynthUpDownFetchFailure(key, now, synthFailureRetryInterval(market.WindowType))
 		return resp
 	}
 
