@@ -45,8 +45,8 @@ const ASSETS = ["ALL", "BTC", "ETH", "SOL", "XRP"] as const;
 const WINDOWS = ["all", "5m", "15m", "1h", "4h"] as const;
 const EXECUTION_SOURCES = ["llm", "deterministic"] as const;
 const PREFILL_DRIFT_BPS = 35;
-const STREAM_RETRY_BASE_MS = 3500;
-const STREAM_MAX_RETRIES = 5;
+const STREAM_RETRY_BASE_MS = 1200;
+const STREAM_RETRY_MAX_MS = 15000;
 
 const pct = (value?: number) => {
   if (typeof value !== "number" || Number.isNaN(value)) return "--";
@@ -433,15 +433,10 @@ export default function UpDownPage() {
   }, [railActiveMarkets, railLanes, nowMs, normalizedSelectedSlug, selectedSlug]);
 
   useEffect(() => {
-    if (railSourceMarkets.length === 0) {
-      setLiveSignals({});
-      return;
-    }
-
     let source: EventSource | null = null;
     let retry: ReturnType<typeof setTimeout> | null = null;
     let stopped = false;
-    let retries = 0;
+    let attempts = 0;
 
     const clearRetry = () => {
       if (retry) {
@@ -450,13 +445,26 @@ export default function UpDownPage() {
       }
     };
 
+    const scheduleReconnect = () => {
+      if (stopped) return;
+      clearRetry();
+      attempts += 1;
+      const exponential = STREAM_RETRY_BASE_MS * 2 ** Math.min(attempts - 1, 5);
+      const backoff = Math.min(STREAM_RETRY_MAX_MS, exponential);
+      const jitter = Math.floor(Math.random() * 400);
+      retry = setTimeout(connect, backoff + jitter);
+    };
+
     const connect = () => {
       if (stopped) return;
-      source = createUpDownEventSource();
-      source.onopen = () => {
-        retries = 0;
+      const nextSource = createUpDownEventSource();
+      source = nextSource;
+
+      nextSource.onopen = () => {
+        attempts = 0;
       };
-      source.onmessage = (event) => {
+
+      nextSource.onmessage = (event) => {
         if (!event.data) return;
         try {
           const payload = JSON.parse(event.data) as {
@@ -472,14 +480,14 @@ export default function UpDownPage() {
           // ignore malformed payloads
         }
       };
-      source.onerror = () => {
-        source?.close();
+
+      nextSource.onerror = () => {
+        if (source !== nextSource) {
+          return;
+        }
+        nextSource.close();
         source = null;
-        if (stopped) return;
-        if (retries >= STREAM_MAX_RETRIES) return;
-        retries += 1;
-        clearRetry();
-        retry = setTimeout(connect, STREAM_RETRY_BASE_MS * retries);
+        scheduleReconnect();
       };
     };
 
@@ -489,7 +497,7 @@ export default function UpDownPage() {
       clearRetry();
       source?.close();
     };
-  }, [railSourceMarkets.length]);
+  }, []);
 
   useEffect(() => {
     const conditionId = selectedMarket?.condition_id;

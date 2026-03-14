@@ -95,6 +95,7 @@ func (h *UpDownHandler) Stream(c *fiber.Ctx) error {
 	c.Set("Content-Type", "text/event-stream")
 	c.Set("Cache-Control", "no-cache")
 	c.Set("Connection", "keep-alive")
+	c.Set("X-Accel-Buffering", "no")
 
 	requestCtx := c.Context()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -106,12 +107,19 @@ func (h *UpDownHandler) Stream(c *fiber.Ctx) error {
 			unsubscribe()
 		}()
 		requestDone := requestCtx.Done()
+		keepalive := time.NewTicker(15 * time.Second)
+		defer keepalive.Stop()
 		for {
 			select {
 			case <-requestDone:
 				return
 			case <-ctx.Done():
 				return
+			case <-keepalive.C:
+				fmt.Fprint(w, ": ping\n\n")
+				if err := w.Flush(); err != nil {
+					return
+				}
 			case msg, ok := <-msgCh:
 				if !ok {
 					return

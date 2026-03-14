@@ -20,6 +20,8 @@ type AssetPrice = {
 };
 
 const FLUSH_INTERVAL_MS = 200;
+const STREAM_RETRY_BASE_MS = 1200;
+const STREAM_RETRY_MAX_MS = 15000;
 
 export const usePriceStream = () => {
   const [assetPrices, setAssetPrices] = React.useState<Record<string, AssetPrice>>({});
@@ -29,58 +31,93 @@ export const usePriceStream = () => {
   React.useEffect(() => {
     let source: EventSource | null = null;
     let retryHandle: ReturnType<typeof setTimeout> | null = null;
+    let stopped = false;
+    let attempts = 0;
+
+    const clearRetry = () => {
+      if (retryHandle) {
+        clearTimeout(retryHandle);
+        retryHandle = null;
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (stopped) {
+        return;
+      }
+      clearRetry();
+      attempts += 1;
+      const exponential = STREAM_RETRY_BASE_MS * 2 ** Math.min(attempts - 1, 5);
+      const backoff = Math.min(STREAM_RETRY_MAX_MS, exponential);
+      const jitter = Math.floor(Math.random() * 400);
+      retryHandle = setTimeout(connect, backoff + jitter);
+    };
 
     const connect = () => {
-      source = new EventSource(`${API_BASE_URL}/api/v1/markets/stream`);
-      source.onmessage = (event) => {
-        try {
-        const payload = JSON.parse(event.data) as {
-          condition_id: string;
-          asset_id: string;
-          best_bid?: number;
-          best_ask?: number;
-          timestamp?: string;
-          last_trade_price?: number;
-          last_trade_timestamp?: string;
-        };
-
-        const existing = priceMapRef.current[payload.asset_id];
-        const next: AssetPrice = {
-          condition_id: payload.condition_id || existing?.condition_id || "",
-          best_bid: existing?.best_bid,
-          best_ask: existing?.best_ask,
-          last_trade_price: existing?.last_trade_price,
-          timestamp: existing?.timestamp,
-          last_trade_timestamp: existing?.last_trade_timestamp,
-        };
-
-        if (typeof payload.best_bid === "number") {
-          next.best_bid = payload.best_bid;
-        }
-        if (typeof payload.best_ask === "number") {
-          next.best_ask = payload.best_ask;
-        }
-        if (typeof payload.timestamp === "string") {
-          next.timestamp = payload.timestamp;
-        }
-        if (typeof payload.last_trade_price === "number") {
-          next.last_trade_price = payload.last_trade_price;
-        }
-        if (typeof payload.last_trade_timestamp === "string") {
-          next.last_trade_timestamp = payload.last_trade_timestamp;
-        }
-
-        priceMapRef.current[payload.asset_id] = next;
-        needsFlushRef.current = true;
-      } catch (error) {
-        console.error("Failed to parse price update:", error);
+      if (stopped) {
+        return;
       }
+
+      const nextSource = new EventSource(`${API_BASE_URL}/api/v1/markets/stream`);
+      source = nextSource;
+
+      nextSource.onopen = () => {
+        attempts = 0;
       };
 
-      source.onerror = () => {
+      nextSource.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data) as {
+            condition_id: string;
+            asset_id: string;
+            best_bid?: number;
+            best_ask?: number;
+            timestamp?: string;
+            last_trade_price?: number;
+            last_trade_timestamp?: string;
+          };
+
+          const existing = priceMapRef.current[payload.asset_id];
+          const next: AssetPrice = {
+            condition_id: payload.condition_id || existing?.condition_id || "",
+            best_bid: existing?.best_bid,
+            best_ask: existing?.best_ask,
+            last_trade_price: existing?.last_trade_price,
+            timestamp: existing?.timestamp,
+            last_trade_timestamp: existing?.last_trade_timestamp,
+          };
+
+          if (typeof payload.best_bid === "number") {
+            next.best_bid = payload.best_bid;
+          }
+          if (typeof payload.best_ask === "number") {
+            next.best_ask = payload.best_ask;
+          }
+          if (typeof payload.timestamp === "string") {
+            next.timestamp = payload.timestamp;
+          }
+          if (typeof payload.last_trade_price === "number") {
+            next.last_trade_price = payload.last_trade_price;
+          }
+          if (typeof payload.last_trade_timestamp === "string") {
+            next.last_trade_timestamp = payload.last_trade_timestamp;
+          }
+
+          priceMapRef.current[payload.asset_id] = next;
+          needsFlushRef.current = true;
+        } catch (error) {
+          console.error("Failed to parse price update:", error);
+        }
+      };
+
+      nextSource.onerror = () => {
+        if (source !== nextSource) {
+          return;
+        }
         console.warn("SSE connection lost, retrying...");
-        source?.close();
-        retryHandle = setTimeout(connect, 3000);
+        nextSource.close();
+        source = null;
+        scheduleReconnect();
       };
     };
 
@@ -94,9 +131,8 @@ export const usePriceStream = () => {
     }, FLUSH_INTERVAL_MS);
 
     return () => {
-      if (retryHandle) {
-        clearTimeout(retryHandle);
-      }
+      stopped = true;
+      clearRetry();
       clearInterval(flushTimer);
       source?.close();
     };
