@@ -864,6 +864,7 @@ func (s *UpDownLLMService) collectIndependentSnapshot(ctx context.Context, marke
 	var referenceCurrentPrice *float64
 	var referenceEndPrice *float64
 	var referenceUpdatedAt *time.Time
+	referenceCurrentFromChainlink := false
 	if chainlinkReference {
 		referenceSource = "chainlink"
 		oracleLatest := GetChainlinkLatest(ctx, s.redis, marketCopy.Asset)
@@ -871,6 +872,7 @@ func (s *UpDownLLMService) collectIndependentSnapshot(ctx context.Context, marke
 			if oracleLatest.Price > 0 {
 				v := oracleLatest.Price
 				referenceCurrentPrice = &v
+				referenceCurrentFromChainlink = true
 			}
 			if !oracleLatest.UpdatedAt.IsZero() {
 				ts := oracleLatest.UpdatedAt.UTC()
@@ -1055,11 +1057,16 @@ func (s *UpDownLLMService) collectIndependentSnapshot(ctx context.Context, marke
 	modelDiagnosticDetail := ""
 	var pModelPtr *float64
 	var pSynthPrevSignalPtr *float64
+	var prevSignalForStale *UpDownSignal
 	if s.updown != nil {
 		s.updown.mu.RLock()
-		if prevSignal, ok := s.updown.signalsBySlug[marketCopy.Slug]; ok && prevSignal.PSynthUp != nil && now.Sub(prevSignal.Timestamp) <= upDownSignalHistoryTTL {
-			v := upDownClamp(*prevSignal.PSynthUp, 0.01, 0.99)
-			pSynthPrevSignalPtr = &v
+		if prevSignal, ok := s.updown.signalsBySlug[marketCopy.Slug]; ok && now.Sub(prevSignal.Timestamp) <= upDownSignalHistoryTTL {
+			prevCopy := prevSignal
+			prevSignalForStale = &prevCopy
+			if prevSignal.PSynthUp != nil {
+				v := upDownClamp(*prevSignal.PSynthUp, 0.01, 0.99)
+				pSynthPrevSignalPtr = &v
+			}
 		}
 		s.updown.mu.RUnlock()
 	}
@@ -1153,7 +1160,19 @@ func (s *UpDownLLMService) collectIndependentSnapshot(ctx context.Context, marke
 	marketAgeSeconds := int64(0)
 	if !marketUpdated.IsZero() {
 		marketAgeSeconds = maxInt64(int64(math.Round(now.Sub(marketUpdated).Seconds())), 0)
-		if now.Sub(marketUpdated) > marketStaleThreshold {
+		if shouldMarkLLMMarketStale(
+			now,
+			marketCopy,
+			marketUpdated,
+			marketStaleThreshold,
+			upAsk,
+			downAsk,
+			referenceUpdatedAt,
+			chainlinkReference,
+			referenceCurrentFromChainlink,
+			referenceCurrentPrice,
+			prevSignalForStale,
+		) {
 			flags.MarketStale = true
 			reasons = append(reasons, "market_stale")
 		}
@@ -2199,6 +2218,50 @@ func computeEffectiveGuardBlocks(
 		blocks = append(blocks, "snapshot_instability_hard")
 	}
 	return dedupeStrings(blocks)
+}
+
+func shouldMarkLLMMarketStale(
+	now time.Time,
+	market UpDownMarket,
+	marketUpdated time.Time,
+	marketStaleThreshold time.Duration,
+	upAsk float64,
+	downAsk float64,
+	referenceUpdatedAt *time.Time,
+	chainlinkReference bool,
+	referenceCurrentFromChainlink bool,
+	referenceCurrentPrice *float64,
+	prevSignal *UpDownSignal,
+) bool {
+	if marketUpdated.IsZero() {
+		return false
+	}
+	staleness := now.Sub(marketUpdated)
+	if staleness <= marketStaleThreshold {
+		return false
+	}
+
+	tolerated := market.IsActiveWindow &&
+		upAsk > 0 &&
+		downAsk > 0 &&
+		staleness <= marketStaleThreshold*2
+
+	if referenceUpdatedAt != nil && !referenceUpdatedAt.IsZero() && now.Sub(*referenceUpdatedAt) <= marketStaleThreshold {
+		tolerated = true
+	}
+	if chainlinkReference &&
+		referenceCurrentFromChainlink &&
+		referenceCurrentPrice != nil &&
+		referenceUpdatedAt != nil &&
+		!referenceUpdatedAt.IsZero() &&
+		now.Sub(*referenceUpdatedAt) <= marketStaleThreshold*2 {
+		tolerated = true
+	}
+	if prevSignal != nil && now.Sub(prevSignal.Timestamp) <= upDownSignalHistoryTTL && !prevSignal.RiskFlags.MarketStale {
+		tolerated = true
+	}
+
+	return !tolerated
 }
 
 func computeEntryMeta(

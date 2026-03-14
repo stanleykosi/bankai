@@ -223,6 +223,70 @@ func TestBuildLLMContextIncludesAllora5mInferencePayload(t *testing.T) {
 	}
 }
 
+func TestShouldMarkLLMMarketStaleToleratesFreshChainlinkReference(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	market := UpDownMarket{
+		WindowType:       Window5m,
+		IsActiveWindow:   true,
+		EventStartTime:   now.Add(-3 * time.Minute),
+		EventEndTime:     now.Add(2 * time.Minute),
+		TimeToEndSeconds: 120,
+	}
+	marketUpdated := now.Add(-46 * time.Second)
+	refUpdated := now.Add(-2 * time.Second)
+	refCurrent := 70594.81
+
+	stale := shouldMarkLLMMarketStale(
+		now,
+		market,
+		marketUpdated,
+		30*time.Second,
+		0.53,
+		0.48,
+		&refUpdated,
+		true,
+		true,
+		&refCurrent,
+		nil,
+	)
+	if stale {
+		t.Fatalf("expected stale flag to be tolerated with fresh chainlink reference")
+	}
+}
+
+func TestShouldMarkLLMMarketStaleWhenNoTolerance(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	market := UpDownMarket{
+		WindowType:       Window5m,
+		IsActiveWindow:   true,
+		EventStartTime:   now.Add(-3 * time.Minute),
+		EventEndTime:     now.Add(2 * time.Minute),
+		TimeToEndSeconds: 120,
+	}
+	marketUpdated := now.Add(-46 * time.Second)
+
+	stale := shouldMarkLLMMarketStale(
+		now,
+		market,
+		marketUpdated,
+		30*time.Second,
+		0,
+		0,
+		nil,
+		true,
+		false,
+		nil,
+		nil,
+	)
+	if !stale {
+		t.Fatalf("expected stale flag when quotes and references are stale or missing")
+	}
+}
+
 func TestDecodeStrictLLMResponseRejectsUnknownField(t *testing.T) {
 	t.Parallel()
 
