@@ -139,6 +139,19 @@ const formatUsd = (value?: number) => {
   return `$${value.toFixed(2)}`;
 };
 
+const parseFeeRateBps = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return Math.round(value);
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return Math.round(parsed);
+    }
+  }
+  return null;
+};
+
 const parseOutcomeLabels = (outcomes?: string | null): string[] => {
   if (!outcomes) {
     return OUTCOME_FALLBACKS;
@@ -329,6 +342,20 @@ export function TradeForm({
     if (typeof raw === "number" && raw > 0) return raw;
     return 1; // 1 share fallback
   }, [market?.order_min_size]);
+
+  const marketFeeRateBps = useMemo(() => {
+    const marketWithFee = market as Market & {
+      fee_rate_bps?: number | string | null;
+      feeRateBps?: number | string | null;
+    };
+    const explicit = parseFeeRateBps(
+      marketWithFee.fee_rate_bps ?? marketWithFee.feeRateBps,
+    );
+    if (explicit !== null) {
+      return explicit;
+    }
+    return market?.fees_enabled ? 1000 : 0;
+  }, [market]);
 
   const orderType: OrderTypeValue =
     executionType === "MARKET"
@@ -828,7 +855,7 @@ export function TradeForm({
           price: numericPrice,
           size: numericShares,
           side: sdkSide,
-          feeRateBps: 0,
+          feeRateBps: marketFeeRateBps,
           expiration,
           taker: "0x0000000000000000000000000000000000000000",
         };
@@ -850,7 +877,7 @@ export function TradeForm({
           price: numericPrice > 0 ? numericPrice : undefined, // Optional for market orders
           amount: side === "BUY" ? buyAmount : numericShares,
           side: sdkSide,
-          feeRateBps: 0,
+          feeRateBps: marketFeeRateBps,
           taker: "0x0000000000000000000000000000000000000000",
         };
 
@@ -1024,7 +1051,7 @@ export function TradeForm({
               price: entry.orderParams.price,
               size: entry.orderParams.size,
               side: entry.orderParams.side,
-              feeRateBps: 0,
+              feeRateBps: marketFeeRateBps,
               expiration: entry.orderParams.expiration,
               taker: "0x0000000000000000000000000000000000000000",
             };
@@ -1046,7 +1073,7 @@ export function TradeForm({
                   ? entry.orderParams.price * entry.orderParams.size
                   : entry.orderParams.size,
               side: entry.orderParams.side,
-              feeRateBps: 0,
+              feeRateBps: marketFeeRateBps,
               taker: "0x0000000000000000000000000000000000000000",
             };
             return currentClient.createAndPostMarketOrder(

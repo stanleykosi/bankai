@@ -65,11 +65,11 @@ const (
 	activeMarketsLogThrottle       = 30 * time.Second
 	activeMarketsSnapshotCap       = 800
 
-	realtimePricePipelineTimeout    = 500 * time.Millisecond
+	realtimePricePipelineTimeout    = 900 * time.Millisecond
 	realtimePricePipelinePerToken   = 2 * time.Millisecond
-	realtimePricePipelineMaxTimeout = 2 * time.Second
+	realtimePricePipelineMaxTimeout = 3 * time.Second
 	realtimePricePipelineBatchSize  = 240
-	realtimePriceFallbackTimeout    = 400 * time.Millisecond
+	realtimePriceFallbackTimeout    = 800 * time.Millisecond
 	realtimePriceFallbackMaxMarkets = 12
 	realtimePriceFallbackMaxTokens  = 6
 	realtimePriceLogThrottle        = 20 * time.Second
@@ -1350,16 +1350,25 @@ func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []mode
 			timeout = realtimePricePipelineMaxTimeout
 		}
 
-		cacheCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		cacheCtx, cancel := withCacheTimeout(ctx, timeout)
 		_, pipeErr := pipe.Exec(cacheCtx)
 		cancel()
 		if pipeErr != nil {
+			queued := 0
+			for _, meta := range batch {
+				if meta.tokenID == "" {
+					continue
+				}
+				queued++
+				fallbackTargets = append(fallbackTargets, meta)
+			}
 			s.logRealtimePriceError(
 				"pipeline",
-				"attachRealtimePrices pipeline degraded: %v (batch=%d timeout=%s)",
+				"attachRealtimePrices pipeline degraded: %v (batch=%d timeout=%s fallback_queued=%d)",
 				pipeErr,
 				len(batch),
 				timeout,
+				queued,
 			)
 			continue
 		}
@@ -1406,9 +1415,6 @@ func (s *MarketService) attachRealtimePrices(ctx context.Context, markets []mode
 	}
 
 	if len(fallbackTargets) == 0 || s.ClobClient == nil {
-		return
-	}
-	if len(markets) > realtimePriceFallbackMaxMarkets {
 		return
 	}
 	if ctx != nil && ctx.Err() != nil {

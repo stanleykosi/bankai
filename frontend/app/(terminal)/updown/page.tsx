@@ -49,6 +49,8 @@ const STREAM_RETRY_BASE_MS = 1200;
 const STREAM_RETRY_MAX_MS = 15000;
 const STREAM_REQUEST_RETRY_BASE_MS = 1000;
 const STREAM_REQUEST_RETRY_MAX_MS = 12000;
+const STREAM_REQUEST_REFRESH_MS = 90_000;
+const STREAM_REQUEST_HEARTBEAT_MS = 30_000;
 const LLM_PACKET_REQUIRED_WARNING = "Generate LLM directional packet before autofill.";
 
 const pct = (value?: number) => {
@@ -306,7 +308,7 @@ export default function UpDownPage() {
   const [windowType, setWindowType] = useState<(typeof WINDOWS)[number]>("all");
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const [liveSignals, setLiveSignals] = useState<Record<string, UpDownSignal>>({});
-  const requestedStreamsRef = useRef<Set<string>>(new Set());
+  const requestedStreamsRef = useRef<Map<string, number>>(new Map());
   const [prefill, setPrefill] = useState<TradeRecommendationPrefill | null>(null);
   const [prefillBlockReason, setPrefillBlockReason] = useState<string | null>(null);
   const [executionSource, setExecutionSource] =
@@ -520,6 +522,7 @@ export default function UpDownPage() {
 
   useEffect(() => {
     let retry: ReturnType<typeof setTimeout> | null = null;
+    let heartbeat: ReturnType<typeof setInterval> | null = null;
     let stopped = false;
     let attempts = 0;
 
@@ -546,9 +549,19 @@ export default function UpDownPage() {
       if (stopped) return;
       clearRetry();
       const targets = streamRequestTargetsKey ? streamRequestTargetsKey.split("|") : [];
-      const pending = targets.filter(
-        (conditionId) => !requestedStreamsRef.current.has(conditionId),
-      );
+      const now = Date.now();
+
+      // Keep this map bounded to current lane/selection targets.
+      for (const tracked of Array.from(requestedStreamsRef.current.keys())) {
+        if (!targets.includes(tracked)) {
+          requestedStreamsRef.current.delete(tracked);
+        }
+      }
+
+      const pending = targets.filter((conditionId) => {
+        const lastRequestedAt = requestedStreamsRef.current.get(conditionId) ?? 0;
+        return now-lastRequestedAt >= STREAM_REQUEST_REFRESH_MS;
+      });
       if (!pending.length) {
         attempts = 0;
         return;
@@ -564,7 +577,7 @@ export default function UpDownPage() {
         const conditionId = pending[i];
         const result = results[i];
         if (result?.status === "fulfilled") {
-          requestedStreamsRef.current.add(conditionId);
+          requestedStreamsRef.current.set(conditionId, now);
           continue;
         }
         sawFailure = true;
@@ -582,10 +595,17 @@ export default function UpDownPage() {
     };
 
     void requestPending();
+    heartbeat = setInterval(() => {
+      void requestPending();
+    }, STREAM_REQUEST_HEARTBEAT_MS);
 
     return () => {
       stopped = true;
       clearRetry();
+      if (heartbeat) {
+        clearInterval(heartbeat);
+        heartbeat = null;
+      }
     };
   }, [streamRequestTargetsKey]);
 
