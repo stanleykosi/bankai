@@ -1,21 +1,19 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Activity,
   ArrowRight,
   BrainCircuit,
-  ChevronRight,
-  Clock3,
-  Gauge,
+  ChevronDown,
+  ChevronUp,
   RefreshCw,
   ShieldAlert,
   Signal,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   TradeForm,
   type TradeRecommendationPrefill,
@@ -52,6 +50,9 @@ const STREAM_REQUEST_RETRY_MAX_MS = 12000;
 const STREAM_REQUEST_REFRESH_MS = 90_000;
 const STREAM_REQUEST_HEARTBEAT_MS = 30_000;
 const LLM_PACKET_REQUIRED_WARNING = "Generate LLM directional packet before autofill.";
+
+type StatusTone = "live" | "upcoming" | "warning" | "locked" | "muted";
+type AugmentMarket = ReturnType<typeof usePriceStream>["augmentMarket"];
 
 const pct = (value?: number) => {
   if (typeof value !== "number" || Number.isNaN(value)) return "--";
@@ -92,18 +93,6 @@ const formatClock = (value?: string) => {
   if (Number.isNaN(ts)) return "--";
   return new Date(ts).toLocaleTimeString([], {
     hour: "2-digit",
-    minute: "2-digit",
-  });
-};
-
-const formatDateClock = (value?: string) => {
-  if (!value) return "--";
-  const ts = Date.parse(value);
-  if (Number.isNaN(ts)) return "--";
-  return new Date(ts).toLocaleString([], {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
     minute: "2-digit",
   });
 };
@@ -302,6 +291,47 @@ const impliedUpProbability = (up: number | undefined, down: number | undefined) 
   return null;
 };
 
+const computeLiveMarketProbability = (
+  market: UpDownMarket,
+  liveMarket: UpDownMarket["market"] | null,
+  fallback?: number,
+) => {
+  if (!liveMarket) return fallback;
+
+  const upAsk =
+    market.outcome_index_up === 0 ? liveMarket.yes_best_ask : liveMarket.no_best_ask;
+  const downAsk =
+    market.outcome_index_down === 0 ? liveMarket.yes_best_ask : liveMarket.no_best_ask;
+  const fromAsk = impliedUpProbability(upAsk, downAsk);
+  if (typeof fromAsk === "number") return fromAsk;
+
+  const upLast = market.outcome_index_up === 0 ? liveMarket.yes_price : liveMarket.no_price;
+  const downLast = market.outcome_index_down === 0 ? liveMarket.yes_price : liveMarket.no_price;
+  const fromLast = impliedUpProbability(upLast, downLast);
+  if (typeof fromLast === "number") return fromLast;
+
+  return fallback;
+};
+
+const signalDelayed = (signal: UpDownSignal | null, nowMs: number) => {
+  if (!signal?.timestamp) return false;
+  const ts = toMillis(signal.timestamp);
+  if (!ts) return false;
+  return nowMs - ts > 30_000;
+};
+
+const uniqueStrings = (values: (string | null | undefined)[]) => {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const value of values) {
+    if (!value) continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    output.push(value);
+  }
+  return output;
+};
+
 export default function UpDownPage() {
   const queryClient = useQueryClient();
   const [asset, setAsset] = useState<(typeof ASSETS)[number]>("ALL");
@@ -401,6 +431,27 @@ export default function UpDownPage() {
 
   const railActiveMarkets = useMemo(() => flattenRailActiveMarkets(railLanes), [railLanes]);
 
+  const decisionMarkets = useMemo(() => {
+    const ordered: UpDownMarket[] = [];
+    const seen = new Set<string>();
+
+    for (const lane of railLanes) {
+      for (const market of lane.queue) {
+        if (seen.has(market.slug)) continue;
+        seen.add(market.slug);
+        ordered.push(market);
+      }
+    }
+
+    for (const market of railSourceMarkets) {
+      if (seen.has(market.slug)) continue;
+      seen.add(market.slug);
+      ordered.push(market);
+    }
+
+    return ordered;
+  }, [railLanes, railSourceMarkets]);
+
   const selectedMarket = useMemo(
     () =>
       railSourceMarkets.find((market) => market.slug === normalizedSelectedSlug) ??
@@ -408,6 +459,7 @@ export default function UpDownPage() {
       null,
     [markets, normalizedSelectedSlug, railSourceMarkets],
   );
+
   const streamRequestTargetsKey = useMemo(() => {
     const targets = new Set<string>();
     const selectedConditionId = selectedMarket?.condition_id?.trim();
@@ -433,7 +485,7 @@ export default function UpDownPage() {
   }, []);
 
   useEffect(() => {
-    if (!railActiveMarkets.length) {
+    if (!railSourceMarkets.length) {
       if (selectedSlug !== null) {
         setSelectedSlug(null);
       }
@@ -442,16 +494,16 @@ export default function UpDownPage() {
 
     if (
       normalizedSelectedSlug !== null &&
-      railActiveMarkets.some((market) => market.slug === normalizedSelectedSlug)
+      railSourceMarkets.some((market) => market.slug === normalizedSelectedSlug)
     ) {
       return;
     }
 
-    const next = pickNextMarket(railLanes, normalizedSelectedSlug);
+    const next = pickNextMarket(railLanes, normalizedSelectedSlug) ?? railSourceMarkets[0]?.slug ?? null;
     if (next !== normalizedSelectedSlug) {
       setSelectedSlug(next);
     }
-  }, [railActiveMarkets, railLanes, nowMs, normalizedSelectedSlug, selectedSlug]);
+  }, [railLanes, railSourceMarkets, normalizedSelectedSlug, selectedSlug]);
 
   useEffect(() => {
     let source: EventSource | null = null;
@@ -560,7 +612,7 @@ export default function UpDownPage() {
 
       const pending = targets.filter((conditionId) => {
         const lastRequestedAt = requestedStreamsRef.current.get(conditionId) ?? 0;
-        return now-lastRequestedAt >= STREAM_REQUEST_REFRESH_MS;
+        return now - lastRequestedAt >= STREAM_REQUEST_REFRESH_MS;
       });
       if (!pending.length) {
         attempts = 0;
@@ -623,20 +675,19 @@ export default function UpDownPage() {
     return polledTs > liveTs ? polledSignal : liveSignal;
   }, [liveSignals, normalizedSelectedSlug, signalQuery.data]);
 
+  const recommendationMap = useMemo(() => {
+    const map = new Map<string, Recommendation>();
+    for (const recommendation of recommendationsQuery.data ?? []) {
+      map.set(recommendation.slug, recommendation);
+    }
+    return map;
+  }, [recommendationsQuery.data]);
+
   const selectedRecommendation = useMemo(() => {
     if (selectedSignal?.locked_recommendation) return selectedSignal.locked_recommendation;
     if (selectedSignal?.recommendation) return selectedSignal.recommendation;
-    return (
-      (recommendationsQuery.data ?? []).find(
-        (recommendation) => recommendation.slug === normalizedSelectedSlug,
-      ) ?? null
-    );
-  }, [
-    recommendationsQuery.data,
-    selectedSignal?.locked_recommendation,
-    selectedSignal?.recommendation,
-    normalizedSelectedSlug,
-  ]);
+    return recommendationMap.get(normalizedSelectedSlug ?? "") ?? null;
+  }, [recommendationMap, selectedSignal?.locked_recommendation, selectedSignal?.recommendation, normalizedSelectedSlug]);
 
   const recommendationLockedAt = useMemo(() => {
     if (!selectedSignal?.recommendation_locked_at) return null;
@@ -645,17 +696,7 @@ export default function UpDownPage() {
     return new Date(ts);
   }, [selectedSignal?.recommendation_locked_at]);
 
-  const staleSignal = useMemo(() => {
-    if (!selectedSignal) return false;
-    const ts = toMillis(selectedSignal?.timestamp);
-    if (!ts) return false;
-    return nowMs - ts > 30_000;
-  }, [selectedSignal?.timestamp, nowMs]);
-
-  const activeCountdown = useMemo(() => {
-    if (!selectedMarket) return "--";
-    return marketCountdown(selectedMarket, nowMs, marketAnchorMs);
-  }, [nowMs, selectedMarket, marketAnchorMs]);
+  const staleSignal = useMemo(() => signalDelayed(selectedSignal, nowMs), [selectedSignal, nowMs]);
 
   const startSnapshotMissing = useMemo(() => {
     if (!selectedMarket || !selectedSignal) return false;
@@ -664,20 +705,42 @@ export default function UpDownPage() {
     return typeof selectedSignal.reference_start_price !== "number";
   }, [selectedMarket, selectedSignal, nowMs, marketAnchorMs]);
 
-  const liveMarket = selectedMarket ? augmentMarket(selectedMarket.market) : null;
-  const signalHasSynth = hasSynthProbabilities(selectedSignal);
   const llmPacket = llmPacketQuery.data ?? null;
+
+  const llmPacketCache = useMemo(() => {
+    const map = new Map<string, LLMTradePacket>();
+    const cached = queryClient.getQueriesData<LLMTradePacket>({
+      queryKey: ["updown-llm-packet"],
+    });
+
+    for (const [queryKey, packet] of cached) {
+      if (!packet) continue;
+      if (!Array.isArray(queryKey)) continue;
+      const keySlug = normalizeSelectedSlug(queryKey[1] as string | undefined);
+      if (!keySlug) continue;
+      map.set(keySlug, packet);
+    }
+
+    if (normalizedSelectedSlug && llmPacket) {
+      map.set(normalizedSelectedSlug, llmPacket);
+    }
+
+    return map;
+  }, [queryClient, normalizedSelectedSlug, llmPacket, llmPacketQuery.dataUpdatedAt]);
+
   const llmPacketCacheTtlSeconds = useMemo(() => {
     const ttl = llmHealthQuery.data?.cache_ttl_seconds;
     if (typeof ttl !== "number" || ttl <= 0) return 30;
     return ttl;
   }, [llmHealthQuery.data?.cache_ttl_seconds]);
+
   const llmPacketStale = useMemo(() => {
     if (!llmPacket?.generated_at) return false;
     const ts = toMillis(llmPacket.generated_at);
     if (!ts) return true;
     return nowMs - ts > llmPacketCacheTtlSeconds * 1000;
   }, [llmPacket?.generated_at, llmPacketCacheTtlSeconds, nowMs]);
+
   const llmGenerateCooldownRemainingSeconds = useMemo(() => {
     if (!llmPacket?.generated_at) return 0;
     const ts = toMillis(llmPacket.generated_at);
@@ -685,6 +748,7 @@ export default function UpDownPage() {
     const elapsedSeconds = Math.floor((nowMs - ts) / 1000);
     return Math.max(0, llmPacketCacheTtlSeconds - elapsedSeconds);
   }, [llmPacket?.generated_at, llmPacketCacheTtlSeconds, nowMs]);
+
   const llmGenerateLocked = llmGenerateCooldownRemainingSeconds > 0;
   const llmGenerateButtonLabel = useMemo(() => {
     if (llmGenerateMutation.isPending) return "Generating...";
@@ -695,26 +759,19 @@ export default function UpDownPage() {
     llmGenerateLocked,
     llmGenerateMutation.isPending,
   ]);
+
+  const signalHasSynth = hasSynthProbabilities(selectedSignal);
+
+  const selectedLiveMarket = selectedMarket ? augmentMarket(selectedMarket.market) : null;
+
   const livePMarketUp = useMemo(() => {
-    if (!selectedMarket || !liveMarket) return selectedSignal?.p_market_up;
-
-    const upAsk =
-      selectedMarket.outcome_index_up === 0 ? liveMarket.yes_best_ask : liveMarket.no_best_ask;
-    const downAsk =
-      selectedMarket.outcome_index_down === 0
-        ? liveMarket.yes_best_ask
-        : liveMarket.no_best_ask;
-    const fromAsk = impliedUpProbability(upAsk, downAsk);
-    if (typeof fromAsk === "number") return fromAsk;
-
-    const upLast = selectedMarket.outcome_index_up === 0 ? liveMarket.yes_price : liveMarket.no_price;
-    const downLast =
-      selectedMarket.outcome_index_down === 0 ? liveMarket.yes_price : liveMarket.no_price;
-    const fromLast = impliedUpProbability(upLast, downLast);
-    if (typeof fromLast === "number") return fromLast;
-
-    return selectedSignal?.p_market_up;
-  }, [selectedMarket, liveMarket, selectedSignal?.p_market_up]);
+    if (!selectedMarket || !selectedLiveMarket) return selectedSignal?.p_market_up;
+    return computeLiveMarketProbability(
+      selectedMarket,
+      selectedLiveMarket,
+      selectedSignal?.p_market_up,
+    );
+  }, [selectedMarket, selectedLiveMarket, selectedSignal?.p_market_up]);
 
   const rawIntegrityFailure =
     staleSignal ||
@@ -732,28 +789,28 @@ export default function UpDownPage() {
       selectedMarket.asset.toUpperCase() === "ETH";
     const windowAllowed =
       selectedMarket.window_type === "5m" || selectedMarket.window_type === "15m";
-    if (!assetAllowed) return "LLM v1 supports BTC and ETH only.";
-    if (!windowAllowed) return "LLM v1 supports 5m and 15m windows only.";
+    if (!assetAllowed) return "AI Strategy v1 supports BTC and ETH only.";
+    if (!windowAllowed) return "AI Strategy v1 supports 5m and 15m windows only.";
     return null;
   }, [selectedMarket]);
 
   const llmExecutionBlockedReason = useMemo(() => {
-    if (!selectedMarket || !selectedSignal) return "No active signal selected.";
+    if (!selectedMarket || !selectedSignal) return "No live market selected.";
     if (llmUnsupportedReason) return llmUnsupportedReason;
     if (!llmPacket) return LLM_PACKET_REQUIRED_WARNING;
-    if (llmPacketStale) return "LLM packet is stale. Regenerate before execution.";
-    if (!llmPacket.entry) return "LLM entry gate missing. Regenerate packet.";
+    if (llmPacketStale) return "AI packet is delayed. Regenerate before execution.";
+    if (!llmPacket.entry) return "AI setup is incomplete. Regenerate recommendation.";
     if (!llmPacket.entry.ready_to_bet) {
       const reasons = (llmPacket.entry.gate_reasons ?? []).join(", ");
       return reasons
-        ? `LLM entry gate blocked: ${reasons}`
-        : "LLM entry gate blocked for this window.";
+        ? `AI entry gate blocked: ${reasons}`
+        : "AI entry gate blocked for this window.";
     }
     if (llmPacket.effective_guard_blocks?.length) {
-      return `LLM guard blocks active: ${llmPacket.effective_guard_blocks.join(", ")}`;
+      return `Risk controls are blocking this setup: ${llmPacket.effective_guard_blocks.join(", ")}`;
     }
     if (llmPacket.decision === "NO_TRADE") {
-      return "LLM engine returned NO_TRADE for this window.";
+      return "AI Strategy returned NO_TRADE for this window.";
     }
     return null;
   }, [selectedMarket, selectedSignal, llmUnsupportedReason, llmPacket, llmPacketStale]);
@@ -798,7 +855,7 @@ export default function UpDownPage() {
 
   const executionBlockedReason = useMemo(() => {
     if (executionPolicy === "llm_only" && effectiveExecutionSource === "deterministic") {
-      return "Backend policy enforces LLM-only execution.";
+      return "Backend policy enforces AI Strategy-only execution.";
     }
     if (effectiveExecutionSource === "llm") {
       return llmExecutionBlockedReason;
@@ -988,621 +1045,1114 @@ export default function UpDownPage() {
     llmPrefill,
   ]);
 
+  const selectedMarketTitle =
+    selectedMarket?.market?.title || selectedMarket?.slug || "Selected market";
+
   return (
-    <div className="mx-auto flex w-full max-w-[1660px] flex-col gap-5 px-4 py-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-primary/15">
+    <div className="mx-auto flex w-full max-w-[1680px] flex-col gap-4 px-4 py-6">
+      <UpDownToolbar
+        asset={asset}
+        setAsset={setAsset}
+        windowType={windowType}
+        setWindowType={setWindowType}
+        onRefresh={() => {
+          void marketsQuery.refetch();
+          void signalQuery.refetch();
+          void recommendationsQuery.refetch();
+          void llmPacketQuery.refetch();
+          void llmHealthQuery.refetch();
+          void performanceQuery.refetch();
+        }}
+      />
+
+      <PerformanceStrip
+        trades={performanceQuery.data?.trades ?? 0}
+        winRate={pct(performanceQuery.data?.hit_rate)}
+        brier={(performanceQuery.data?.brier_score ?? 0).toFixed(4)}
+        actualReturn={money(performanceQuery.data?.realized_ev)}
+      />
+
+      <MarketList
+        markets={decisionMarkets}
+        selectedSlug={normalizedSelectedSlug}
+        onSelect={setSelectedSlug}
+        nowMs={nowMs}
+        anchorMs={marketAnchorMs}
+        isLoading={marketsQuery.isLoading}
+        isError={marketsQuery.isError}
+        liveSignals={liveSignals}
+        selectedSignal={selectedSignal}
+        recommendationMap={recommendationMap}
+        selectedRecommendation={selectedRecommendation}
+        llmPacketCache={llmPacketCache}
+        selectedLLMPacket={llmPacket}
+        llmPacketCacheTtlSeconds={llmPacketCacheTtlSeconds}
+        selectedLiveMarketProbability={livePMarketUp}
+        augmentMarket={augmentMarket}
+        expandedContent={(slug) => {
+          if (slug !== normalizedSelectedSlug) return null;
+          return (
+            <MarketRowExpanded
+              selectedMarket={selectedMarket}
+              selectedMarketTitle={selectedMarketTitle}
+              selectedSignal={selectedSignal}
+              recommendation={selectedRecommendation}
+              recommendationLockedAt={recommendationLockedAt}
+              startSnapshotMissing={startSnapshotMissing}
+              signalHasSynth={signalHasSynth}
+              livePMarketUp={livePMarketUp}
+              llmPacket={llmPacket}
+              llmPacketStale={llmPacketStale}
+              nowMs={nowMs}
+              llmUnsupportedReason={llmUnsupportedReason}
+              llmGenerateLocked={llmGenerateLocked}
+              llmGenerateButtonLabel={llmGenerateButtonLabel}
+              llmGenerateCooldownRemainingSeconds={llmGenerateCooldownRemainingSeconds}
+              llmGenerateMutation={llmGenerateMutation}
+              normalizedSelectedSlug={normalizedSelectedSlug}
+              executionSource={executionSource}
+              setExecutionSource={setExecutionSource}
+              effectiveExecutionSource={effectiveExecutionSource}
+              executionPolicy={executionPolicy}
+              executionDecision={executionDecision}
+              executionBlockedReason={executionBlockedReason}
+              executionPreview={executionPreview}
+              applyExecutionPrefill={applyExecutionPrefill}
+              rejectExecutionPrefill={rejectExecutionPrefill}
+              canUseRecommendation={
+                (effectiveExecutionSource === "llm"
+                  ? !llmGenerateMutation.isPending && Boolean(llmPrefill)
+                  : Boolean(selectedRecommendation && !selectedRecommendation.prefill.disabled)) &&
+                !executionBlockedReason
+              }
+              canDismiss={
+                effectiveExecutionSource === "llm"
+                  ? Boolean(llmPacket)
+                  : Boolean(selectedRecommendation)
+              }
+              selectedRecommendation={selectedRecommendation}
+              prefillDriftBps={prefillDriftBps}
+              prefillBlockReason={prefillBlockReason}
+              integrityFailure={integrityFailure}
+              selectedLiveMarket={selectedLiveMarket}
+              prefill={prefill}
+            />
+          );
+        }}
+      />
+    </div>
+  );
+}
+
+function UpDownToolbar({
+  asset,
+  setAsset,
+  windowType,
+  setWindowType,
+  onRefresh,
+}: {
+  asset: (typeof ASSETS)[number];
+  setAsset: (next: (typeof ASSETS)[number]) => void;
+  windowType: (typeof WINDOWS)[number];
+  setWindowType: (next: (typeof WINDOWS)[number]) => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="rounded-2xl border border-border/60 bg-gradient-to-b from-background to-background/70 p-4 shadow-[0_0_0_1px_hsl(var(--border)/0.15),0_20px_40px_hsl(var(--background)/0.5)]">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-xl border border-primary/30 bg-primary/10">
             <Signal className="h-5 w-5 text-primary" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold text-foreground">Up/Down Pro</h1>
-            <p className="text-xs text-muted-foreground">
-              Crypto windows only. Strategy advisory + user-confirmed execution.
+            <h1 className="text-2xl font-semibold tracking-tight text-foreground">Up/Down Pro</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Crypto prediction windows with strategy guidance
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-9 border-border/60 bg-background/40 px-3 font-mono text-[11px] uppercase tracking-wide"
+          onClick={onRefresh}
+        >
+          <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+          Refresh
+        </Button>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-4">
+        <FilterGroup label="Assets">
           {ASSETS.map((option) => (
             <Button
               key={option}
               size="sm"
-              variant={asset === option ? "default" : "outline"}
-              className="h-7 px-3 font-mono text-[10px]"
+              variant={asset === option ? "default" : "ghost"}
+              className={cn(
+                "h-8 px-3 font-mono text-[11px] uppercase tracking-wide",
+                asset === option
+                  ? "bg-primary text-primary-foreground"
+                  : "border border-border/50 bg-background/40 text-muted-foreground hover:text-foreground",
+              )}
               onClick={() => setAsset(option)}
             >
               {option}
             </Button>
           ))}
-        </div>
-      </div>
+        </FilterGroup>
 
-      <div className="flex flex-wrap items-center gap-2">
-        {WINDOWS.map((option) => (
-          <Button
-            key={option}
-            size="sm"
-            variant={windowType === option ? "default" : "outline"}
-            className="h-7 px-3 font-mono text-[10px]"
-            onClick={() => setWindowType(option)}
-          >
-            {option.toUpperCase()}
-          </Button>
-        ))}
-        <Button
-          size="sm"
-          variant="ghost"
-          className="ml-auto h-7 px-3 font-mono text-[10px]"
-          onClick={() => {
-            void marketsQuery.refetch();
-            void signalQuery.refetch();
-            void recommendationsQuery.refetch();
-            void llmPacketQuery.refetch();
-            void llmHealthQuery.refetch();
-          }}
-        >
-          <RefreshCw className="mr-1 h-3 w-3" />
-          Refresh
-        </Button>
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[320px,minmax(0,1fr),360px] 2xl:grid-cols-[340px,minmax(0,1fr),380px]">
-        <Card className="border-border/70 bg-card/70">
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 font-mono text-xs uppercase tracking-widest">
-              <Activity className="h-3.5 w-3.5" />
-              Market Rail
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {marketsQuery.isError ? (
-              <p className="text-xs text-destructive">Failed to load up/down markets.</p>
-            ) : railLanes.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                No up/down markets are available for this filter.
-              </p>
-            ) : (
-              <>
-                <div className="flex items-center justify-between px-1 text-[10px] font-mono uppercase tracking-wide text-muted-foreground">
-                  <span>{railLanes.filter((lane) => lane.live).length} live lanes</span>
-                  <span>{railLanes.length} total lanes</span>
-                </div>
-                <div className="max-h-[72vh] space-y-3 overflow-y-auto pr-1">
-                  {railLanes.map((lane) => (
-                    <RailLaneCard
-                      key={lane.key}
-                      lane={lane}
-                      nowMs={nowMs}
-                      anchorMs={marketAnchorMs}
-                      selectedSlug={normalizedSelectedSlug}
-                      onSelect={setSelectedSlug}
-                    />
-                  ))}
-                </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <div className="space-y-4">
-          <Card className="border-border/70 bg-card/70">
-            <CardHeader className="pb-2">
-              <CardTitle className="flex items-center justify-between">
-                <div className="flex items-center gap-2 font-mono text-xs uppercase tracking-widest">
-                  <Gauge className="h-3.5 w-3.5" />
-                  Active Signal
-                </div>
-                <span className="text-[11px] text-muted-foreground">{activeCountdown}</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {!selectedMarket ? (
-                <div className="rounded-md border border-border/60 bg-background/40 p-4 text-sm text-muted-foreground">
-                  No active windows in this filter. Upcoming windows stay read-only until the
-                  start boundary, then auto-slot into the active rail.
-                </div>
-              ) : !selectedSignal ? (
-                <div className="rounded-md border border-border/60 bg-background/40 p-4 text-sm text-muted-foreground">
-                  Active market selected, waiting for a fresh signal snapshot.
-                </div>
-              ) : (
-                <>
-                  <div className="rounded-md border border-border/60 bg-background/40 p-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="rounded bg-primary/15 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-primary">
-                          {selectedMarket.asset} {selectedMarket.window_type.toUpperCase()}
-                        </span>
-                        <span className="rounded bg-muted px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-                          {(selectedMarket.resolution_source_type || "unknown").toUpperCase()}
-                        </span>
-                        <span
-                          className={cn(
-                            "rounded px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide",
-                            staleSignal
-                              ? "bg-amber-500/20 text-amber-300"
-                              : "bg-constructive/20 text-constructive",
-                          )}
-                        >
-                          {staleSignal ? "STALE" : "LIVE"}
-                        </span>
-                        {recommendationLockedAt ? (
-                          <span className="rounded bg-primary/15 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-primary">
-                            Locked
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-                    <div className="mt-2 text-sm font-semibold text-foreground">
-                      {selectedMarket.market?.title || selectedMarket.slug}
-                    </div>
-                    <div className="mt-3 grid grid-cols-2 gap-2 xl:grid-cols-4">
-                      <Metric
-                        label="Start Price"
-                        value={price(selectedSignal.reference_start_price)}
-                        accent={startSnapshotMissing}
-                      />
-                      <Metric
-                        label="Current Price"
-                        value={price(selectedSignal.reference_current_price)}
-                      />
-                      <Metric
-                        label="Window Start"
-                        value={formatClock(selectedMarket.event_start_time)}
-                      />
-                      <Metric
-                        label="Window End"
-                        value={formatClock(selectedMarket.event_end_time)}
-                      />
-                    </div>
-                    {startSnapshotMissing ? (
-                      <p className="mt-2 text-[11px] text-amber-300">
-                        Start snapshot is missing after window open. Execution should stay guarded.
-                      </p>
-                    ) : null}
-                  </div>
-
-                  <div className="grid gap-3 2xl:grid-cols-2">
-                    <div className="h-full rounded-md border border-border/60 bg-background/40 p-3">
-                      <div className="mb-2 flex items-center justify-between">
-                        <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-                          Deterministic Engine
-                        </span>
-                        <span className="font-mono text-[11px] text-foreground">
-                          {selectedRecommendation?.decision ?? "NO_TRADE"}
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                        <Metric label="P_Market" value={pct(livePMarketUp)} />
-                        <Metric
-                          label="P_Final"
-                          value={signalHasSynth ? pct(selectedSignal.p_final_up) : "--"}
-                          accent
-                        />
-                        <Metric
-                          label="EV"
-                          value={money(selectedRecommendation?.expected_value)}
-                        />
-                        <Metric
-                          label="Confidence"
-                          value={pct(selectedRecommendation?.confidence)}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="h-full rounded-md border border-border/60 bg-background/40 p-3">
-                      <div className="mb-2 flex items-center justify-between">
-                        <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-                          LLM Engine
-                        </span>
-                        <span className="font-mono text-[11px] text-foreground">
-                          {llmPacket?.decision ?? "NOT_GENERATED"}
-                        </span>
-                      </div>
-                      <div className="mb-2 flex flex-wrap items-center gap-2">
-                        <Button
-                          size="sm"
-                          className="h-7 px-3 font-mono text-[10px]"
-                          disabled={
-                            !normalizedSelectedSlug ||
-                            llmGenerateMutation.isPending ||
-                            llmGenerateLocked ||
-                            Boolean(llmUnsupportedReason)
-                          }
-                          onClick={() => {
-                            if (!normalizedSelectedSlug) return;
-                            llmGenerateMutation.mutate({
-                              slug: normalizedSelectedSlug,
-                              force_refresh: false,
-                            });
-                          }}
-                        >
-                          <BrainCircuit className="mr-1 h-3.5 w-3.5" />
-                          {llmGenerateButtonLabel}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 px-3 font-mono text-[10px]"
-                          disabled={
-                            !normalizedSelectedSlug ||
-                            llmGenerateMutation.isPending ||
-                            Boolean(llmUnsupportedReason)
-                          }
-                          onClick={() => {
-                            if (!normalizedSelectedSlug) return;
-                            llmGenerateMutation.mutate({
-                              slug: normalizedSelectedSlug,
-                              force_refresh: true,
-                            });
-                          }}
-                        >
-                          Force Refresh
-                        </Button>
-                      </div>
-                      {llmGenerateLocked && !llmGenerateMutation.isPending ? (
-                        <p className="mb-2 text-[11px] text-muted-foreground">
-                          Generate available in {llmGenerateCooldownRemainingSeconds}s.
-                        </p>
-                      ) : null}
-                      {llmGenerateMutation.isError ? (
-                        <p className="mb-2 text-[11px] text-destructive">
-                          {llmGenerateMutation.error instanceof Error
-                            ? llmGenerateMutation.error.message
-                            : "Failed to generate LLM packet."}
-                        </p>
-                      ) : null}
-                      {llmUnsupportedReason ? (
-                        <p className="mb-2 text-[11px] text-amber-300">{llmUnsupportedReason}</p>
-                      ) : null}
-                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                        <Metric label="Side" value={llmPacket?.recommended_side ?? "--"} />
-                        <Metric label="Confidence" value={pct(llmPacket?.confidence)} />
-                        <Metric label="EV" value={money(llmPacket?.expected_value)} />
-                        <Metric
-                          label="Sharpe (Side)"
-                          value={
-                            typeof llmPacket?.entry?.sharpe_chosen_side === "number"
-                              ? llmPacket.entry.sharpe_chosen_side.toFixed(3)
-                              : "--"
-                          }
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </>
+        <FilterGroup label="Windows">
+          {WINDOWS.map((option) => (
+            <Button
+              key={option}
+              size="sm"
+              variant={windowType === option ? "default" : "ghost"}
+              className={cn(
+                "h-8 px-3 font-mono text-[11px] uppercase tracking-wide",
+                windowType === option
+                  ? "bg-primary text-primary-foreground"
+                  : "border border-border/50 bg-background/40 text-muted-foreground hover:text-foreground",
               )}
-            </CardContent>
-          </Card>
-
-          <Card className="border-border/70 bg-card/70">
-            <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 font-mono text-xs uppercase tracking-widest">
-                <Clock3 className="h-3.5 w-3.5" />
-                Performance
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid gap-3 sm:grid-cols-4">
-                <Metric label="Trades" value={String(performanceQuery.data?.trades ?? 0)} />
-                <Metric label="Hit Rate" value={pct(performanceQuery.data?.hit_rate)} />
-                <Metric
-                  label="Brier"
-                  value={(performanceQuery.data?.brier_score ?? 0).toFixed(4)}
-                />
-                <Metric
-                  label="Realized EV"
-                  value={money(performanceQuery.data?.realized_ev)}
-                />
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        <Card className="border-border/70 bg-card/70">
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center justify-between">
-              <span className="flex items-center gap-2 font-mono text-xs uppercase tracking-widest">
-                <ChevronRight className="h-3.5 w-3.5" />
-                Execution Panel
-              </span>
-              {integrityFailure ? (
-                <span className="inline-flex items-center gap-1 rounded bg-amber-500/20 px-2 py-0.5 text-[10px] text-amber-300">
-                  <ShieldAlert className="h-3 w-3" />
-                  Caution
-                </span>
-              ) : null}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {!selectedMarket || !liveMarket ? (
-              <p className="text-sm text-muted-foreground">No market selected.</p>
-            ) : (
-              <>
-                <div className="rounded-md border border-border/60 bg-background/40 p-3 text-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono uppercase tracking-wide text-muted-foreground">
-                      Strategy Action
-                    </span>
-                    <span className="font-semibold">
-                      {executionDecision}
-                    </span>
-                  </div>
-                  <div className="mt-2 flex items-center gap-2">
-                    <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-                      Source
-                    </span>
-                    <div className="inline-flex rounded border border-border/60 bg-background/30 p-0.5">
-                      <Button
-                        size="sm"
-                        variant={executionSource === "llm" ? "default" : "ghost"}
-                        className="h-6 px-2 font-mono text-[10px]"
-                        onClick={() => setExecutionSource("llm")}
-                      >
-                        LLM
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant={executionSource === "deterministic" ? "default" : "ghost"}
-                        className="h-6 px-2 font-mono text-[10px]"
-                        onClick={() => setExecutionSource("deterministic")}
-                        disabled={!selectedRecommendation || executionPolicy === "llm_only"}
-                      >
-                        DET
-                      </Button>
-                    </div>
-                    {executionSource !== effectiveExecutionSource ? (
-                      <span className="text-[10px] text-amber-300">
-                        {executionPolicy === "llm_only"
-                          ? "Backend policy set to LLM-only."
-                          : "DET unavailable, using LLM."}
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <Button
-                      size="sm"
-                      className="h-7 px-3 font-mono text-[10px]"
-                      onClick={applyExecutionPrefill}
-                      disabled={
-                        (effectiveExecutionSource === "llm"
-                          ? !llmPrefill
-                          : !selectedRecommendation || selectedRecommendation.prefill.disabled) ||
-                        Boolean(executionBlockedReason)
-                      }
-                    >
-                      Apply Prefill
-                      <ArrowRight className="ml-1 h-3 w-3" />
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 px-3 font-mono text-[10px]"
-                      onClick={rejectExecutionPrefill}
-                      disabled={
-                        effectiveExecutionSource === "llm"
-                          ? !llmPacket
-                          : !selectedRecommendation
-                      }
-                    >
-                      Reject
-                    </Button>
-                    {executionBlockedReason ? (
-                      <span className="text-[11px] text-amber-300">{executionBlockedReason}</span>
-                    ) : null}
-                    {effectiveExecutionSource === "deterministic" &&
-                    selectedRecommendation?.prefill?.disabled_why ? (
-                      <span className="text-[11px] text-amber-300">
-                        {selectedRecommendation.prefill.disabled_why}
-                      </span>
-                    ) : null}
-                    {prefillDriftBps > 0 ? (
-                      <span className="text-[11px] text-muted-foreground">
-                        Drift {prefillDriftBps.toFixed(0)} bps
-                      </span>
-                    ) : null}
-                  </div>
-                  {executionPreview ? (
-                    <div className="mt-2 grid grid-cols-3 gap-2 rounded border border-border/50 bg-background/50 p-2 text-[10px] font-mono text-muted-foreground">
-                      <span>
-                        Side: {executionPreview.side}
-                      </span>
-                      <span>
-                        Limit: {typeof executionPreview.limit === "number" ? executionPreview.limit.toFixed(3) : "--"}
-                      </span>
-                      <span>
-                        Size: {typeof executionPreview.size === "number" ? executionPreview.size.toFixed(2) : "--"}
-                      </span>
-                    </div>
-                  ) : null}
-                </div>
-
-                <TradeForm
-                  market={liveMarket}
-                  mode="compact"
-                  recommendationPrefill={prefill}
-                  externalBlockReason={null}
-                />
-              </>
-            )}
-          </CardContent>
-        </Card>
+              onClick={() => setWindowType(option)}
+            >
+              {option.toUpperCase()}
+            </Button>
+          ))}
+        </FilterGroup>
       </div>
     </div>
   );
 }
 
-function Metric({
+function FilterGroup({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+        {label}
+      </span>
+      <div className="flex flex-wrap items-center gap-1.5">{children}</div>
+    </div>
+  );
+}
+
+function PerformanceStrip({
+  trades,
+  winRate,
+  brier,
+  actualReturn,
+}: {
+  trades: number;
+  winRate: string;
+  brier: string;
+  actualReturn: string;
+}) {
+  return (
+    <section className="rounded-xl border border-border/50 bg-background/60 px-3 py-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded-md border border-border/60 bg-background/50 px-2 py-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+          Session Performance
+        </span>
+        <div className="grid min-w-0 flex-1 grid-cols-2 gap-2 sm:grid-cols-4">
+          <SummaryMetric label="Total Trades" value={String(trades)} />
+          <SummaryMetric label="Win Rate" value={winRate} />
+          <SummaryMetric label="Brier Score" value={brier} />
+          <SummaryMetric label="Actual Return" value={actualReturn} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SummaryMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border/40 bg-background/50 px-2.5 py-1.5">
+      <div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-0.5 text-sm font-semibold text-foreground">{value}</div>
+    </div>
+  );
+}
+
+function MarketList({
+  markets,
+  selectedSlug,
+  onSelect,
+  nowMs,
+  anchorMs,
+  isLoading,
+  isError,
+  liveSignals,
+  selectedSignal,
+  recommendationMap,
+  selectedRecommendation,
+  llmPacketCache,
+  selectedLLMPacket,
+  llmPacketCacheTtlSeconds,
+  selectedLiveMarketProbability,
+  augmentMarket,
+  expandedContent,
+}: {
+  markets: UpDownMarket[];
+  selectedSlug: string | null;
+  onSelect: (slug: string) => void;
+  nowMs: number;
+  anchorMs: number;
+  isLoading: boolean;
+  isError: boolean;
+  liveSignals: Record<string, UpDownSignal>;
+  selectedSignal: UpDownSignal | null;
+  recommendationMap: Map<string, Recommendation>;
+  selectedRecommendation: Recommendation | null;
+  llmPacketCache: Map<string, LLMTradePacket>;
+  selectedLLMPacket: LLMTradePacket | null;
+  llmPacketCacheTtlSeconds: number;
+  selectedLiveMarketProbability?: number;
+  augmentMarket: AugmentMarket;
+  expandedContent: (slug: string) => ReactNode;
+}) {
+  return (
+    <section className="rounded-2xl border border-border/60 bg-gradient-to-b from-background/80 to-background/55 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3 px-1">
+        <div className="flex items-center gap-2">
+          <span className="rounded-md border border-border/60 bg-background/60 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+            Live Markets
+          </span>
+          <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
+            {markets.length} total
+          </span>
+        </div>
+      </div>
+
+      {isError ? (
+        <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
+          Failed to load up/down markets.
+        </div>
+      ) : null}
+
+      {!isError && isLoading && !markets.length ? (
+        <div className="rounded-xl border border-border/50 bg-background/40 p-4 text-sm text-muted-foreground">
+          Loading markets...
+        </div>
+      ) : null}
+
+      {!isError && !isLoading && !markets.length ? (
+        <div className="rounded-xl border border-border/50 bg-background/40 p-4 text-sm text-muted-foreground">
+          No up/down markets are available for this filter.
+        </div>
+      ) : null}
+
+      {!isError && markets.length ? (
+        <div className="max-h-[78vh] space-y-2 overflow-y-auto pr-1">
+          {markets.map((market) => {
+            const isExpanded = selectedSlug === market.slug;
+            const rowSignal = isExpanded
+              ? selectedSignal
+              : liveSignals[market.slug] ?? null;
+            const rowRecommendation =
+              (isExpanded
+                ? selectedRecommendation
+                : rowSignal?.locked_recommendation ??
+                  rowSignal?.recommendation ??
+                  recommendationMap.get(market.slug) ??
+                  null) ?? null;
+            const rowPacket = (isExpanded ? selectedLLMPacket : llmPacketCache.get(market.slug)) ?? null;
+            const rowPacketStale = (() => {
+              if (!rowPacket?.generated_at) return false;
+              const ts = toMillis(rowPacket.generated_at);
+              if (!ts) return true;
+              return nowMs - ts > llmPacketCacheTtlSeconds * 1000;
+            })();
+
+            const liveMarket = augmentMarket(market.market);
+            const marketProb = isExpanded
+              ? selectedLiveMarketProbability
+              : computeLiveMarketProbability(market, liveMarket, rowSignal?.p_market_up);
+
+            return (
+              <MarketRow
+                key={market.slug}
+                market={market}
+                nowMs={nowMs}
+                anchorMs={anchorMs}
+                isExpanded={isExpanded}
+                onSelect={onSelect}
+                signal={rowSignal}
+                recommendation={rowRecommendation}
+                llmPacket={rowPacket}
+                llmPacketStale={rowPacketStale}
+                marketProbability={marketProb}
+                expandedContent={expandedContent(market.slug)}
+              />
+            );
+          })}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function MarketRow({
+  market,
+  nowMs,
+  anchorMs,
+  isExpanded,
+  onSelect,
+  signal,
+  recommendation,
+  llmPacket,
+  llmPacketStale,
+  marketProbability,
+  expandedContent,
+}: {
+  market: UpDownMarket;
+  nowMs: number;
+  anchorMs: number;
+  isExpanded: boolean;
+  onSelect: (slug: string) => void;
+  signal: UpDownSignal | null;
+  recommendation: Recommendation | null;
+  llmPacket: LLMTradePacket | null;
+  llmPacketStale: boolean;
+  marketProbability?: number;
+  expandedContent: ReactNode;
+}) {
+  const isLive = isMarketActiveAt(market, nowMs, anchorMs);
+  const delayed = signalDelayed(signal, nowMs);
+  const riskNotice =
+    !!signal?.risk_flags?.data_integrity_failed ||
+    !!signal?.risk_flags?.kill_switch ||
+    !!recommendation?.prefill?.disabled;
+
+  const statuses = uniqueStrings([
+    isLive ? "Live" : "Upcoming",
+    signal?.recommendation_locked_at ? "Locked In" : null,
+    delayed ? "Delayed" : null,
+    riskNotice ? "Risk Notice" : null,
+  ]);
+
+  return (
+    <article
+      className={cn(
+        "overflow-hidden rounded-xl border transition-colors",
+        isExpanded
+          ? "border-primary/55 bg-background/70"
+          : isLive
+            ? "border-border/50 bg-background/35 hover:border-primary/30"
+            : "border-border/45 bg-background/20 opacity-85 hover:border-border/60",
+      )}
+    >
+      <button
+        type="button"
+        className="w-full px-3 py-3 text-left transition"
+        onClick={() => onSelect(market.slug)}
+      >
+        <MarketRowSummary
+          market={market}
+          nowMs={nowMs}
+          anchorMs={anchorMs}
+          isLive={isLive}
+          statuses={statuses}
+          signal={signal}
+          recommendation={recommendation}
+          llmPacket={llmPacket}
+          llmPacketStale={llmPacketStale}
+          marketProbability={marketProbability}
+          expanded={isExpanded}
+        />
+      </button>
+
+      {isExpanded ? expandedContent : null}
+    </article>
+  );
+}
+
+function MarketRowSummary({
+  market,
+  nowMs,
+  anchorMs,
+  isLive,
+  statuses,
+  signal,
+  recommendation,
+  llmPacket,
+  llmPacketStale,
+  marketProbability,
+  expanded,
+}: {
+  market: UpDownMarket;
+  nowMs: number;
+  anchorMs: number;
+  isLive: boolean;
+  statuses: string[];
+  signal: UpDownSignal | null;
+  recommendation: Recommendation | null;
+  llmPacket: LLMTradePacket | null;
+  llmPacketStale: boolean;
+  marketProbability?: number;
+  expanded: boolean;
+}) {
+  const countdown = marketCountdown(market, nowMs, anchorMs);
+
+  return (
+    <div className="space-y-2.5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <StatusBadge tone="muted">{market.asset}</StatusBadge>
+            <StatusBadge tone="muted">{market.window_type.toUpperCase()}</StatusBadge>
+            <StatusBadge tone="muted">
+              {(market.resolution_source_type || "unknown").toUpperCase()}
+            </StatusBadge>
+            {statuses.map((status) => {
+              const tone: StatusTone =
+                status === "Live"
+                  ? "live"
+                  : status === "Upcoming"
+                    ? "upcoming"
+                    : status === "Locked In"
+                      ? "locked"
+                      : status === "Delayed" || status === "Risk Notice"
+                        ? "warning"
+                        : "muted";
+              return (
+                <StatusBadge key={`${market.slug}-${status}`} tone={tone}>
+                  {status}
+                </StatusBadge>
+              );
+            })}
+          </div>
+
+          <div className="text-base font-semibold leading-5 text-foreground">
+            {market.market?.title || market.slug}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <div className="text-right">
+            <div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+              Timing
+            </div>
+            <div
+              className={cn(
+                "text-sm font-semibold",
+                isLive ? "text-foreground" : "text-muted-foreground",
+              )}
+            >
+              {countdown}
+            </div>
+          </div>
+          <div className="rounded-md border border-border/60 bg-background/40 p-1.5 text-muted-foreground">
+            {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[1.1fr,1.7fr]">
+        <div className="grid grid-cols-2 gap-2">
+          <MetricPill label="Opening Price" value={price(signal?.reference_start_price)} compact />
+          <MetricPill
+            label="Live Price"
+            value={price(signal?.reference_current_price)}
+            compact
+            accent={isLive}
+          />
+        </div>
+
+        <div className="space-y-2">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <MetricPill
+              label="Strategy Engine"
+              value={recommendation?.decision ?? "--"}
+              compact
+              priority
+            />
+            <MetricPill
+              label="AI Strategy"
+              value={llmPacket?.decision ?? "--"}
+              compact
+              priority
+              accent={llmPacketStale}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <MetricPill
+              label="Market Implied Probability"
+              value={pct(marketProbability)}
+              compact
+              subdued
+            />
+            <MetricPill
+              label="Final Strategy Probability"
+              value={hasSynthProbabilities(signal) ? pct(signal?.p_final_up) : "--"}
+              compact
+              subdued
+            />
+            <MetricPill
+              label="Expected Edge"
+              value={money(recommendation?.expected_value)}
+              compact
+              subdued
+            />
+            <MetricPill
+              label="Confidence Level"
+              value={pct(recommendation?.confidence)}
+              compact
+              subdued
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MarketRowExpanded({
+  nowMs,
+  selectedMarket,
+  selectedMarketTitle,
+  selectedSignal,
+  recommendation,
+  recommendationLockedAt,
+  startSnapshotMissing,
+  signalHasSynth,
+  livePMarketUp,
+  llmPacket,
+  llmPacketStale,
+  llmUnsupportedReason,
+  llmGenerateLocked,
+  llmGenerateButtonLabel,
+  llmGenerateCooldownRemainingSeconds,
+  llmGenerateMutation,
+  normalizedSelectedSlug,
+  executionSource,
+  setExecutionSource,
+  effectiveExecutionSource,
+  executionPolicy,
+  executionDecision,
+  executionBlockedReason,
+  executionPreview,
+  applyExecutionPrefill,
+  rejectExecutionPrefill,
+  canUseRecommendation,
+  canDismiss,
+  selectedRecommendation,
+  prefillDriftBps,
+  prefillBlockReason,
+  integrityFailure,
+  selectedLiveMarket,
+  prefill,
+}: {
+  nowMs: number;
+  selectedMarket: UpDownMarket | null;
+  selectedMarketTitle: string;
+  selectedSignal: UpDownSignal | null;
+  recommendation: Recommendation | null;
+  recommendationLockedAt: Date | null;
+  startSnapshotMissing: boolean;
+  signalHasSynth: boolean;
+  livePMarketUp?: number;
+  llmPacket: LLMTradePacket | null;
+  llmPacketStale: boolean;
+  llmUnsupportedReason: string | null;
+  llmGenerateLocked: boolean;
+  llmGenerateButtonLabel: string;
+  llmGenerateCooldownRemainingSeconds: number;
+  llmGenerateMutation: ReturnType<typeof useMutation<
+    LLMTradePacket,
+    unknown,
+    { slug: string; force_refresh?: boolean }
+  >>;
+  normalizedSelectedSlug: string | null;
+  executionSource: "llm" | "deterministic";
+  setExecutionSource: (source: "llm" | "deterministic") => void;
+  effectiveExecutionSource: "llm" | "deterministic";
+  executionPolicy: string;
+  executionDecision: string;
+  executionBlockedReason: string | null;
+  executionPreview: {
+    side?: string;
+    limit?: number;
+    size?: number;
+  } | null;
+  applyExecutionPrefill: () => void;
+  rejectExecutionPrefill: () => void;
+  canUseRecommendation: boolean;
+  canDismiss: boolean;
+  selectedRecommendation: Recommendation | null;
+  prefillDriftBps: number;
+  prefillBlockReason: string | null;
+  integrityFailure: boolean;
+  selectedLiveMarket: UpDownMarket["market"] | null;
+  prefill: TradeRecommendationPrefill | null;
+}) {
+  const warnings = uniqueStrings([
+    executionBlockedReason,
+    effectiveExecutionSource === "deterministic"
+      ? selectedRecommendation?.prefill?.disabled_why
+      : null,
+    prefillBlockReason,
+    llmPacketStale ? "AI packet is delayed." : null,
+    prefillDriftBps > 0 ? `Drift ${prefillDriftBps.toFixed(0)} bps` : null,
+    executionSource !== effectiveExecutionSource
+      ? executionPolicy === "llm_only"
+        ? "Policy restriction: AI Strategy only."
+        : "Strategy Engine unavailable, using AI Strategy."
+      : null,
+  ]);
+
+  const riskWarnings = uniqueStrings([
+    selectedSignal?.risk_flags?.market_stale ? "Market data is delayed." : null,
+    selectedSignal?.risk_flags?.synth_stale ? "Synthetic inputs are delayed." : null,
+    selectedSignal?.risk_flags?.source_mismatch ? "Integrity warning: source mismatch detected." : null,
+    selectedSignal?.risk_flags?.clock_drift ? "Integrity warning: clock drift detected." : null,
+    selectedSignal?.risk_flags?.data_integrity_failed
+      ? "Market data failed validation."
+      : null,
+    selectedSignal?.risk_flags?.kill_switch ? "Safety protection is active." : null,
+    startSnapshotMissing ? "Opening price snapshot missing after window start." : null,
+    signalDelayed(selectedSignal, nowMs) ? "Signal feed is delayed." : null,
+  ]);
+
+  return (
+    <div className="border-t border-border/50 bg-background/45 px-3 pb-3 pt-2.5">
+      {!selectedMarket ? (
+        <div className="rounded-lg border border-border/60 bg-background/50 p-3 text-sm text-muted-foreground">
+          Select a live market to view trade setup.
+        </div>
+      ) : !selectedSignal ? (
+        <div className="rounded-lg border border-border/60 bg-background/50 p-3 text-sm text-muted-foreground">
+          No live market selected.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div className="grid gap-3 xl:grid-cols-2">
+            <section className="rounded-lg border border-border/60 bg-background/55 p-3">
+              <SectionTitle title="Market Snapshot" subtitle={selectedMarketTitle} />
+              <div className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-4">
+                <MetricPill label="Opening Price" value={price(selectedSignal.reference_start_price)} />
+                <MetricPill label="Live Price" value={price(selectedSignal.reference_current_price)} accent />
+                <MetricPill label="Starts At" value={formatClock(selectedMarket.event_start_time)} />
+                <MetricPill label="Ends At" value={formatClock(selectedMarket.event_end_time)} />
+              </div>
+
+              {riskWarnings.length ? (
+                <div className="mt-2 space-y-1.5 rounded-md border border-amber-500/35 bg-amber-500/10 p-2.5 text-[12px] text-amber-200">
+                  {riskWarnings.map((warning) => (
+                    <div key={warning} className="flex items-start gap-1.5">
+                      <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                      <span>{warning}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </section>
+
+            <EngineSection
+              title="Strategy Engine"
+              recommendation={recommendation?.decision ?? "NO_TRADE"}
+              helper="Market Implied Probability reflects live pricing. Final Strategy Probability includes strategy adjustments."
+              metrics={[
+                { label: "Market Implied Probability", value: pct(livePMarketUp) },
+                {
+                  label: "Final Strategy Probability",
+                  value: signalHasSynth ? pct(selectedSignal.p_final_up) : "--",
+                  accent: signalHasSynth,
+                },
+                { label: "Expected Edge", value: money(recommendation?.expected_value) },
+                { label: "Confidence Level", value: pct(recommendation?.confidence) },
+              ]}
+              footer={
+                recommendationLockedAt ? `Locked In • ${recommendationLockedAt.toLocaleTimeString()}` : null
+              }
+            />
+          </div>
+
+          <div className="grid gap-3 xl:grid-cols-2">
+            <EngineSection
+              title="AI Strategy"
+              recommendation={llmPacket?.decision ?? "NOT_GENERATED"}
+              helper="AI Strategy combines market context and model signals into an advisory recommendation."
+              controls={
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    className="h-7 px-3 font-mono text-[10px] uppercase tracking-wide"
+                    disabled={
+                      !normalizedSelectedSlug ||
+                      llmGenerateMutation.isPending ||
+                      llmGenerateLocked ||
+                      Boolean(llmUnsupportedReason)
+                    }
+                    onClick={() => {
+                      if (!normalizedSelectedSlug) return;
+                      llmGenerateMutation.mutate({
+                        slug: normalizedSelectedSlug,
+                        force_refresh: false,
+                      });
+                    }}
+                  >
+                    <BrainCircuit className="mr-1 h-3.5 w-3.5" />
+                    {llmGenerateButtonLabel}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 px-3 font-mono text-[10px] uppercase tracking-wide"
+                    disabled={
+                      !normalizedSelectedSlug ||
+                      llmGenerateMutation.isPending ||
+                      Boolean(llmUnsupportedReason)
+                    }
+                    onClick={() => {
+                      if (!normalizedSelectedSlug) return;
+                      llmGenerateMutation.mutate({
+                        slug: normalizedSelectedSlug,
+                        force_refresh: true,
+                      });
+                    }}
+                  >
+                    Regenerate
+                  </Button>
+                </div>
+              }
+              notes={
+                <>
+                  {llmGenerateLocked && !llmGenerateMutation.isPending ? (
+                    <p className="text-[11px] text-muted-foreground">
+                      Generate available in {llmGenerateCooldownRemainingSeconds}s.
+                    </p>
+                  ) : null}
+                  {llmGenerateMutation.isError ? (
+                    <p className="text-[11px] text-destructive">
+                      {llmGenerateMutation.error instanceof Error
+                        ? llmGenerateMutation.error.message
+                        : "Failed to generate AI packet."}
+                    </p>
+                  ) : null}
+                  {llmUnsupportedReason ? (
+                    <p className="text-[11px] text-amber-300">{llmUnsupportedReason}</p>
+                  ) : null}
+                </>
+              }
+              metrics={[
+                { label: "Suggested Direction", value: llmPacket?.recommended_side ?? "--" },
+                { label: "Confidence Level", value: pct(llmPacket?.confidence) },
+                { label: "Expected Edge", value: money(llmPacket?.expected_value) },
+                {
+                  label: "Risk-Adjusted Score",
+                  value:
+                    typeof llmPacket?.entry?.sharpe_chosen_side === "number"
+                      ? llmPacket.entry.sharpe_chosen_side.toFixed(3)
+                      : "--",
+                },
+              ]}
+            />
+
+            <TradeSetupSection
+              integrityFailure={integrityFailure}
+              executionDecision={executionDecision}
+              executionSource={executionSource}
+              setExecutionSource={setExecutionSource}
+              effectiveExecutionSource={effectiveExecutionSource}
+              executionPolicy={executionPolicy}
+              canUseDeterministic={Boolean(selectedRecommendation)}
+              onUseRecommendation={applyExecutionPrefill}
+              onDismiss={rejectExecutionPrefill}
+              canUseRecommendation={canUseRecommendation}
+              canDismiss={canDismiss}
+              warnings={warnings}
+              executionPreview={executionPreview}
+            />
+          </div>
+
+          <section className="rounded-lg border border-border/60 bg-background/55 p-3">
+            <SectionTitle title="Trade Panel" subtitle="Execution" />
+            <div className="mt-2">
+              {!selectedLiveMarket ? (
+                <p className="text-sm text-muted-foreground">Select a live market to view trade setup.</p>
+              ) : (
+                <TradeForm
+                  market={selectedLiveMarket}
+                  mode="compact"
+                  recommendationPrefill={prefill}
+                  externalBlockReason={prefillBlockReason}
+                />
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SectionTitle({ title, subtitle }: { title: string; subtitle?: string }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+        {title}
+      </span>
+      {subtitle ? (
+        <span className="text-xs text-muted-foreground">{subtitle}</span>
+      ) : null}
+    </div>
+  );
+}
+
+function EngineSection({
+  title,
+  recommendation,
+  helper,
+  controls,
+  notes,
+  metrics,
+  footer,
+}: {
+  title: string;
+  recommendation: string;
+  helper?: string;
+  controls?: ReactNode;
+  notes?: ReactNode;
+  metrics: { label: string; value: string; accent?: boolean }[];
+  footer?: string | null;
+}) {
+  return (
+    <section className="rounded-lg border border-border/60 bg-background/55 p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <SectionTitle title={title} />
+        <span className="rounded-md border border-border/60 bg-background/55 px-2 py-1 font-mono text-[10px] uppercase tracking-wide text-foreground">
+          Recommendation: {recommendation}
+        </span>
+      </div>
+
+      {controls}
+      {notes ? <div className="mb-2 space-y-1">{notes}</div> : null}
+      {helper ? (
+        <p className="mb-2 text-[11px] text-muted-foreground">{helper}</p>
+      ) : null}
+
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+        {metrics.map((metric) => (
+          <MetricPill
+            key={`${title}-${metric.label}`}
+            label={metric.label}
+            value={metric.value}
+            accent={metric.accent}
+          />
+        ))}
+      </div>
+
+      {footer ? (
+        <div className="mt-2 text-[11px] text-muted-foreground">{footer}</div>
+      ) : null}
+    </section>
+  );
+}
+
+function TradeSetupSection({
+  integrityFailure,
+  executionDecision,
+  executionSource,
+  setExecutionSource,
+  effectiveExecutionSource,
+  executionPolicy,
+  canUseDeterministic,
+  onUseRecommendation,
+  onDismiss,
+  canUseRecommendation,
+  canDismiss,
+  warnings,
+  executionPreview,
+}: {
+  integrityFailure: boolean;
+  executionDecision: string;
+  executionSource: "llm" | "deterministic";
+  setExecutionSource: (next: "llm" | "deterministic") => void;
+  effectiveExecutionSource: "llm" | "deterministic";
+  executionPolicy: string;
+  canUseDeterministic: boolean;
+  onUseRecommendation: () => void;
+  onDismiss: () => void;
+  canUseRecommendation: boolean;
+  canDismiss: boolean;
+  warnings: string[];
+  executionPreview: {
+    side?: string;
+    limit?: number;
+    size?: number;
+  } | null;
+}) {
+  return (
+    <section className="rounded-lg border border-border/60 bg-background/55 p-3">
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <SectionTitle title="Trade Setup" />
+        {integrityFailure ? (
+          <StatusBadge tone="warning">Risk Notice</StatusBadge>
+        ) : null}
+      </div>
+
+      <div className="rounded-md border border-border/50 bg-background/45 p-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+            Recommended Action
+          </span>
+          <span className="text-sm font-semibold text-foreground">{executionDecision}</span>
+        </div>
+
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+            Recommendation Source
+          </span>
+          <div className="inline-flex rounded-md border border-border/60 bg-background/40 p-0.5">
+            <Button
+              size="sm"
+              variant={executionSource === "llm" ? "default" : "ghost"}
+              className="h-6 px-2 font-mono text-[10px] uppercase tracking-wide"
+              onClick={() => setExecutionSource("llm")}
+            >
+              AI Strategy
+            </Button>
+            <Button
+              size="sm"
+              variant={executionSource === "deterministic" ? "default" : "ghost"}
+              className="h-6 px-2 font-mono text-[10px] uppercase tracking-wide"
+              onClick={() => setExecutionSource("deterministic")}
+              disabled={executionPolicy === "llm_only" || !canUseDeterministic}
+            >
+              Strategy Engine
+            </Button>
+          </div>
+          {executionSource !== effectiveExecutionSource ? (
+            <span className="text-[11px] text-amber-300">
+              {executionPolicy === "llm_only"
+                ? "Backend policy set to AI Strategy-only."
+                : "Strategy Engine unavailable, using AI Strategy."}
+            </span>
+          ) : null}
+        </div>
+
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            className="h-7 px-3 font-mono text-[10px] uppercase tracking-wide"
+            onClick={onUseRecommendation}
+            disabled={!canUseRecommendation}
+          >
+            Use Recommendation
+            <ArrowRight className="ml-1 h-3 w-3" />
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-3 font-mono text-[10px] uppercase tracking-wide"
+            onClick={onDismiss}
+            disabled={!canDismiss}
+          >
+            Dismiss
+          </Button>
+        </div>
+
+        {warnings.length ? (
+          <div className="mt-2 space-y-1 rounded-md border border-amber-500/35 bg-amber-500/10 p-2 text-[11px] text-amber-200">
+            {warnings.map((warning) => (
+              <div key={warning}>{warning}</div>
+            ))}
+          </div>
+        ) : null}
+
+        {executionPreview ? (
+          <div className="mt-2 grid grid-cols-3 gap-2 rounded-md border border-border/50 bg-background/55 p-2">
+            <MetricPill label="Direction" value={executionPreview.side ?? "--"} compact />
+            <MetricPill
+              label="Limit Price"
+              value={
+                typeof executionPreview.limit === "number"
+                  ? executionPreview.limit.toFixed(3)
+                  : "--"
+              }
+              compact
+            />
+            <MetricPill
+              label="Position Size"
+              value={
+                typeof executionPreview.size === "number"
+                  ? executionPreview.size.toFixed(2)
+                  : "--"
+              }
+              compact
+            />
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function MetricPill({
   label,
   value,
   accent,
+  compact,
+  priority,
+  subdued,
 }: {
   label: string;
   value: string;
   accent?: boolean;
+  compact?: boolean;
+  priority?: boolean;
+  subdued?: boolean;
 }) {
   return (
     <div
       className={cn(
-        "min-h-[74px] rounded border border-border/60 bg-background/40 p-2",
+        "rounded-md border border-border/55 bg-background/45 p-2",
+        compact && "px-2 py-1.5",
+        priority && "border-primary/30 bg-background/60",
+        subdued && "opacity-85",
         accent && "border-primary/50",
       )}
     >
-      <div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-        {label}
-      </div>
-      <div className={cn("mt-1 break-words text-base font-semibold leading-5", accent && "text-primary")}>
+      <div className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div
+        className={cn(
+          "mt-1 text-sm font-semibold text-foreground",
+          priority && "text-base",
+          accent && "text-primary",
+        )}
+      >
         {value}
       </div>
     </div>
   );
 }
 
-function RailLaneCard({
-  lane,
-  nowMs,
-  anchorMs,
-  selectedSlug,
-  onSelect,
+function StatusBadge({
+  children,
+  tone,
 }: {
-  lane: RailLane;
-  nowMs: number;
-  anchorMs: number;
-  selectedSlug: string | null;
-  onSelect: (slug: string) => void;
+  children: ReactNode;
+  tone: StatusTone;
 }) {
-  const upcomingCount = lane.queue.filter((market) => deriveStartMs(market, anchorMs) > nowMs).length;
-  const next = lane.next && lane.next.slug !== lane.live?.slug ? lane.next : null;
-
   return (
-    <div className="rounded-lg border border-border/60 bg-background/30 p-2.5">
-      <div className="mb-2 flex items-center justify-between">
-        <div className="font-mono text-xs uppercase tracking-wide text-foreground">
-          {lane.asset} {lane.windowType.toUpperCase()}
-        </div>
-        <span
-          className={cn(
-            "rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide",
-            lane.live
-              ? "bg-constructive/20 text-constructive"
-              : "bg-muted text-muted-foreground",
-          )}
-        >
-          {lane.live ? "Live" : "Upcoming"}
-        </span>
-      </div>
-
-      <div className="space-y-2">
-        {lane.live ? (
-          <RailMarketRow
-            label="Current"
-            market={lane.live}
-            nowMs={nowMs}
-            anchorMs={anchorMs}
-            selectedSlug={selectedSlug}
-            onSelect={onSelect}
-            selectable
-          />
-        ) : (
-          <div className="rounded-md border border-dashed border-border/50 px-2.5 py-2 text-[11px] text-muted-foreground">
-            <span className="font-mono uppercase tracking-wide">Current</span>
-            <span className="ml-2">Awaiting activation</span>
-          </div>
-        )}
-        <RailMarketRow
-          label="Next"
-          market={next}
-          nowMs={nowMs}
-          anchorMs={anchorMs}
-          selectedSlug={selectedSlug}
-          onSelect={onSelect}
-          selectable={false}
-        />
-      </div>
-
-      <div className="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
-        <span>{upcomingCount} upcoming</span>
-        <span>{(lane.live ?? lane.next)?.resolution_source_type ?? "unknown"}</span>
-      </div>
-    </div>
-  );
-}
-
-function RailMarketRow({
-  label,
-  market,
-  nowMs,
-  anchorMs,
-  selectedSlug,
-  onSelect,
-  selectable,
-}: {
-  label: string;
-  market: UpDownMarket | null;
-  nowMs: number;
-  anchorMs: number;
-  selectedSlug: string | null;
-  onSelect: (slug: string) => void;
-  selectable?: boolean;
-}) {
-  if (!market) {
-    return (
-      <div className="rounded-md border border-dashed border-border/50 px-2.5 py-2 text-[11px] text-muted-foreground">
-        <span className="font-mono uppercase tracking-wide">{label}</span>
-        <span className="ml-2">No market</span>
-      </div>
-    );
-  }
-
-  const start = deriveStartMs(market, anchorMs);
-  const isLive = isMarketActiveAt(market, nowMs, anchorMs);
-  const selected = selectedSlug === market.slug;
-  const countdown = marketCountdown(market, nowMs, anchorMs);
-  const canSelect = Boolean(selectable && isLive);
-  const stateLabel = isLive ? "LIVE" : label.toUpperCase() === "NEXT" ? "NEXT" : "CLOSED";
-
-  return (
-    <button
-      type="button"
-      disabled={!canSelect}
-      onClick={() => {
-        if (canSelect) onSelect(market.slug);
-      }}
+    <span
       className={cn(
-        "w-full rounded-md border px-2.5 py-2 text-left transition",
-        selected
-          ? "border-primary bg-primary/10"
-          : canSelect
-            ? "border-border/50 bg-background/40 hover:border-primary/40"
-            : "border-border/40 bg-background/20 opacity-80",
-        !canSelect && "cursor-not-allowed",
+        "rounded-md border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide",
+        tone === "live" && "border-constructive/40 bg-constructive/15 text-constructive",
+        tone === "upcoming" && "border-border/60 bg-muted/30 text-muted-foreground",
+        tone === "warning" && "border-amber-500/35 bg-amber-500/10 text-amber-300",
+        tone === "locked" && "border-primary/40 bg-primary/12 text-primary",
+        tone === "muted" && "border-border/55 bg-background/50 text-muted-foreground",
       )}
     >
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-          {label}
-        </span>
-        <span
-          className={cn(
-            "rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide",
-            isLive
-              ? "bg-constructive/20 text-constructive"
-              : "bg-muted text-muted-foreground",
-          )}
-        >
-          {stateLabel}
-        </span>
-      </div>
-      <div className="mt-1 font-mono text-[12px] font-semibold text-foreground">
-        {market.asset} {market.window_type.toUpperCase()}
-      </div>
-      <div className="mt-1 truncate text-[10px] text-muted-foreground">
-        {market.market?.title || market.slug}
-      </div>
-      <div className="mt-1.5 flex items-center justify-between text-[10px] text-muted-foreground">
-        <span>{countdown}</span>
-        <span>{formatDateClock(market.event_start_time)}</span>
-      </div>
-    </button>
+      {children}
+    </span>
   );
 }
