@@ -233,7 +233,7 @@ func Load() (*Config, error) {
 			UpDownReadOnly:                 getEnvAsBool("UPDOWN_READ_ONLY", false),
 			UpDownKillSwitch:               getEnvAsBool("UPDOWN_KILL_SWITCH", false),
 			UpDownDBWritesPaused:           getEnvAsBool("UPDOWN_DB_WRITES_PAUSED", false),
-			UpDownEnterpriseEnabled:        getEnvAsBool("UPDOWN_ENTERPRISE_ENABLED", true),
+			UpDownEnterpriseEnabled:        getEnvAsBool("UPDOWN_ENTERPRISE_ENABLED", false),
 			UpDownPollIntervalSeconds:      getEnvAsInt("UPDOWN_POLL_INTERVAL_SECONDS", 2),
 			UpDownStaleThresholdSeconds:    getEnvAsInt("UPDOWN_STALE_THRESHOLD_SECONDS", 8),
 			UpDownClockDriftMaxSeconds:     getEnvAsInt("UPDOWN_CLOCK_DRIFT_MAX_SECONDS", 5),

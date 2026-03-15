@@ -425,6 +425,7 @@ async function checkAccountAllowed(request: NextRequest): Promise<{
 export async function GET(request: NextRequest) {
   const configErr = requireConfiguredSecrets();
   if (configErr) {
+    console.error("[polymarket/sign][GET] Misconfigured signer route:", configErr);
     return jsonNoStore({ error: configErr }, { status: 500 });
   }
 
@@ -475,6 +476,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const configErr = requireConfiguredSecrets();
   if (configErr) {
+    console.error("[polymarket/sign][POST] Misconfigured signer route:", configErr);
     return jsonNoStore({ error: configErr }, { status: 500 });
   }
 
@@ -522,6 +524,10 @@ export async function POST(request: NextRequest) {
       POLY_BUILDER_PASSPHRASE: BUILDER_CREDENTIALS.passphrase,
     });
   } catch (error: any) {
+    console.error(
+      "[polymarket/sign][POST] Failed to sign request:",
+      error?.message || error
+    );
     return jsonNoStore(
       { error: error?.message || "Failed to sign request" },
       { status: 500 }

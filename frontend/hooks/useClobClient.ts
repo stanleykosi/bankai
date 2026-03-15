@@ -70,6 +70,7 @@ export function useClobClient({
   const { data: walletClient } = useWalletClient();
   const { address: eoaAddress } = useAccount();
   const [signerToken, setSignerToken] = useState<string | null>(null);
+  const [clientInitError, setClientInitError] = useState<string | null>(null);
   const signerTokenRef = useRef<string | null>(null);
   const signerTokenExpiryRef = useRef<number>(0);
   const backendAssertionRef = useRef<string | null>(null);
@@ -130,6 +131,24 @@ export function useClobClient({
       const delay = Math.min(RETRY_BACKOFF_CAP_MS, baseDelayMs * 2 ** step);
       failureStreak += 1;
       scheduleRefresh(delay);
+    };
+
+    const asErrorMessage = (err: unknown, fallback: string) => {
+      if (!err || typeof err !== "object") {
+        return fallback;
+      }
+      const maybeAxiosErr = err as {
+        response?: { data?: { error?: string } };
+        message?: string;
+      };
+      const apiError = maybeAxiosErr.response?.data?.error;
+      if (typeof apiError === "string" && apiError.trim()) {
+        return apiError.trim();
+      }
+      if (typeof maybeAxiosErr.message === "string" && maybeAxiosErr.message.trim()) {
+        return maybeAxiosErr.message.trim();
+      }
+      return fallback;
     };
 
     const fetchBackendAssertion = async () => {
@@ -197,6 +216,7 @@ export function useClobClient({
           : await fetchBackendAssertion();
         if (!assertionToken) {
           clearToken();
+          setClientInitError("Signer assertion is unavailable.");
           scheduleRetry();
           return;
         }
@@ -212,6 +232,18 @@ export function useClobClient({
         if (cancelled) return;
 
         if (!res.ok) {
+          let responseMessage = "";
+          try {
+            const payload = await res.json();
+            responseMessage =
+              typeof payload?.error === "string" ? payload.error.trim() : "";
+          } catch {
+            responseMessage = "";
+          }
+          const signError = `Signer token endpoint failed (${res.status})${responseMessage ? `: ${responseMessage}` : ""}`;
+          setClientInitError(signError);
+          console.error("useClobClient:", signError);
+
           // Auth failures should immediately drop the token; transient failures should not.
           if (res.status === 401 || res.status === 403) {
             clearToken();
@@ -239,22 +271,27 @@ export function useClobClient({
           if (!hasUsableToken()) {
             clearToken();
           }
+          setClientInitError("Signer token response is invalid.");
           scheduleRetry();
           return;
         }
 
         failureStreak = 0;
+        setClientInitError(null);
         setFreshToken(nextToken, expiresAt);
         const refreshMs = Math.max(
           MIN_SIGNER_REFRESH_MS,
           (expiresAt - nowSeconds() - 15) * 1000
         );
         scheduleRefresh(refreshMs);
-      } catch {
+      } catch (err) {
         if (cancelled) return;
         if (!hasUsableToken()) {
           clearToken();
         }
+        const message = asErrorMessage(err, "Failed to initialize signer token.");
+        setClientInitError(message);
+        console.error("useClobClient:", message);
         scheduleRetry();
       } finally {
         if (controller === nextController) {
@@ -268,6 +305,7 @@ export function useClobClient({
     } else {
       clearToken();
       clearBackendAssertion();
+      setClientInitError(null);
     }
 
     return () => {
@@ -341,5 +379,5 @@ export function useClobClient({
     }
   }, [walletClient, eoaAddress, vaultAddress, credentials, walletType, signerToken]);
 
-  return { clobClient };
+  return { clobClient, clientInitError };
 }

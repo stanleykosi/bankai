@@ -465,6 +465,9 @@ type UpDownLLMService struct {
 	metaMu            sync.RWMutex
 	lastAlloraFetchAt *time.Time
 	lastAlloraError   string
+	// When synth enterprise responds with auth errors, disable it in-process to avoid
+	// repeated failing calls on every generation.
+	synthEnterpriseAuthDisabled bool
 
 	alloraCacheMu        sync.RWMutex
 	lastGoodAlloraByKey  map[string]alloraInferenceCacheValue
@@ -868,44 +871,42 @@ func (s *UpDownLLMService) collectIndependentSnapshot(ctx context.Context, marke
 	var synthLPErr error
 	horizon := horizonForWindow(marketCopy.WindowType)
 	if s.synth != nil && s.synth.Enabled() && supportsSynthAnalyticsForWindow(marketCopy.WindowType) {
-		var wg sync.WaitGroup
 		synthWindow := synthWindowForMarket(marketCopy.WindowType)
 		if synthWindow != "" {
+			upDownTimeout := maxDuration(synthRequestTimeoutForWindow(marketCopy.WindowType), 9*time.Second)
+			reqCtx, cancel := context.WithTimeout(ctx, upDownTimeout)
+			synthResp, synthUpDownErr = s.synth.GetPolymarketUpDown(reqCtx, marketCopy.Asset, synthWindow, horizon, 3, 2)
+			cancel()
+		} else {
+			synthUpDownErr = fmt.Errorf("synth window unsupported")
+		}
+		if synthResp != nil {
+			var wg sync.WaitGroup
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				reqCtx, cancel := synthRequestContext(ctx, marketCopy.WindowType)
 				defer cancel()
-				synthResp, synthUpDownErr = s.synth.GetPolymarketUpDown(reqCtx, marketCopy.Asset, synthWindow, horizon, 14, 10)
+				volSummary, synthVolErr = s.synth.GetVolatility(reqCtx, marketCopy.Asset, horizon, 7, 3)
 			}()
-		} else {
-			synthUpDownErr = fmt.Errorf("synth window unsupported")
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				reqCtx, cancel := synthRequestContext(ctx, marketCopy.WindowType)
+				defer cancel()
+				percentile, synthPercentileErr = s.synth.GetPredictionPercentiles(reqCtx, marketCopy.Asset, horizon, 7, 3)
+			}()
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				reqCtx, cancel := synthRequestContext(ctx, marketCopy.WindowType)
+				defer cancel()
+				lpSummary, synthLPErr = s.synth.GetLPProbabilities(reqCtx, marketCopy.Asset, horizon, 7, 3)
+			}()
+			wg.Wait()
 		}
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			reqCtx, cancel := synthRequestContext(ctx, marketCopy.WindowType)
-			defer cancel()
-			volSummary, synthVolErr = s.synth.GetVolatility(reqCtx, marketCopy.Asset, horizon, 14, 10)
-		}()
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			reqCtx, cancel := synthRequestContext(ctx, marketCopy.WindowType)
-			defer cancel()
-			percentile, synthPercentileErr = s.synth.GetPredictionPercentiles(reqCtx, marketCopy.Asset, horizon, 14, 10)
-		}()
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			reqCtx, cancel := synthRequestContext(ctx, marketCopy.WindowType)
-			defer cancel()
-			lpSummary, synthLPErr = s.synth.GetLPProbabilities(reqCtx, marketCopy.Asset, horizon, 14, 10)
-		}()
-		wg.Wait()
 	}
 	if code := synthFetchReasonCode("synth_updown", synthUpDownErr); code != "" {
 		reasons = append(reasons, code)
@@ -1023,6 +1024,10 @@ func (s *UpDownLLMService) collectIndependentSnapshot(ctx context.Context, marke
 		modelDiagnosticCode = "threshold_missing"
 	} else if s.synth == nil || !s.synth.Enabled() {
 		modelDiagnosticCode = "synth_disabled"
+	} else if !s.enterpriseFetchEnabled() {
+		modelDiagnosticCode = "enterprise_disabled"
+	} else if pSynthPtr == nil {
+		modelDiagnosticCode = "synth_missing"
 	} else {
 		stepSeconds := synthSamplingInterval(horizonForWindow(marketCopy.WindowType))
 		targetStep := int(math.Ceil(math.Max(1, marketCopy.EventEndTime.Sub(now).Seconds()) / math.Max(stepSeconds.Seconds(), 1)))
@@ -1059,7 +1064,14 @@ func (s *UpDownLLMService) collectIndependentSnapshot(ctx context.Context, marke
 		if predErr != nil {
 			modelDiagnosticCode = "enterprise_fetch_failed"
 			modelDiagnosticDetail = compactError(predErr)
-			reasons = append(reasons, synthFetchReasonCode("synth_enterprise", predErr))
+			diagCode := synthFetchReasonCode("synth_enterprise", predErr)
+			if diagCode != "" {
+				reasons = append(reasons, diagCode)
+			}
+			if diagCode == "synth_enterprise_auth_failed" {
+				s.markEnterpriseAuthFailure(predErr)
+				modelDiagnosticCode = "enterprise_auth_failed"
+			}
 		} else if pred != nil && pred.ProbabilityUp >= 0 && pred.ProbabilityUp <= 1 {
 			v := upDownClamp(pred.ProbabilityUp, 0.01, 0.99)
 			pModelPtr = &v
@@ -1071,6 +1083,9 @@ func (s *UpDownLLMService) collectIndependentSnapshot(ctx context.Context, marke
 	if pSynthPtr == nil {
 		flags.SynthMissing = true
 		reasons = append(reasons, "synth_missing")
+		if modelDiagnosticDetail == "" && synthUpDownErr != nil {
+			modelDiagnosticDetail = compactError(synthUpDownErr)
+		}
 		if pSynthPercentilePtr != nil {
 			reasons = append(reasons, "synth_percentile_available_but_blocked")
 		}
@@ -2283,6 +2298,29 @@ func computeEffectiveGuardBlocks(
 	return dedupeStrings(blocks)
 }
 
+func (s *UpDownLLMService) enterpriseFetchEnabled() bool {
+	if s == nil || s.cfg == nil || !s.cfg.Services.UpDownEnterpriseEnabled {
+		return false
+	}
+	s.metaMu.RLock()
+	disabled := s.synthEnterpriseAuthDisabled
+	s.metaMu.RUnlock()
+	return !disabled
+}
+
+func (s *UpDownLLMService) markEnterpriseAuthFailure(err error) {
+	if s == nil || err == nil {
+		return
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if !strings.Contains(msg, "status 401") && !strings.Contains(msg, "status 403") {
+		return
+	}
+	s.metaMu.Lock()
+	s.synthEnterpriseAuthDisabled = true
+	s.metaMu.Unlock()
+}
+
 func synthFetchReasonCode(prefix string, err error) string {
 	if err == nil {
 		return ""
@@ -2299,7 +2337,9 @@ func synthFetchReasonCode(prefix string, err error) string {
 		return base + "_not_found"
 	case strings.Contains(msg, "status 401"), strings.Contains(msg, "status 403"):
 		return base + "_auth_failed"
-	case strings.Contains(msg, "context deadline exceeded"), strings.Contains(msg, "timeout"):
+	case strings.Contains(msg, "status 5"):
+		return base + "_upstream_error"
+	case strings.Contains(msg, "context deadline exceeded"), strings.Contains(msg, "context canceled"), strings.Contains(msg, "timeout"):
 		return base + "_timeout"
 	case strings.Contains(msg, "disabled"):
 		return base + "_disabled"

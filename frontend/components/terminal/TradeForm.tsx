@@ -88,6 +88,8 @@ type ExecutionType = "LIMIT" | "MARKET";
 
 const OUTCOME_FALLBACKS = ["Yes", "No"];
 const MIN_GTD_BUFFER_SECONDS = 90; // Polymarket enforces ~60s security threshold, keep 90s for safety.
+const TRADING_CLIENT_READY_TIMEOUT_MS = 10_000;
+const TRADING_CLIENT_POLL_MS = 100;
 
 type OutcomeOption = {
   label: string;
@@ -180,7 +182,7 @@ export function TradeForm({
   } = useUserApiCredentials();
 
   // Initialize ClobClient with credentials and builder config
-  const { clobClient } = useClobClient({
+  const { clobClient, clientInitError } = useClobClient({
     credentials,
     vaultAddress: user?.vault_address ?? null,
     walletType: user?.wallet_type ?? null,
@@ -195,6 +197,10 @@ export function TradeForm({
   useEffect(() => {
     clobClientRef.current = clobClient;
   }, [clobClient]);
+  const clientInitErrorRef = useRef<string | null>(clientInitError);
+  useEffect(() => {
+    clientInitErrorRef.current = clientInitError;
+  }, [clientInitError]);
 
   const upsertOptimisticOrders = useCallback(
     (incoming: OrderRecord[]) => {
@@ -711,6 +717,56 @@ export function TradeForm({
     return side === "BUY" ? Side.BUY : Side.SELL;
   }, [side]);
 
+  const ensureTradingClientReady = useCallback(async () => {
+    let resolvedCredentials = credentials;
+    if (!resolvedCredentials) {
+      resolvedCredentials = await getCredentials();
+    }
+
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < TRADING_CLIENT_READY_TIMEOUT_MS) {
+      const currentClient = clobClientRef.current;
+      if (currentClient) {
+        return currentClient;
+      }
+      if (clientInitErrorRef.current) {
+        throw new Error(clientInitErrorRef.current);
+      }
+      await new Promise((resolve) => setTimeout(resolve, TRADING_CLIENT_POLL_MS));
+    }
+
+    const blockers: string[] = [];
+    if (!eoaAddress) {
+      blockers.push("wallet not connected");
+    }
+    if (!vaultAddress) {
+      blockers.push("vault not deployed");
+    }
+    if (!resolvedCredentials) {
+      blockers.push("CLOB API credentials missing");
+    }
+    if (credentialsError?.message) {
+      blockers.push(`credentials error: ${credentialsError.message}`);
+    }
+    if (clientInitErrorRef.current) {
+      blockers.push(clientInitErrorRef.current);
+    }
+    if (!blockers.length) {
+      blockers.push("builder signer token is not available yet");
+    }
+
+    throw new Error(
+      `Trading client not ready after ${Math.floor(TRADING_CLIENT_READY_TIMEOUT_MS / 1000)}s (${blockers.join("; ")}).`,
+    );
+  }, [
+    credentials,
+    credentialsError?.message,
+    eoaAddress,
+    getCredentials,
+    clientInitError,
+    vaultAddress,
+  ]);
+
   const runSingleOrder = async () => {
     if (!canSubmit) {
       if (externalBlockReason) {
@@ -742,26 +798,7 @@ export function TradeForm({
         throw new Error("Selected outcome does not have a tradable token.");
       }
 
-      // Ensure we have API credentials before proceeding
-      if (!credentials) {
-        await getCredentials();
-        // Wait for React state update and useClobClient hook to recreate client
-        await new Promise((resolve) => setTimeout(resolve, 500));
-      }
-
-      // Use ref to get latest clobClient (handles state update timing)
-      let currentClient = clobClientRef.current;
-      if (!currentClient && credentials) {
-        // If we have credentials but no client yet, wait a bit more
-        await new Promise((resolve) => setTimeout(resolve, 300));
-        currentClient = clobClientRef.current;
-      }
-
-      if (!currentClient) {
-        throw new Error(
-          "Trading client not ready. Please ensure your wallet is connected and try again.",
-        );
-      }
+      const currentClient = await ensureTradingClientReady();
 
       // Calculate expiration
       // - GTD: user-provided timestamp
@@ -965,27 +1002,15 @@ export function TradeForm({
       setError(externalBlockReason);
       return;
     }
-
-    // Ensure credentials are available
-    if (!credentials) {
-      try {
-        await getCredentials();
-        await new Promise((resolve) => setTimeout(resolve, 500));
-      } catch (err: any) {
-        setError("Failed to get trading credentials. Please try again.");
-        return;
-      }
-    }
-
-    const currentClient = clobClientRef.current;
-    if (!currentClient) {
-      setError("Trading client not ready. Please try again.");
-      return;
-    }
     setError(null);
     setSuccessMsg(null);
     setIsSubmittingBatch(true);
     try {
+      // Ensure we're on Polygon network before proceeding.
+      await ensurePolygonChain(() => chainIdRef.current, switchChainAsync);
+
+      const currentClient = await ensureTradingClientReady();
+
       // Submit each order in the batch using SDK
       const results = await Promise.allSettled(
         batchOrders.map((entry) => {
